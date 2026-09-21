@@ -7,7 +7,7 @@
 - **Design authority:** PLAN §1 (responsibility boundaries), §3.E (worktrees are not
   security isolation), §7 (provider, privacy, security), §4 (tool-call hooks are policy
   gates, not sandboxing).
-- **Inputs:** ADR 0001–0005; ADR 0006–0010 (this issue); `docs/config-reference.md` §6
+- **Inputs:** ADR 0001–0005; ADR 0011–0010 (this issue); `docs/config-reference.md` §6
   (privacy) and §8 (jev); `src/config/schema.json`; `docs/gates.md`; `docs/records.md`;
   `docs/pi-integration-map.md`.
 
@@ -31,7 +31,7 @@ module is a gap to fix, not a feature to describe.
 
 **In scope:** the KorWF-Pi package running inside a user's Pi session on their machine,
 the worker Pi subprocesses it spawns (ADR 0004), the SQLite store under
-`<project>/.korwf/` (ADR 0006), the git worktrees it creates (ADR 0009), and the two
+`<project>/.korwf/` (ADR 0011), the git worktrees it creates (ADR 0009), and the two
 outbound channels it can open — TypeSafe (Jev, ADR 0003) and the model providers the
 user has already configured in Pi.
 
@@ -64,7 +64,7 @@ Two rules from PLAN §1 shape everything below:
 | A3 | **Credentials** — provider keys in Pi's config/secrets, `TYPESAFE_API_KEY`, anything matching the shipped deny lists | Exfiltration is irreversible; PLAN §7 "never stored in the repo, transcripts, or logs" | Env vars, Pi secrets facility, files matched by `privacy.denyPaths` |
 | A4 | **Budgets** — Jev spend, model spend, worker concurrency, wall-clock | Runaway spend is real money; PLAN §3.D/§3.E limits | `budgets.*` config; `Attempt.usage`; `Decision` rows |
 | A5 | **Policy configuration** — allowlist, approval classes, deny lists, mode | Everything else's authority derives from it; PLAN §3.H "never weakens its own policy" | `src/config/` layered merge; schema `const` pins |
-| A6 | **KorWF store** — records, evidence, decisions, audit log | Integrity of the gate (`docs/gates.md`) depends on evidence not being forged or edited | `<project>/.korwf/korwf.sqlite`, artifacts dir (ADR 0006) |
+| A6 | **KorWF store** — records, evidence, decisions, audit log | Integrity of the gate (`docs/gates.md`) depends on evidence not being forged or edited | `<project>/.korwf/korwf.sqlite`, artifacts dir (ADR 0011) |
 | A7 | **Source and instruction text** — project instructions, skills, role prompts, PLAN | Instruction sources are trusted; anything that can impersonate them can steer the model | `resources/`, `AGENTS.md`, `.pi/`, Pi's context files |
 | A8 | **The user's Pi session** — its transcript, its extensions, its TUI | A worker crash or a runaway tool must not take it down or alter it (ADR 0004) | The orchestrator process |
 
@@ -78,7 +78,7 @@ Two rules from PLAN §1 shape everything below:
 | T4 | **Jev outage or compromise** — TypeSafe unreachable, rate-limited, returning malformed data, or a proxy in the path returning attacker-chosen answers | Can delay, deny, or *shape* every Jev-assisted decision | Outage: benign. Compromise: hostile — assume responses are attacker-controlled. |
 | T5 | **Buggy policy** — a defect in KorWF's own `security/`, `workflow/approvals`, `config/` merge, or gate code; a config file that validates but is wrong | Can silently widen what is allowed | Non-malicious. The system must fail closed when the policy layer is absent or errors. |
 | T6 | **Model provider** — the endpoints the user's Pi already talks to | Sees whatever context Pi sends; may log it | Trusted by the user already (PLAN §3.D: "whatever the user's Pi has configured"); KorWF adds no provider and must not widen what is sent. |
-| T7 | **Second instance / concurrent process** — another Pi session, a stale orchestrator, an editor, `git` run by the user | Can write the store or the worktree concurrently | Benign. Guarded by ADR 0006 (single writer) and ADR 0009 (integration owner). |
+| T7 | **Second instance / concurrent process** — another Pi session, a stale orchestrator, an editor, `git` run by the user | Can write the store or the worktree concurrently | Benign. Guarded by ADR 0011 (single writer) and ADR 0009 (integration owner). |
 
 Not modelled as actors: the user (owns everything), Pi (trusted runtime; extensions run
 as the user — Pi `docs/security.md`), the OS.
@@ -107,7 +107,7 @@ The diagram is normative: an edge not drawn here is a defect.
                        │      │         │ records, evidence, decisions                 │
                        │      ▼         ▼                                              │
                        │   ┌──────────────────────────────┐   ┌─────────────────────┐  │
-                       │   │ <project>/.korwf/ (ADR 0006) │   │ git worktrees       │  │
+                       │   │ <project>/.korwf/ (ADR 0011) │   │ git worktrees       │  │
                        │   │ korwf.sqlite · artifacts ·   │   │ (change isolation   │  │
                        │   │ lockfile · NO raw payloads   │   │  only, ADR 0009)    │  │
                        │   │ unless privacy.rawLogging.   │   └─────────────────────┘  │
@@ -151,7 +151,7 @@ The diagram is normative: an edge not drawn here is a defect.
 | Absolute filesystem paths | Stripped regardless of `sendFilePaths` | `security/data-boundaries` |
 | Repository identity (remote URL, path) | Only a hash unless `sendRepoIdentity: true` | `security/data-boundaries` |
 | Raw request/response bodies | Not written anywhere unless `rawLogging.enabled` (default `false`); then redacted, then deleted after `retentionDays` (default 7) | `telemetry/`; schema |
-| The KorWF store (`korwf.sqlite`, artifacts, audit log) | Local only; `storage.path` has no absolute default and `allowOutsideProject` is `false` | ADR 0006; V8 |
+| The KorWF store (`korwf.sqlite`, artifacts, audit log) | Local only; `storage.path` has no absolute default and `allowOutsideProject` is `false` | ADR 0011; V8 |
 | Worktrees and the user's checkout | Git operations are local; `remote_push` is a fixed `stop` in every mode | `git/`; schema `HighRiskPolicy` |
 | Decision traces, usage, cost | Local records (`Decision`, `Attempt.usage`); "sanitised responses" for replay are local files | `telemetry/`, `evaluation/` |
 
@@ -255,7 +255,7 @@ forged).* Actors: T3, T7, T5.
 
 | Aspect | Mitigation | Enforced by | Residual |
 |---|---|---|---|
-| Two orchestrators or a worker writing the store | One writer process holds the lockfile; workers report over RPC and never open the database (ADR 0006); `lockTimeoutMs` fails a second instance fast | `storage/lockfile`; ADR 0006 | R13 (a worker with `bash` can open the SQLite file directly — same class as R7; the audit table and append-only triggers make tampering detectable, not impossible) |
+| Two orchestrators or a worker writing the store | One writer process holds the lockfile; workers report over RPC and never open the database (ADR 0011); `lockTimeoutMs` fails a second instance fast | `storage/lockfile`; ADR 0011 | R13 (a worker with `bash` can open the SQLite file directly — same class as R7; the audit table and append-only triggers make tampering detectable, not impossible) |
 | Evidence/decision tampering | `decision`, `evidence`, `model_outcome`, `audit_entry` are append-only at the type level (`UpdatePatch<T> = never`) and by `RAISE(ABORT)` triggers in the migration (`docs/records.md` §4); corrections are new rows with `supersedesId` | `storage/` migrations (#23); compile-time tests | R13 |
 | Evidence from a worker's own claim | `Evidence.reviewer.kind = deterministic` rows are written by the engine from the check's exit code and command identity, not by the worker; independent review (C3) rejects the same attempt chain (B7 in `docs/gates.md`) | `verification/`; `docs/gates.md` §2 | — |
 

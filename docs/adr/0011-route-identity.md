@@ -1,4 +1,4 @@
-# ADR 0006 — Route identity is derived from the provider key; a rename is a new route
+# ADR 0011 — Route identity is derived from the provider key; a rename is a new route
 
 Status: accepted (issue #125, 2026-09-21)
 Design authority: docs/PRD.md §2, §3.4; PLAN §3.D "Caps and fallback", §5 "Records".

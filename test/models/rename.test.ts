@@ -1,5 +1,5 @@
 /**
- * Tests for the provider-rename decision, ADR 0006 (issue #125).
+ * Tests for the provider-rename decision, ADR 0011 (issue #125).
  *
  * AC: "The rename behaviour is implemented, documented, and covered by a
  * test." Decision (a): a renamed provider key is a new route; the old
@@ -17,7 +17,7 @@ const NEW_KEY = "work-vendor";
 const T0 = "2026-09-21T10:00:00.000Z";
 const T1 = "2026-09-21T10:05:00.000Z";
 
-describe("provider rename (AC: rename behaviour implemented and tested — ADR 0006 option (a))", () => {
+describe("provider rename (AC: rename behaviour implemented and tested — ADR 0011 option (a))", () => {
   it("a renamed provider key derives a different routeId", () => {
     expect(deriveRouteId(OLD_KEY, MODEL)).not.toBe(deriveRouteId(NEW_KEY, MODEL));
   });

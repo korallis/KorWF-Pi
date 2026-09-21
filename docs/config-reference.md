@@ -80,7 +80,7 @@ Pi's `models.json` is the only source of truth, and a single-provider setup has 
 one route per model. `fallback.staticOrder` refs name a provider, so listing
 `<provider-b>/<model>` after `<provider-a>/<model>` makes the second account a legitimate
 fallback when the first is rate-limited. **Renaming a provider key creates a new route
-and does not carry over its history** — see `docs/adr/0006-route-identity.md`.
+and does not carry over its history** — see `docs/adr/0011-route-identity.md`.
 
 ### 2.2 `models.overrides`
 

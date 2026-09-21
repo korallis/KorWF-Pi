@@ -210,7 +210,7 @@ provider entry plus one model id (`routeId`, issue #125, PRD §3.4): the same mo
 configured under two providers — two subscriptions to one vendor — is two routes with
 independent caps, health and outcome history. Model cards stay per model id.
 `routeId` is derived by `src/models/route.ts`; the rename rule is in
-`docs/adr/0006-route-identity.md`.
+`docs/adr/0011-route-identity.md`.
 
 ## 3. PLAN §5 field coverage
 

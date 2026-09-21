@@ -1,4 +1,4 @@
-# ADR 0006 — SQLite store with a single writer process
+# ADR 0011 — SQLite store with a single writer process
 
 - **Status:** Accepted (Stage 1, issue #17). Implementation in #23 (store) and #21
   (`storage.*` config).

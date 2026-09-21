@@ -13,7 +13,7 @@
  * `RouteId` is opaque: a hash of `(providerId, modelId)`. It carries no
  * meaning, is never parsed, and is stable for as long as the user keeps the
  * same provider key. Renaming a provider key yields a new route — see
- * docs/adr/0006-route-identity.md for why that is deliberate.
+ * docs/adr/0011-route-identity.md for why that is deliberate.
  *
  * Pure module: no I/O, no Pi imports, no provider names.
  */
