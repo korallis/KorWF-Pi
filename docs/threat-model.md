@@ -172,3 +172,44 @@ the same PR; the Stage 2 config tests (#21) should assert the defaults this sect
 quotes (`jev.enabled=false`, `rawLogging.enabled=false`, `sendRepoIdentity=false`,
 `sendFilePaths=true`, `maxRequestBytes=262144`, all notification channels off,
 `storage.allowOutsideProject=false`) so the diagram cannot silently drift.
+
+## 5. Trust boundaries and mitigations
+
+Each row is one boundary named or implied by PLAN §7 (plus §1, §3.E, §4 where they
+sharpen it). Columns: which actors cross it, what the mitigation is, **which module or
+spec enforces it**, and the residual risk id (§6). "Enforced by" names code that exists
+or is assigned to a Stage 2+ issue; prose alone never closes a row.
+
+### B1 — Untrusted repository/tool content vs instruction and policy sources
+
+*PLAN §7: "Untrusted repository/tool content isolated from instruction and policy
+sources."* Actors: T1, T2, T3.
+
+| Aspect | Mitigation | Enforced by | Residual |
+|---|---|---|---|
+| Content read from the repo or returned by a tool can **never** become an instruction or a policy input | Instruction sources are a closed set: `resources/roles/*.md` and `resources/prompts/` (shipped, versioned, read-only at runtime — ADR 0002), the user's own Pi context files, and KorWF's `before_agent_start` injection. Policy inputs are config (A5) and records (A6). Repo content reaches the model only as *observations* inside tool results, and reaches Jev only as *state snippets* labelled as such in the question body (PLAN §6). Nothing parses instructions out of repo files. | `context/` (passage selection emits data, not prompts); `decisions/` (question templates separate `instruction` from `state`); `resources/` read-only | R1 (models can still be steered by observations — that is why B2–B4 exist) |
+| Project-local Pi files (`.pi/extensions/`, `.pi/settings.json`, a project-level KorWF config) in a cloned repo | Loaded only when Pi reports `ctx.isProjectTrusted()`; KorWF applies a project config layer only under trust (ADR 0001 row 3 salvages the layered merge *with* the trust gate the `sandbox/` example lacks); even when trusted, project config can only **tighten** (deny lists are a floor, V5; high-risk classes are `const stop`) | `config/` merge (#21); schema `HighRiskPolicy`, `allOf/contains`; V5 | R2 (trust is a user decision; a trusted malicious repo can widen the *configurable* rows) |
+| Git hooks, `package.json` scripts, test commands inside the repo | Running them is `run_checks` / `run_shell` / `install_dependencies`, each an approval class with its own per-mode default (`config-reference.md` §5.1): `run_shell` and `install_dependencies` are never `auto`; checks run inside a worker's worktree, never the user's checkout (ADR 0009) | `workflow/approvals`; `security/execution-policy`; schema V4 | R3 (a check that the user approved runs arbitrary repo code as the user — see B6) |
+| Content claiming to be evidence, approval, or a gate result | The gate reads only `Evidence`/`Approval`/`Decision` **rows** with `reviewer.kind`/`actor` set by the engine, never text; trivial checks are rejected at `task-ready`; a `policy`/`engine` actor cannot satisfy C3 (`docs/gates.md` B5, B8) | `verification/` gate predicates; `docs/gates.md` §2, §3, §8 | — |
+
+### B2 — Jev prompt-injection signals are not an authorisation mechanism
+
+*PLAN §7: "Jev prompt-injection signals never authorise execution or data release."
+PLAN §1: "Jev is not … a security boundary."* Actors: T2, T4, T5.
+
+| Aspect | Mitigation | Enforced by | Residual |
+|---|---|---|---|
+| A Jev "this content looks safe / is not injection" answer | Such a signal may only **add** a flag, lower a rank, or trigger abstention. No code path maps a Jev answer to `allow`, to an `Approval` row, to a change in an approval class, or to the release of data past the outbound filter. The C1 and C3 gate terms contain no Jev variable at all (`docs/gates.md` §3: "Jev cannot waive them"). | `decisions/` composition policies (no `allow` action type); `verification/` C1/C3; `security/` pure functions take (call, role, mode, config) — no Jev input in the signature (ADR 0002) | — |
+| A Jev "this is injection" answer | Treated as advisory: recorded on the `Decision`, surfaced in status/`/korwf why`, may route a task to review. It does not block a user-approved action either — blocking is also a policy decision, and policy comes from config. | `decisions/`, `telemetry/` | R4 (an attacker who controls Jev's answer — T4 — can cause spurious reviews or abstentions: denial of service, never escalation) |
+| Jev compromised via a proxied `jev.baseUrl` | Only `https://` accepted; the model is pinned; responses are schema-validated; the worst a hostile answer can do is what the row above allows — narrow, never widen. Deterministic fallback (ADR 0007) means a Jev that lies "unavailable" only degrades to static routing. | schema (`^https://`, `^jev-\d+\.\d+\.\d+$`); ADR 0003 rule 9 validation; ADR 0007 | R4 |
+
+### B3 — Permissions come from user-approved rules and execution isolation, not semantic confidence
+
+*PLAN §7 execution policy, first bullet.* Actors: T3, T5.
+
+| Aspect | Mitigation | Enforced by | Residual |
+|---|---|---|---|
+| Source of authority for any mutating or spending action | Exactly three: (1) the approval class table (`auto`/`queue`/`stop` per mode, `config-reference.md` §5.1), (2) an `Approval` row with `actor.kind = user` for high-risk tasks (`docs/gates.md` C3), (3) execution isolation (ADR 0004 process boundary + ADR 0009 worktree + role `--tools`). Model output, worker claims, Jev confidence and telemetry are never inputs to the allow decision. | `workflow/approvals`; `security/execution-policy` (pure: (call, role, mode, config) → decision); `docs/gates.md` | — |
+| Policy cannot be weakened at runtime | High-risk classes are `const "stop"` in the schema; deny lists are floors; `retryPrimaryAtTaskBoundary`, `allCappedBehaviour`, `overridePins`, `redactBeforeWrite` are `const`; a layered merge is re-validated after merge so a higher-precedence file cannot drop a floor (V5). `/korwf off` disables assistance, never controls (PLAN §4 UI). No record has a waiver field (`docs/gates.md` §7 "No waiver field"). | `src/config/schema.json`; validator V4/V5/V7 (#21); `docs/gates.md` §7 | R5 (the *user* can loosen configurable rows; that is their right, and the first-use disclosure and `/korwf status` make it visible) |
+| Non-UI contexts (workers in `--mode rpc`, `-p`) where a gate would otherwise prompt | Block by default (`ctx.hasUI === false` ⇒ `{ block: true }`); a worker's `extension_ui_request` is routed to the orchestrator's approval policy and **times out to denial** (ADR 0004 "Approvals") | `security/execution-policy`; `workers/`; `docs/pi-integration-map.md` §4 "Non-UI modes" | — |
+| Approvals surviving fork/resume/rewind or plan changes | `Approval` rows are scoped to task + plan revision and expire; invalidated on revision change; fork/resume "never resurrects obsolete approvals" (PLAN §5); the only mutable field is `invalidation` (`docs/records.md` §4) | `docs/state-machine.md`; `docs/records.md`; `workflow/recovery` | — |
