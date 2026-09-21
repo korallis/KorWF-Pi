@@ -155,3 +155,141 @@ Conventions are those of [01-greenfield.md](01-greenfield.md) § Conventions.
   - Dwell (#65): between `t0` and `T1` done there is no `Attempt` with
     `Attempt.usedModel == 'M-primary'` and `Attempt.taskId == T1.id` other than `A1`,
     and `ModelAvailability[M-primary].lastProbe.at == t0` (no re-probe mid-task).
+
+### Step A6 — next task retries the primary at the task boundary
+
+- **When** `T2` becomes `ready` at `t0 + 35m` (`> ModelAvailability[M-primary].estimatedReset`).
+- **Then**
+  - Availability is re-evaluated once, at the boundary, under the bounded probe policy:
+    `ModelAvailability[M-primary].lastProbe.at == t0 + 35m`,
+    `ModelAvailability.lastProbe.result == 'available'`,
+    `ModelAvailability.capKind == 'none'`, `ModelAvailability.detectedAt == null`,
+    `ModelAvailability.estimatedReset == null`.
+  - Selection `Decision` for `T2`: `Decision.action == 'M-primary'`, `Decision.override == null`.
+  - `Attempt[A3]`: `Attempt.taskId == T2.id`, `Attempt.requestedModel == 'M-primary'`,
+    `Attempt.usedModel == 'M-primary'`, `Attempt.fallbackReason == null`,
+    `Attempt.handedOffFromAttemptId == null`.
+  - Negative control (reset not yet reached): with `T2` ready at `t0 + 10m`, no probe
+    happens (`ModelAvailability.lastProbe.at == t0`), selection excludes `M-primary`,
+    `Attempt[A3'].usedModel == 'M-sub'`, `Attempt[A3'].requestedModel == 'M-primary'`,
+    `Attempt[A3'].fallbackReason == 'quota_exhausted'` — a fallback at *dispatch* is still
+    recorded as a fallback.
+  - `T2` completes; `Phase[P].gateStatus == 'passed'`; `Phase[P].report.cost.requests`
+    equals `Σ Attempt.usage.requests` over `A1, A2, A3` plus decision requests, and
+    `Phase[P].report.cost.costBasis` reflects the least-certain contributing basis.
+
+### Step A7 — all candidates capped (phase pause) and auto-resume
+
+- **Given** the same fixture, but the provider mock also caps `M-sub`, and `M-weak` is
+  ranked `none_adequate` by the Jev mock.
+- **When** the cap hits during `T1`.
+- **Then**
+  - `Decision[DS'].action == 'none_adequate'`; the eligible set was nonempty
+    (`{M-sub, M-weak}`) so this is a genuine all-capped/no-adequate outcome, not a
+    configuration blocker.
+  - `task-cap`: `Task[T1].status == 'paused_cap'`, `Task[T1].blocker` names the reason
+    (`all_candidates_capped` or the distinct "no adequate substitute" reason —
+    state-machine.md §4.1 requires the distinction to be recorded; assert `blocker != null`
+    and that it contains one of those two literals).
+  - `Attempt[A1].outcome == 'paused_cap'` (not `failed`), worktree intact as in A2.
+  - `phase-cap`: `Phase[P].gateStatus == 'paused_cap'`; `Workflow.status == 'paused'`.
+  - `ModelAvailability` rows for `M-primary` and `M-sub` both have `capKind ∈
+    {quota_exhausted, rate_limited}` and `estimatedReset != null`.
+  - Not a failure: no `AuditEntry` shows `T1 → failed` or `P → failed`; the failure retry
+    counter for `T1` (#53) is unchanged.
+  - **Auto-resume:** when the clock passes `min(estimatedReset)` and a probe finds
+    `M-sub` available (`ModelAvailability[M-sub].capKind == 'none'`):
+    `phase-cap-resume` ⇒ `Phase[P].gateStatus == 'running'`;
+    `task-cap-resume` ⇒ `Task[T1].status == 'ready'` (never directly `running`);
+    then dispatch ⇒ `Attempt[A2]` with `Attempt.handedOffFromAttemptId == A1.id`,
+    `Attempt.usedModel == 'M-sub'`, `Attempt.fallbackReason == 'quota_exhausted'`,
+    `Attempt.requestedModel == 'M-primary'`.
+  - Budget was not enlarged: `Workflow.budgets` unchanged (`Workflow.updatedAt` did not
+    move for a budget patch; `AuditEntry` for `workflow` shows no `budgets` change).
+
+## Variant B — Jev disabled: static fallback order
+
+With Jev disabled there is no ranking question. The substitute is chosen by the
+configured static order (PLAN §3.D "Jev unavailable: use the static fallback ordering";
+state-machine.md §4.1 "static ordering when Jev unavailable"), filtered by allowlist,
+capabilities, pins and availability.
+
+### Step B1 — dispatch
+
+- Selection `Decision` for `T1`: `Decision.override == {actor:'policy', reason:'jev_disabled'}`,
+  `Decision.action == 'deterministic_fallback'`, `Decision.usage.requests == 0`;
+  `Attempt[A1].requestedModel == 'M-primary'` (`staticFallbackOrder[0]`),
+  `Attempt[A1].usedModel == 'M-primary'`, `Attempt[A1].fallbackReason == null`.
+
+### Step B2 — cap detection
+
+- Identical to A2 — cap detection is code, not Jev: `ModelAvailability[M-primary].capKind
+  == 'quota_exhausted'`, `estimatedReset == t0 + 30m`; `Attempt[A1].outcome == 'handed_off'`;
+  `Task[T1].status == 'running'`; worktree intact.
+
+### Step B3 — static substitute selection
+
+- `Decision[DS]`: `Decision.override == {actor:'policy', reason:'jev_disabled'}`,
+  `Decision.action == 'deterministic_fallback'`, `Decision.jevModelVersion == null`,
+  `Decision.rawDistribution == {}` or absent-keys-only, `Decision.policyRule` names the
+  static-order rule, `Decision.usage.requests == 0`.
+- The chosen model is the first entry of `staticFallbackOrder` that is (a) allowlisted,
+  (b) not capped in `ModelAvailability`, (c) satisfies hard constraints from registry
+  metadata (context window ≥ `TaskProfile.contextSize` requirement, required modalities)
+  — i.e. `M-sub`. `M-weak` is only reached if `M-sub` is capped or fails hard constraints.
+- `Attempt[A2]`: `Attempt.requestedModel == 'M-primary'`, `Attempt.usedModel == 'M-sub'`,
+  `Attempt.fallbackReason == 'static_fallback_order'` — **this is the visible
+  difference from Variant A**, where `fallbackReason == 'quota_exhausted'` records the
+  cause and the Jev ranking `Decision` records the choice. In the disabled variant the
+  cause is still recoverable from `ModelAvailability[M-primary].capKind` at
+  `Attempt[A2].timestamps.startedAt`, and `Attempt[A2].handedOffFromAttemptId == A1.id`.
+  (See PR "Decisions and deviations" for why `static_fallback_order` is the literal
+  used here.)
+- Prefer-wait is still applied deterministically: with a 30-minute reset and a 5-minute
+  threshold, substitution proceeds. Negative control: `preferWaitIfResetWithinMinutes: 60`
+  ⇒ `Task[T1].status == 'paused_cap'`, `Phase[P].gateStatus == 'paused_cap'`,
+  `Task[T1].blocker` names the budget/prefer-wait reason, and auto-resume happens when
+  `M-primary` clears.
+
+### Step B4 — handoff and completion
+
+- Identical to A4/A5: packet on `Attempt[A1].artifacts`, `Attempt[A2].inputs.bundleHash
+  != Attempt[A1].inputs.bundleHash`, same worktree, `Attempt[A2].outcome == 'succeeded'`,
+  `Task[T1].status == 'done'` through the `DET_COVERAGE` fallback gate (scenario 2 B3).
+- `ModelOutcome[O2].wasFallback == true`, `ModelOutcome[O2].model == 'M-sub'`.
+
+### Step B5 — retry primary at the task boundary
+
+- Identical to A6: at `t0 + 35m` one probe, `ModelAvailability[M-primary].capKind == 'none'`,
+  `Attempt[A3].usedModel == 'M-primary'`, `Attempt[A3].fallbackReason == null`.
+  The retry rule is time/availability driven, not Jev driven.
+
+### Step B6 — all capped without Jev
+
+- With `M-primary` and `M-sub` capped, the static order yields `M-weak`. Without Jev
+  there is no "none adequate" judgement; the deterministic rule is: `M-weak` is used
+  **only if** it passes the hard constraints from registry metadata; otherwise the
+  eligible set after filtering is empty of available candidates and the engine takes
+  `task-cap`/`phase-cap`. The test runs both:
+  - `M-weak` passes hard constraints ⇒ `Attempt[A2].usedModel == 'M-weak'`,
+    `Attempt[A2].fallbackReason == 'static_fallback_order'`; the degradation is visible
+    in `/korwf status` and recorded in `Phase[P].report.openQuestions` ("substitute
+    chosen by static order without adequacy judgement").
+  - `M-weak` fails hard constraints (fixture card: context window too small) ⇒
+    `Task[T1].status == 'paused_cap'`, `Phase[P].gateStatus == 'paused_cap'`,
+    `Attempt[A1].outcome == 'paused_cap'`; auto-resume as in A7 when a cap clears.
+- `Σ Decision.usage.requests == 0` for the whole workflow.
+
+### Step B7 — pins are never overridden
+
+- With `models.pins: {"T1": "M-primary"}` and the cap: no substitution happens in either
+  variant. `Task[T1].status == 'paused_cap'` (or `blocked` with a pin reason — the
+  distinct reason is recorded in `Task[T1].blocker`), `Attempt[A1].outcome == 'paused_cap'`,
+  `count(Attempt where taskId == T1.id and usedModel != 'M-primary') == 0`; the user is
+  asked via the status surface. Resume proceeds only when `M-primary` clears or the user
+  changes the pin (`Workflow.planRevision` unchanged; pin change is config, audited).
+
+## Out of scope for this outline
+
+Expensive-substitute budget arithmetic (#65 tests it directly), main-session routing
+(#67), and process-tree termination of the capped worker (#71).
