@@ -19,6 +19,7 @@
 // still answers, deterministically, and says so — PLAN §2.4: the system must work with
 // no Jev key.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Jev, noul, score } from "./jev.mjs";
@@ -120,13 +121,28 @@ async function selectModel(n) {
   });
 }
 
-async function askFreeForm(n, question) {
-  if (!question) { console.error('usage: ask-jev.mjs ask <issue> "<question>"'); process.exit(2); }
+async function askFreeForm(n, question, opts = {}) {
+  if (!question) { console.error('usage: ask-jev.mjs ask <issue> "<question>" [--diff <branch>]'); process.exit(2); }
   if (!requireJev("answer a free-form judgment")) process.exit(3);
   const issues = fetchIssues();
   const issue = issues[Number(n)];
+
+  // Without `--diff`, Jev sees ONLY the issue body. Asking "does file X do Y?" then
+  // scores like an outright falsehood — a claim verified by reading the source scored
+  // 0.15 while "does this PR add a Python interpreter?" scored 0.05, i.e. the answer was
+  // driven by absence of evidence, not by the code. That is a misuse of the tool and it
+  // produced a near-miss: a correct PR was nearly rejected on it. Refuse the shape
+  // instead of returning a confident-looking number.
+  if (!opts.diff && /\b(src\/|test\/|\.ts\b|\.mjs\b|does the (code|diff|file|implementation)|is implemented|contains a|line \d+)/i.test(question)) {
+    console.error("This question is about code, but no diff was supplied, so Jev would answer\n"
+      + "from the issue body alone and score it low regardless of the truth.\n"
+      + "Pass --diff <branch> to include `git diff origin/main...<branch>`, or verify it\n"
+      + "yourself by reading the source.");
+    process.exit(2);
+  }
   const a = await jev.ask("orchestrator-question", {
     issue: issue ? { number: issue.number, title: issue.title, labels: issue.labels, body: (issue.body ?? "").slice(0, 4000) } : { number: n },
+    ...(opts.diff ? { actual_changes_diff: opts.diff } : {}),
     question,
   }, {
     answer: noul(question, { true: "Yes", false: "No" }),
@@ -174,7 +190,22 @@ function recordAttempt(n) {
   console.log(`next: node scripts/orchestrate/run.mjs --review ${num} && node scripts/orchestrate/run.mjs --merge ${num}`);
 }
 
-const cmds = { "pick-issue": () => pickIssue(), "select-model": () => selectModel(arg), "record-attempt": () => recordAttempt(arg), "ask": () => askFreeForm(arg, process.argv.slice(4).filter((x) => x !== "--json").join(" ")) };
+const cmds = { "pick-issue": () => pickIssue(), "select-model": () => selectModel(arg), "record-attempt": () => recordAttempt(arg), "ask": () => {
+  // `--diff <branch>` includes the branch's real changes, so questions about code are
+  // answerable. Truncated to keep the request bounded, as evidenceGap() does.
+  const di = process.argv.indexOf("--diff");
+  let diff = null;
+  if (di >= 0) {
+    const branch = process.argv[di + 1];
+    try {
+      const raw = execFileSync("git", ["diff", `origin/main...${branch}`, "--", ".", ":!package-lock.json"],
+        { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+      diff = raw.length > 60_000 ? `${raw.slice(0, 60_000)}\n[... diff truncated ...]` : raw;
+    } catch (e) { console.error(`cannot read diff for ${branch}: ${e.message}`); process.exit(2); }
+  }
+  const words = process.argv.slice(4).filter((x, i, a) => x !== "--json" && x !== "--diff" && a[i - 1] !== "--diff");
+  return askFreeForm(arg, words.join(" "), { diff });
+} };
 if (!cmds[cmd]) {
   console.error("usage: ask-jev.mjs pick-issue | select-model <issue> | record-attempt <issue> --model M --branch B [--pr URL] [--report-file PATH] | ask <issue> \"<question>\"  [--json]");
   process.exit(2);
