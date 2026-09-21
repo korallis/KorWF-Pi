@@ -10,7 +10,7 @@
  * breaker that degrades every call to the same `disabled` result product
  * code already treats as "take the deterministic fallback" (PLAN §2.4).
  */
-import type { JevEvaluateOptions, JevEvaluateResult, JevTransport, SystemOneRequest } from "./transport.ts";
+import { JevTransportError, type JevEvaluateOptions, type JevEvaluateResult, type JevTransport, type SystemOneRequest } from "./transport.ts";
 
 // ---------------------------------------------------------------------------
 // deadline
@@ -275,23 +275,156 @@ export class CircuitBreaker {
 // ---------------------------------------------------------------------------
 
 export interface ResilientJevOptions {
-  readonly key: string;
+  /** Total deadline for one `evaluate`/`ping` call, including all retries. */
   readonly deadlineMs: number;
+  /** Bounded retries on retryable error codes. Default 2 (config `jev.maxRetries` default). */
+  readonly maxRetries?: number;
   readonly failureThreshold?: number;
   readonly resetTimeoutMs?: number;
   readonly halfOpenMaxCalls?: number;
   readonly now?: () => number;
   readonly setTimeout?: typeof setTimeout;
   readonly clearTimeout?: typeof clearTimeout;
+  readonly random?: () => number;
+  readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 export interface ResilientJevTransport extends JevTransport {
   breakerStatus(): BreakerStatus;
 }
 
+const RETRYABLE_CODES: ReadonlySet<string> = new Set([
+  "jev.rate_limited",
+  "jev.overloaded",
+  "jev.unavailable",
+  "jev.unknown",
+]);
+
+const BREAKER_OPEN_MESSAGE =
+  "Jev circuit breaker is open after repeated failures: every Jev-assisted decision takes its deterministic fallback until it recovers.";
+
+/** Thrown internally to make an error `JevEvaluateResult` retryable via `withRetry`. */
+class RetryableResult extends Error {
+  constructor(readonly result: JevEvaluateResult) {
+    super("retryable Jev result");
+  }
+}
+
+/**
+ * Wrap a `JevTransport` with an independent deadline, bounded jittered
+ * retries for idempotent failures, and a circuit breaker — all on top of
+ * whatever the underlying transport already does (e.g. `HttpJevTransport`'s
+ * own per-fetch retries). `evaluate()` and `ping()` never throw and never
+ * hang past `options.deadlineMs`: a hung underlying transport call is
+ * abandoned and reported as `jev.unavailable` (AC1); an open breaker or
+ * exhausted retries degrade to `kind: "disabled"` (AC2), the same shape
+ * `DisabledJevTransport` returns, so callers already treat it as "take the
+ * deterministic fallback" (PLAN §2.4) without a special case. Aborting
+ * `options.signal` stops further attempts within one tick (AC3).
+ *
+ * Reservation safety (issue #26 scope note): this wrapper reserves nothing
+ * itself. A caller that reserves budget (`Ledger.reserve`/`withReservation`,
+ * issue #30) must reserve once *outside* this call and settle/release once
+ * on the single `JevEvaluateResult` this returns — never per attempt —
+ * which this module makes safe by always resolving exactly once, promptly,
+ * regardless of how many internal attempts ran or whether they were cut
+ * short by cancellation.
+ */
 export function wrapWithCircuitBreaker(
-  _transport: JevTransport,
-  _options: ResilientJevOptions,
+  transport: JevTransport,
+  options: ResilientJevOptions,
 ): ResilientJevTransport {
-  throw new Error("not implemented");
+  const breaker = new CircuitBreaker({
+    failureThreshold: options.failureThreshold ?? 5,
+    resetTimeoutMs: options.resetTimeoutMs ?? 30_000,
+    halfOpenMaxCalls: options.halfOpenMaxCalls ?? 1,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  const now = options.now ?? Date.now;
+
+  async function run(request: SystemOneRequest, callOptions: JevEvaluateOptions, isPing: boolean): Promise<JevEvaluateResult> {
+    if (!breaker.canProceed()) {
+      return { kind: "disabled", message: BREAKER_OPEN_MESSAGE };
+    }
+    breaker.beforeCall();
+
+    const totalDeadlineMs = callOptions.deadlineMs ?? options.deadlineMs;
+    const start = now();
+    const maxAttempts = 1 + Math.max(0, options.maxRetries ?? 2);
+
+    let outcome: JevEvaluateResult;
+    try {
+      outcome = await withRetry<JevEvaluateResult>(
+        async () => {
+          const remaining = totalDeadlineMs - (now() - start);
+          if (remaining <= 0) {
+            throw new DeadlineExceededError(totalDeadlineMs, now() - start);
+          }
+          const result = await withDeadline<JevEvaluateResult>(
+            (signal) =>
+              isPing
+                ? transport.ping({ ...callOptions, signal })
+                : transport.evaluate(request, { ...callOptions, signal }),
+            {
+              deadlineMs: remaining,
+              ...(callOptions.signal === undefined ? {} : { signal: callOptions.signal }),
+              ...(options.setTimeout === undefined ? {} : { setTimeout: options.setTimeout }),
+              ...(options.clearTimeout === undefined ? {} : { clearTimeout: options.clearTimeout }),
+              ...(options.now === undefined ? {} : { now: options.now }),
+            },
+          );
+          if (result.kind === "error" && RETRYABLE_CODES.has(result.error.code)) {
+            throw new RetryableResult(result);
+          }
+          return result;
+        },
+        (err) => err instanceof RetryableResult,
+        {
+          maxAttempts,
+          idempotent: true,
+          ...(callOptions.signal === undefined ? {} : { signal: callOptions.signal }),
+          ...(options.random === undefined ? {} : { random: options.random }),
+          ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+        },
+      );
+    } catch (err) {
+      if (err instanceof RetryableResult) {
+        outcome = err.result;
+      } else if (err instanceof DeadlineExceededError) {
+        outcome = {
+          kind: "error",
+          error: new JevTransportError("jev.unavailable", "Jev call exceeded its deadline", { retryable: false }),
+          attempts: 0,
+          elapsedMs: err.elapsedMs,
+        };
+      } else if (err instanceof RetryAbortedError) {
+        outcome = {
+          kind: "error",
+          error: new JevTransportError("jev.cancelled", "Jev call cancelled", { retryable: false }),
+          attempts: 0,
+          elapsedMs: now() - start,
+        };
+      } else {
+        breaker.onFailure();
+        throw err;
+      }
+    }
+
+    if (outcome.kind === "ok") {
+      breaker.onSuccess();
+    } else if (outcome.kind === "error" && outcome.error.code !== "jev.cancelled") {
+      breaker.onFailure();
+    } else if (outcome.kind === "error") {
+      // Cancellation is not a failure of the transport (ADR 0003 table); do not trip the breaker.
+      breaker.onSuccess();
+    }
+    return outcome;
+  }
+
+  return {
+    kind: transport.kind,
+    evaluate: (request, callOptions = {}) => run(request, callOptions, false),
+    ping: (callOptions = {}) => run({ state: "", model: "", questions: {} }, callOptions ?? {}, true),
+    breakerStatus: () => breaker.status(),
+  };
 }
