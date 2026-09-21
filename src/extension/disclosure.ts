@@ -255,7 +255,7 @@ export function assertOutboundAllowed(
  */
 export interface DisclosurePrompt {
   readonly confirm: (title: string, body: string) => Promise<boolean> | boolean;
-  readonly notify?: (message: string, level?: string) => void;
+  readonly notify?: (message: string, level?: "info" | "warning" | "error") => void;
   /** False in print/RPC mode: there is no one to show a disclosure to. */
   readonly hasUI?: boolean;
 }

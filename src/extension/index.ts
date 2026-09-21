@@ -13,9 +13,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { versionMessage } from "./commands/version.ts";
 import { modelsMessage, statusMessage } from "./commands/models.ts";
+import { configMessage, disclosureMessage, loadForProject } from "./commands/config.ts";
+import { createFileDisclosureStore, ensureDisclosureAccepted } from "./disclosure.ts";
+import { getPackageVersion } from "./commands/version.ts";
 import { RouteAvailabilityTable } from "../models/availability.ts";
 
-const SUBCOMMANDS = ["version", "models", "status"] as const;
+const SUBCOMMANDS = ["version", "models", "status", "config", "disclosure"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 function isSubcommand(value: string): value is Subcommand {
@@ -54,6 +57,24 @@ export default function korwfExtension(pi: ExtensionAPI): void {
         case "status": {
           const models = ctx.modelRegistry.getAvailable();
           ctx.ui.notify(statusMessage({ models, availability, now: new Date().toISOString() }), "info");
+          return;
+        }
+        case "config": {
+          const result = loadForProject(ctx.cwd);
+          ctx.ui.notify(configMessage(result), result.ok ? "info" : "error");
+          return;
+        }
+        case "disclosure": {
+          const result = loadForProject(ctx.cwd);
+          if (!result.ok) {
+            ctx.ui.notify(configMessage(result), "error");
+            return;
+          }
+          const store = createFileDisclosureStore(result.config);
+          ctx.ui.notify(disclosureMessage(result.config, ctx.cwd, store), "info");
+          await ensureDisclosureAccepted(result.config, ctx.cwd, store, ctx.ui, {
+            packageVersion: getPackageVersion(),
+          });
           return;
         }
       }
