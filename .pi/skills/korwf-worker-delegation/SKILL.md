@@ -111,6 +111,9 @@ transcript that could not have produced its output, and the gate passed it.
 
 ## 5. Cleanup — worktrees and branches, local *and* remote
 
+Clean up **as soon as the issue is finished**, not "later". A stale worktree lets a worker
+branch from dead history.
+
 `gh pr merge --delete-branch` deletes only the **remote** branch. Finish the job:
 
 ```bash
@@ -127,6 +130,31 @@ branch holding unmerged commits** — do not override that by hand.
 `herdr worktree remove --workspace <id>` removes the checkout and Space but never the
 branch; `stop-pi.sh` refuses to close a tab/Space holding other live agents without
 `--force`.
+
+### 5.1 Local `main` tracks the remote
+
+Before creating any worktree, and after finishing:
+
+```bash
+git -C <repo-root> fetch --prune -q origin
+git -C <repo-root> merge --ff-only origin/main
+```
+
+`syncMain()` in `run.mjs` does this automatically each scheduling pass. It skips a dirty
+or non-`main` checkout rather than forcing anything. Branch workers from current `main`
+only. If a push is rejected as non-fast-forward, **rebase** — workers never `--force`.
+
+## 5.2 Autonomy: act, don't ask
+
+Per AGENTS.md §4 as narrowed by ADR 0005, and `jev-orchestration` §1.1:
+
+**reversible + no credential + no consumer impact + not a policy loosening ⇒ act.**
+
+Pushing your own branch, opening a PR, rebasing onto `main`, creating and removing your
+own worktree, and merging a green PR that Jev has cleared are all ordinary work — do them.
+Escalate only what the owner alone can resolve: spend, credentials, releases, force-pushing
+shared history, granting permissions, changes to enforcement code, or a product decision
+PLAN.md does not settle. Do not gate on a label as a proxy for risk; judge the actual act.
 
 ## 6. Choosing the model
 

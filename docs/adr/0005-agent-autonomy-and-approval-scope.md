@@ -67,6 +67,39 @@ The aggregate "what should happen now" question scored a weak 0.30; decomposing 
 — an existential over a whole scope decays as the scope is itemised — and the response
 is to ask sharper questions, not to treat the low score as a verdict.
 
+## Second round: the same pattern elsewhere
+
+After the AGENTS.md fix, three more instances of "gate on a proxy rather than on the act"
+were found and put to Jev (probes `systemic-autonomy`, `needs-human-semantics`):
+
+| Question | Answer | Consequence |
+|---|---|---|
+| `risk_high_blanket_wrong` | **0.89** | `mergeReview()` hard-blocked all 34 `risk:high` issues, most of them specs |
+| `judge_risk_from_diff` | **0.91** | gate on what the diff does, not on the label |
+| `docs_only_safe` | **0.88** | a spec-only diff with clean checks may merge autonomously |
+| `security_code_still_gated` | **0.88** | a diff changing enforcement code still needs the owner |
+| `automerge_when_clean` | **0.83** | merge automatically when green and Jev is content |
+| `loop_on_jev_disagreement` | **0.87** | when Jev objects, iterate rather than park the PR |
+| `loop_needs_bound` | **0.86** | bound the loop; park as `orchestrator-stuck` at the cap |
+| `deterministic_never_waived` | **0.81** | no Jev score overrides a failing check, ever |
+| `stale_labels_must_be_revalidated` | **0.86** | re-validate `needs-human` rather than trusting it forever |
+| `revalidation_is_self_weakening` | **0.13** | correcting a mislabel is not weakening policy |
+| `plan_s7_should_change` | **0.26** | PLAN §7 governs the *product's* runtime policy — add a scope note, do not rewrite it |
+| `where_to_encode` | **`all_three`** (0.76) | rule in AGENTS.md, judgment in the skill, enforcement in `run.mjs` |
+
+Implemented as:
+
+- `mergeReview()` drops the `risk:high` hard block and adds a Jev question
+  `touches_enforcement`, judged from the diff, which hard-blocks at
+  `policy.enforcementBlock` (0.5). `needs-human` remains an absolute block.
+- A blocked merge review now feeds its blockers back to a fresh worker attempt and
+  iterates until Jev agrees or `maxAttemptsPerIssue` is reached. Owner-only blocks skip
+  the loop and escalate.
+- `revalidateNeedsHuman()` runs once per session, never touches `type:approval` issues,
+  removes a label only at p ≤ 0.25, and fails closed when Jev is unavailable.
+- `syncMain()` fast-forwards local `main` from the remote at the start of every
+  scheduling pass and at session end.
+
 ## Consequences
 
 - Agents push their own branches and ordinary commits without asking. Stalling on a

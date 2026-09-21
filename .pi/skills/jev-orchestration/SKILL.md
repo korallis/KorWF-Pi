@@ -52,12 +52,41 @@ problems and must be solved agentically:
 - a check was flaky.
 
 Those get `orchestrator-stuck`, which `run.mjs --retry-stuck` re-admits with a fresh
-attempt budget. `escalateOrPark()` asks Jev which case applies; `risk:high` always
-escalates regardless (AGENTS.md §4), and if Jev is unavailable it **fails closed** to
-`needs-human`.
+attempt budget. `escalateOrPark()` asks Jev which case applies, and if Jev is unavailable
+it **fails closed** to `needs-human`.
 
 Before escalating anything, ask: *could a capable agent resolve this by reading PLAN.md,
 the issue, and the code?* If yes, it is not a human escalation.
+
+### 1.1 Do not gate on a proxy for risk — gate on the act
+
+This is the mistake to avoid, and it has been made twice here (see ADR 0005):
+
+- AGENTS.md §4 once listed "remote pushes" as always needing approval. An agent then
+  stopped to ask permission to push a *documentation rename*. Jev: `push_is_human_only`
+  **0.16**, `s4_rule_overbroad` **0.70**.
+- `mergeReview()` once hard-blocked every issue labelled `risk:high` — 34 of 97 open
+  issues, most of them specification documents. Jev: `risk_high_blanket_wrong` **0.89**,
+  `judge_risk_from_diff` **0.91**, `docs_only_safe` **0.88**.
+
+A label marks **subject matter**; it does not make the act dangerous. Judge the actual
+change. `mergeReview()` now asks Jev `touches_enforcement` — does *this diff* alter code
+that enforces security, permissions, the allowlist, spending, credentials or approval
+gating? — and hard-blocks on that instead (`security_code_still_gated` **0.88**).
+
+**The test for autonomy:** reversible + no credential + no consumer impact + not a
+loosening of policy ⇒ **act**. Otherwise escalate. When genuinely unclear, ask Jev and
+log the probe; do not default to escalation *or* to action.
+
+### 1.2 `needs-human` labels are re-validated, not trusted forever
+
+Some labels were applied by the discredited "I gave up" policy and are self-perpetuating:
+a labelled issue is never worked, so the label is never revisited. `revalidateNeedsHuman()`
+runs once per session and asks Jev, per issue, whether the owner is genuinely required;
+it removes the label only on a confident judgment (p ≤ 0.25), never touches `type:approval`
+issues, and fails closed when Jev is unavailable. Jev: `stale_labels_must_be_revalidated`
+**0.86**, `revalidation_is_self_weakening` **0.13** — correcting a mislabel is not weakening
+the policy. A *correctly* applied `needs-human` remains an absolute, non-waivable block.
 
 Triage existing labels with:
 
@@ -98,7 +127,21 @@ never lowered ad hoc** to make something pass. Justification: every merged row h
 `minP ≥ 0.75`; every genuine failure `minP ≤ 0.54`.
 
 **Deterministic checks are never waivable** (AGENTS.md §4) — not by Jev, not by a
-worker's claim.
+worker's claim, and not by an auto-merge loop (`deterministic_never_waived` **0.81**).
+
+### 3.1 Auto-merge and the work-until-Jev-agrees loop
+
+When the evidence gate passes, `mergeReview()` runs automatically and **merges without a
+human step** if every hard check passes and Jev reports no blockers
+(`automerge_when_clean` **0.83**).
+
+When Jev does *not* agree, the PR is **not parked**. Its specific blockers become the next
+attempt's feedback and a fresh worker iterates until Jev agrees
+(`loop_on_jev_disagreement` **0.87**). The loop is bounded by
+`workers.maxAttemptsPerIssue`, after which the issue parks as `orchestrator-stuck`
+(`loop_needs_bound` **0.86**). Two blockers never loop, because no amount of reworking
+changes who may decide: a `needs-human` label, and a diff Jev judges to change enforcement
+code. Those escalate immediately.
 
 ## 4. Verify worker claims independently
 
@@ -129,7 +172,16 @@ holds other live agents — it kills them all; `stop-pi.sh` refuses this without
 **Clean up worktrees when done, local and remote.** `gh pr merge --delete-branch` deletes
 only the *remote* branch. `cleanupWorktree()` also removes the worktree, the local branch
 and stale tracking refs; `sweepWorktrees()` runs at the end of each session for
-closed issues, and **refuses to remove a branch holding unmerged commits**.
+closed issues, and **refuses to remove a branch holding unmerged commits**. Remove a
+worktree as soon as its issue is finished — do not leave it for a later session.
+
+**Keep local `main` identical to the remote.** `syncMain()` runs at the top of every
+scheduling pass and again at the end of the session: `git fetch --prune` then
+`merge --ff-only origin/main`. It is deliberately refusing rather than clever — it skips
+when the checkout is dirty or not on `main`, and never rewrites history. Workers must
+branch from current `main`, never from stale local history. If a push is rejected as
+non-fast-forward, **rebase** onto `origin/main`; never `--force` (only the orchestrator
+force-pushes, with `--force-with-lease`, and only to rebase a PR branch it owns).
 
 ## 6. Milestone ordering
 

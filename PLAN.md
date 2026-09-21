@@ -324,7 +324,9 @@ Direct TypeSafe API using the user's own key, with a configurable base URL for u
 - Permissions come from user-approved rules and execution isolation, not semantic confidence.
 - Role-specific tools, constrained environments, path boundaries, network policy where the platform supports it.
 - All mutation routes tested (bash, custom tools); disabling `edit`/`write` alone is not read-only enforcement.
-- High-risk actions (destructive cleanup, deployment, credential access, publishing, remote pushes) require explicit policy/approval regardless of mode.
+- High-risk actions (destructive cleanup, deployment, credential access, publishing, force-pushing or rewriting shared history, and changes to permission/allowlist/spending policy) require explicit policy/approval regardless of mode. Ordinary pushes of an agent's own work to its own branch are not in this class.
+
+> **Scope note.** This section defines what the *shipped product* enforces on its users' agents at runtime. It is not the policy governing agents who build this repository — that is AGENTS.md §4, narrowed by [ADR 0005](docs/adr/0005-agent-autonomy-and-approval-scope.md). Do not copy runtime enforcement rules into the build policy or vice versa; conflating the two is what produced an agent that stalled asking permission to push documentation.
 
 ## 8. Build sequence
 

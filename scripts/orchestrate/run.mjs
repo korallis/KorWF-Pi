@@ -267,12 +267,16 @@ async function evidenceGap(jev, issue, criteria, report, checks, dir) {
 }
 
 // Decide whether a stuck issue truly needs Lee, or is the orchestrator's own problem.
-// Deterministic guards first (risk:high always escalates, per AGENTS.md §4), then Jev.
+// Deterministic guard first (an existing needs-human label is left alone), then Jev.
 async function escalateOrPark(jev, issue, reason, attempts) {
   const n = issue.number;
-  if (issue.labels.includes("risk:high")) {
-    gh(["issue", "edit", String(n), "--add-label", "needs-human"]);
-    log(`#${n}: risk:high — escalating to Lee`);
+  // `risk:high` marks SUBJECT MATTER (security, approvals, credentials), not a risky act.
+  // 34 of 97 open issues carry it, including specification documents. Gating escalation on
+  // the label alone is the same overbroad-gate mistake ADR 0005 removed from AGENTS.md §4
+  // (Jev: risk_high_blanket_wrong=0.89, judge_risk_from_diff=0.91). Escalate on what the
+  // blocker actually needs, judged below; `needs-human` still hard-blocks everything.
+  if (issue.labels.includes("needs-human")) {
+    log(`#${n}: already labelled needs-human — leaving for the owner`);
     return;
   }
   const a = await jev.ask("escalation", {
@@ -306,6 +310,61 @@ async function escalateOrPark(jev, issue, reason, attempts) {
   gh(["issue", "edit", String(n), "--add-label", "orchestrator-stuck"]);
   gh(["issue", "comment", String(n), "-b", `Orchestrator: attempts exhausted, but this does not need the repo owner (Jev: p(needs owner)=${a.needs_owner.noul.toFixed(2)}, p(tractable)=${a.tractable.noul.toFixed(2)}).\n\n${reason}\n\nLabelled \`orchestrator-stuck\` for a fresh attempt with a different model or a sharper handoff. Raw decision in \`.orchestrate/decisions.jsonl\`.`]);
   log(`#${n}: agent-resolvable (needs_owner=${a.needs_owner.noul.toFixed(2)}) — labelled orchestrator-stuck, not needs-human`);
+}
+
+// Some `needs-human` labels were applied by a discredited earlier policy that used the
+// label to mean "I gave up"; they are self-perpetuating, because a labelled issue is never
+// worked and so the label is never revisited. Re-validate them with Jev before trusting
+// them (Jev: stale_labels_must_be_revalidated=0.86; revalidation_is_self_weakening=0.13 —
+// this corrects a mislabel, it does not weaken the policy). Fails closed: no Jev, no
+// removal, and removal needs a confident judgment (require_high_confidence_to_remove=0.61).
+async function revalidateNeedsHuman(jev, issues) {
+  const flagged = Object.values(issues).filter((i) => i.state === "OPEN" && i.labels.includes("needs-human"));
+  if (!flagged.length) return 0;
+  let cleared = 0;
+  for (const i of flagged) {
+    // M0 issues are `type:approval` by construction — pure owner gates. Never touch them.
+    if (i.labels.includes("type:approval")) continue;
+    const a = await jev.ask("needs-human-revalidation", {
+      issue: { number: i.number, title: i.title, labels: i.labels, body: (i.body ?? "").slice(0, 4000) },
+      human_authority_rule:
+        "Only these require the repo owner: authorising spend or live-API budgets; providing or rotating " +
+        "credentials; publishing, releasing, or tagging; irreversible or destructive acts; granting " +
+        "permissions; or a product decision PLAN.md does not already settle. Running out of attempts, a " +
+        "failed gate, under-specification, a bad PR report, or a flaky check are NOT owner matters.",
+      note: "Some labels were applied by an earlier orchestrator that used `needs-human` to mean 'I gave up'.",
+    }, {
+      needs_owner: noul("Under `human_authority_rule`, can ONLY the repo owner resolve this issue?", {
+        true: "It genuinely requires the owner",
+        false: "A capable agent could complete it from PLAN.md, the issue, and the code",
+      }),
+    }, { issue: i.number, probe: "revalidate" });
+    if (!a) return cleared; // Jev unavailable: fail closed, trust every remaining label.
+    if (a.needs_owner.noul <= 0.25) {
+      if (!DRY) {
+        gh(["issue", "edit", String(i.number), "--remove-label", "needs-human"]);
+        gh(["issue", "comment", String(i.number), "-b", `Orchestrator: removing \`needs-human\`. Jev judges this does not require the repo owner (p(needs owner)=${a.needs_owner.noul.toFixed(2)}); it looks like a label left by the older "orchestrator gave up" policy. Re-admitting it to the work queue. Raw decision in \`.orchestrate/decisions.jsonl\`.`]);
+      }
+      i.labels = i.labels.filter((l) => l !== "needs-human");
+      cleared++;
+      log(`#${i.number}: cleared stale needs-human (p(needs owner)=${a.needs_owner.noul.toFixed(2)})`);
+    }
+  }
+  return cleared;
+}
+
+// Keep local main identical to the remote before creating worktrees from it, so workers
+// never branch from stale history. Refuses to touch a dirty tree or a non-main checkout.
+function syncMain() {
+  try {
+    sh("git", ["fetch", "--prune", "-q", "origin"], { cwd: ROOT });
+    const branch = sh("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: ROOT }).trim();
+    if (branch !== "main") { log(`syncMain: skipped (on ${branch}, not main)`); return; }
+    if (sh("git", ["status", "--porcelain"], { cwd: ROOT }).trim()) { log("syncMain: skipped (working tree dirty)"); return; }
+    // Fast-forward only: never rewrite or discard local commits silently.
+    sh("git", ["merge", "--ff-only", "origin/main"], { cwd: ROOT });
+    log(`syncMain: main at ${sh("git", ["rev-parse", "--short", "HEAD"], { cwd: ROOT }).trim()}`);
+  } catch (e) { log(`syncMain: ${String(e.stderr ?? e.message).trim().slice(-200)}`); }
 }
 
 // Remove a finished worker's worktree, local branch and stale tracking ref.
@@ -385,8 +444,46 @@ When finished, your LAST message must be exactly one fenced json block and nothi
 \`\`\``;
 }
 
-function runWorker({ dir, model, thinking, prompt }) {
+// Workers run headless (`pi -p --mode json`), which is what lets us stream structured
+// events and enforce timeouts. That makes them invisible to Herdr's Agents panel, so we
+// register a surface pane per worker purely for observability: the pane reports the
+// worker's lifecycle state and is closed when the worker exits. Best-effort throughout —
+// if Herdr is absent or the call fails, the worker still runs.
+function herdrSurface(issue, model, dir) {
+  if (!process.env.HERDR_ENV) return null;
+  try {
+    const name = `w-issue-${issue.number}`;
+    const paneId = JSON.parse(sh("herdr", ["pane", "split", "--current", "--direction", "down", "--ratio", "0.18", "--cwd", dir]))
+      .result?.pane?.pane_id;
+    if (!paneId) return null;
+    sh("herdr", ["pane", "rename", paneId, name]);
+    sh("herdr", ["pane", "report-agent", paneId, "--source", "korwf:orchestrator", "--agent", name, "--state", "working",
+      "--message", `#${issue.number} ${model}`]);
+    // Show the worker's own git activity in the pane rather than leaving it blank.
+    // Run this BEFORE report-metadata: starting a command resets the pane's display
+    // label, so the metadata must be applied last to survive.
+    sh("herdr", ["pane", "run", paneId,
+      `watch -n5 -t 'echo "#${issue.number} ${model}"; git -C ${dir} log --oneline -5 2>/dev/null; git -C ${dir} status -s 2>/dev/null | head -12'`]);
+    sh("herdr", ["pane", "report-metadata", paneId, "--source", "korwf:orchestrator", "--agent", "pi",
+      "--display-agent", `#${issue.number} · ${model}`, "--title", issue.title.slice(0, 60),
+      "--token", `model=${model}`, "--token", `issue=${issue.number}`]);
+    return { paneId, name };
+  } catch { return null; }
+}
+
+function herdrSurfaceEnd(surface, state, message) {
+  if (!surface) return;
+  try {
+    sh("herdr", ["pane", "report-agent", surface.paneId, "--source", "korwf:orchestrator",
+      "--agent", surface.name, "--state", state, "--message", message.slice(0, 200)]);
+    sh("herdr", ["pane", "release-agent", surface.paneId, "--source", "korwf:orchestrator", "--agent", surface.name]);
+    sh("herdr", ["pane", "close", surface.paneId]);
+  } catch {}
+}
+
+function runWorker({ dir, model, thinking, prompt, issue }) {
   return new Promise((resolvePromise) => {
+    const surface = herdrSurface(issue, model, dir);
     const env = { ...process.env };
     for (const k of Object.keys(env)) if (/JEV|TYPESAFE|API_KEY|SECRET|TOKEN/i.test(k) && !/^GH_/.test(k)) delete env[k];
     env.KORWF_WORKER = "1";
@@ -415,7 +512,12 @@ function runWorker({ dir, model, thinking, prompt }) {
       }
     });
     child.stderr.on("data", (d) => { stderr += d; });
-    child.on("close", (code) => { clearTimeout(timer); resolvePromise({ code, killed, lastText, usage, stderr: stderr.slice(-8000) }); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      herdrSurfaceEnd(surface, code === 0 && !killed ? "idle" : "blocked",
+        killed ? "timed out" : `exit ${code}`);
+      resolvePromise({ code, killed, lastText, usage, stderr: stderr.slice(-8000) });
+    });
   });
 }
 
@@ -477,7 +579,7 @@ async function dispatch(jev, cand) {
   attempts.push(attempt); state.sessionRuns++; saveState();
   gh(["issue", "comment", String(issue.number), "-b", `Orchestrator: dispatching attempt ${attemptNo} to \`${CONFIG.allowlist.providers[0]}/${sel.model}\` (thinking ${sel.thinking}). Selection rule: ${sel.rule}. Task profile: ${sel.profile.domain}, depth ${Number(sel.profile.depth).toFixed(1)}, context ${Number(sel.profile.contextSize).toFixed(1)} (${sel.profile.source}).`]);
 
-  const res = await runWorker({ dir, model: sel.model, thinking: sel.thinking, prompt: workerPrompt(issue, attemptNo, prev, criteria) });
+  const res = await runWorker({ dir, model: sel.model, thinking: sel.thinking, prompt: workerPrompt(issue, attemptNo, prev, criteria), issue });
   attempt.ended = new Date().toISOString();
   attempt.usage = res.usage;
   attempt.report = res.lastText;
@@ -548,7 +650,7 @@ async function reviewOnly(jev, n) {
   saveState();
 }
 
-// Merge gate. Code enforces the hard rules (PR clean/mergeable, checks green, no risk:high /
+// Merge gate. Code enforces the hard rules (PR clean/mergeable, checks green, no
 // needs-human, no secrets or machine paths in diff). Jev answers the semantic questions a
 // reviewer would: is the change complete for the issue, does the PR describe it honestly,
 // does it violate PLAN §2.4/§7 constraints, is anything out of scope. Jev can only block.
@@ -574,7 +676,13 @@ async function mergeReview(jev, n) {
     }
   }
   if (pr.mergeable !== "MERGEABLE" || pr.mergeStateStatus !== "CLEAN") hard.push(`PR state ${pr.mergeable}/${pr.mergeStateStatus}`);
-  if (issue.labels.some((l) => ["risk:high", "needs-human"].includes(l))) hard.push("issue labelled risk:high or needs-human — human merge only");
+  // `needs-human` is absolute: by definition only the owner can resolve it (Jev:
+  // block_when_warranted=0.67, and stale labels are re-validated by revalidateNeedsHuman()
+  // before this point). `risk:high` alone is NOT a merge blocker — it labels sensitive
+  // subject matter, not a dangerous merge. What matters is whether the DIFF touches the
+  // product's own security/permission enforcement; `touches_enforcement` below judges that
+  // from the diff and is treated as a hard block (Jev: security_code_still_gated=0.88).
+  if (issue.labels.includes("needs-human")) hard.push("issue labelled needs-human — owner merge only");
   const { stat, diff } = branchDiff(dir);
   const added = diff.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).join("\n");
   if (/\/home\/[a-z]+\//.test(added)) hard.push("diff adds an absolute home-directory path");
@@ -603,6 +711,16 @@ async function mergeReview(jev, n) {
     honest: noul("Does `pr.body` accurately describe what `diff` contains, without claiming more than was done?", { true: "PR description matches the diff", false: "PR description overstates, omits, or misdescribes the change" }),
     in_scope: noul("Is everything in `diff` within `issue.scope` (no unrelated refactors, extra features, or unrequested files)?", { true: "All changes serve the issue", false: "The diff contains unrelated or unrequested changes" }),
     rule_violation: noul("Does `diff` violate any of `hard_rules`?", { true: "A concrete violation is present in the diff", false: "No violation found" }),
+    // Replaces the old blanket `risk:high` merge block. The question is not whether the
+    // issue's topic is sensitive, but whether THIS diff changes enforcement behaviour.
+    touches_enforcement: noul(
+      "Does `diff` add or change EXECUTABLE code that enforces security, permissions, the model/provider " +
+      "allowlist, spending limits, credential handling, or approval gating — as opposed to specifications, " +
+      "documentation, tests, or code unrelated to enforcement?",
+      {
+        true: "It changes real enforcement behaviour, so a human must review it before merge",
+        false: "It is documentation, specification, tests, or non-enforcement code",
+      }),
     quality: score("How would a careful senior reviewer rate the quality of `diff` for merging into main?", [
       "Would request changes: errors, confusion, or sloppiness that must be fixed first",
       "Acceptable: minor nits only, fine to merge",
@@ -621,8 +739,12 @@ async function mergeReview(jev, n) {
     if (a.in_scope.noul < 0.5) soft.push(`Jev: p(in scope)=${a.in_scope.noul.toFixed(2)}`);
     if (a.rule_violation.noul >= 0.4) soft.push(`Jev: p(rule violation)=${a.rule_violation.noul.toFixed(2)}`);
     if (a.quality.score < 0.75) soft.push(`Jev: quality=${a.quality.score.toFixed(2)} (<0.75)`);
+    // Hard, not soft: a diff that changes enforcement is owner territory regardless of how
+    // clean everything else looks. This is the targeted replacement for the risk:high block.
+    if (a.touches_enforcement.noul >= CONFIG.policy.enforcementBlock)
+      hard.push(`diff changes security/permission enforcement code (Jev p=${a.touches_enforcement.noul.toFixed(2)}) — owner merge only`);
   }
-  const verdict = a ? { complete_min: a.__completeMin, scope_gap: a.scope_gap.noul, honest: a.honest.noul, in_scope: a.in_scope.noul, rule_violation: a.rule_violation.noul, quality: a.quality.score } : null;
+  const verdict = a ? { complete_min: a.__completeMin, scope_gap: a.scope_gap.noul, honest: a.honest.noul, in_scope: a.in_scope.noul, rule_violation: a.rule_violation.noul, touches_enforcement: a.touches_enforcement.noul, quality: a.quality.score } : null;
   const blockers = [...hard, ...soft];
   const summary = `Merge review of ${pr.url} for #${n}\n\nHard checks: ${hard.length ? hard.join("; ") : "all pass"} (pushed=${checks.pushed}, verification exits=${checks.verification.map((v) => v.exit).join(",") || "n/a"}, tests=${checks.testsExit ?? "n/a"})\nJev merge review: ${verdict ? Object.entries(verdict).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(" ") : "unavailable"}\nVerdict: ${blockers.length ? "**NOT MERGED** — " + blockers.join("; ") : "**MERGE**"}`;
   log(summary);
@@ -630,8 +752,24 @@ async function mergeReview(jev, n) {
   if (DRY) { saveState(); return; }
   gh(["pr", "comment", String(pr.number), "-b", summary]);
   if (blockers.length) {
+    // Owner instruction: merge when green and Jev agrees; when Jev does NOT agree, keep
+    // working the issue until it does (Jev: loop_on_jev_disagreement=0.87), bounded so a
+    // permanently-failing issue cannot burn tokens forever (loop_needs_bound=0.86).
+    // The blockers become the next attempt's feedback; readyIssues() re-admits the issue
+    // because `merge-blocked` is not `awaiting-review`.
     attempt.outcome = "merge-blocked"; attempt.feedback = blockers.join("\n"); saveState();
-    await escalateOrPark(jev, issue, blockers.join("\n"), state.attempts[n] ?? []);
+    const all = state.attempts[n] ?? [];
+    const ownerOnly = hard.some((h) => /needs-human|enforcement/.test(h));
+    if (ownerOnly) {
+      log(`#${n}: merge blocked for the owner — not looping`);
+      await escalateOrPark(jev, issue, blockers.join("\n"), all);
+    } else if (all.length >= CONFIG.workers.maxAttemptsPerIssue) {
+      log(`#${n}: merge blocked and attempts exhausted`);
+      await escalateOrPark(jev, issue, blockers.join("\n"), all);
+    } else {
+      log(`#${n}: merge blocked — looping back to a worker with the blockers as feedback`);
+      gh(["issue", "comment", String(n), "-b", `Orchestrator: merge review did not pass. Re-dispatching a worker with these blockers as feedback rather than parking the PR.\n\n${blockers.map((b) => "- " + b).join("\n")}`]);
+    }
     return;
   }
   gh(["pr", "merge", String(pr.number), "--squash", "--delete-branch"]);
@@ -658,10 +796,14 @@ async function main() {
   saveState();
 
   let runsThisSession = 0;
+  let revalidated = false;
   while (true) {
     if (runsThisSession >= MAX_RUNS) { log(`run budget reached (${MAX_RUNS})`); break; }
     if (state.sessionTokens >= CONFIG.budgets.maxWorkerTokensPerSession) { log("worker token budget reached"); break; }
+    syncMain();
     const issues = fetchIssues();
+    // Once per session, before trusting any `needs-human` label to exclude work.
+    if (!revalidated) { revalidated = true; const c = await revalidateNeedsHuman(jev, issues); if (c) log(`revalidation cleared ${c} stale needs-human label(s)`); }
     const ready = readyIssues(issues, defs);
     if (!ready.length) { log("nothing ready (all remaining issues are blocked, needs-human, awaiting review, or attempt-limited)"); break; }
     const batch = ready.slice(0, CONFIG.workers.concurrency);
@@ -671,7 +813,7 @@ async function main() {
     if (DRY || ONCE) break;
     if (results.every((r) => r === null)) break;
   }
-  if (!DRY) sweepWorktrees();
+  if (!DRY) { sweepWorktrees(); syncMain(); }
   log(`Jev usage: ${JSON.stringify(jev.usage)}; worker tokens this session: ${state.sessionTokens}`);
 }
 

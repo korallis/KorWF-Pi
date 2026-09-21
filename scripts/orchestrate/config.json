@@ -55,8 +55,9 @@
     "maxWorkerTokensPerSession": 8000000
   },
   "policy": {
-    "$comment": "merge: 'never' (open PRs only, human merges) | 'jev-review' (after the evidence gate passes, run the merge review: hard checks + Jev complete/honest/in-scope/violation/quality; squash-merge only if all pass, otherwise needs-human). Never merges risk:high.",
+    "$comment": "merge: 'never' (open PRs only, human merges) | 'jev-review' (after the evidence gate passes, run the merge review: hard checks + Jev complete/honest/in-scope/violation/enforcement/quality; squash-merge only if all pass). A blocked review loops back to a worker with the blockers as feedback until attempts run out. Owner-only blocks (needs-human label, or a diff that changes enforcement code) never loop — they escalate. See ADR 0005.",
     "merge": "jev-review",
+    "enforcementBlock": 0.5,
     "gapThresholdPass": 0.7,
     "gapThresholdFail": 0.4,
     "capCooldownMinutes": 15,
