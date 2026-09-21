@@ -7,7 +7,7 @@
  * defaults applied) and of the raw user input (everything optional).
  *
  * Defaults and the rationale for each live in `docs/config-reference.md`.
- * Cross-field rules (V1–V9 in that document) are enforced by the validator
+ * Cross-field rules (V1–V12 in that document) are enforced by the validator
  * in `src/config/` (issue #21), not here.
  *
  * Shared enums are re-used from `src/storage/records.ts` so config and
@@ -97,29 +97,51 @@ export type ApprovalPolicyPerMode = Readonly<Record<WorkflowMode, ApprovalDecisi
 /** High-risk classes are `stop` in every mode; the schema pins them with `const`. */
 export type HighRiskPolicy = Readonly<Record<WorkflowMode, "stop">>;
 
-/** Configurable (low/medium-risk) action classes. */
+/** Never-auto classes may be `queue` or `stop` in any mode (PLAN §3.C); the schema uses an enum. */
+export type NoAutoPolicy = Readonly<Record<WorkflowMode, Exclude<ApprovalDecision, "auto">>>;
+
+/**
+ * Configurable (low/medium-risk) action classes. The vocabulary, the default
+ * table and the classifier live in `src/workflow/approval-classes.ts` (#15);
+ * these unions mirror it and `schema.json` one-to-one.
+ */
 export type ConfigurableApprovalClass =
   | "read_repository"
   | "edit_worktree"
+  | "delete_file"
+  | "write_outside_ownership"
+  | "modify_project_config"
   | "run_checks"
   | "run_shell"
+  | "run_migration"
   | "install_dependencies"
+  | "add_dependency"
+  | "network_access"
   | "local_commit"
+  | "push_own_branch"
   | "spawn_worker"
   | "model_fallback"
+  | "model_substitute_more_expensive"
+  | "spend_over_estimate"
   | "complete_task";
+
+/** Never `auto` (PLAN §3.C: no silent scope expansion or replan). */
+export type NoAutoApprovalClass = "scope_change" | "replan";
 
 /** High-risk action classes (PLAN §7): explicit approval regardless of mode. */
 export type HighRiskApprovalClass =
   | "destructive_cleanup"
+  | "destructive_git"
   | "remote_push"
   | "deployment"
+  | "publishing"
   | "credential_access"
-  | "publishing";
+  | "modify_policy";
 
-export type ApprovalClass = ConfigurableApprovalClass | HighRiskApprovalClass;
+export type ApprovalClass = ConfigurableApprovalClass | NoAutoApprovalClass | HighRiskApprovalClass;
 
 export type ApprovalClasses = Readonly<Record<ConfigurableApprovalClass, ApprovalPolicyPerMode>> &
+  Readonly<Record<NoAutoApprovalClass, NoAutoPolicy>> &
   Readonly<Record<HighRiskApprovalClass, HighRiskPolicy>>;
 
 export interface ApprovalsConfig {

@@ -424,4 +424,6 @@ fork/resume the coordinator:
 - #13's [transition contract](state-machine.md) defines the lifecycle and maps canonical
   phase `gating`/`done`/`paused` to storage substages. `paused_approval` is an additive
   non-cap pause status; detailed pause reasons and saved substages belong to #23's store.
-- #15 decides whether a `riskClass` change requires re-approval; the types allow either.
+- Resolved by #15 (docs/approval-classes.md §6.5): a `riskClass` change requires re-approval by
+  rule, not by revision — an approval with `riskClass < Task.riskClass` fails the gate's
+  "valid approval" predicate; nothing is invalidated and nothing is resurrected.
