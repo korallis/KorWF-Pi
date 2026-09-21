@@ -45,3 +45,45 @@ function errorResult(code: JevTransportError["code"], retryable = false): JevEva
     elapsedMs: 0,
   };
 }
+
+function neverSettles<T>(): Promise<T> {
+  return new Promise<T>(() => {
+    /* deliberately hangs */
+  });
+}
+
+describe("AC1: withDeadline abandons a hung run and returns a typed timeout", () => {
+  it("resolves normally when run finishes before the deadline", async () => {
+    const promise = withDeadline(async () => "done", { deadlineMs: 1000 });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(promise).resolves.toBe("done");
+  });
+
+  it("a run that never settles is abandoned at the deadline with DeadlineExceededError", async () => {
+    const promise = withDeadline(() => neverSettles<string>(), { deadlineMs: 1000 });
+    const assertion = expect(promise).rejects.toBeInstanceOf(DeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+  });
+
+  it("aborts the signal passed to run when the deadline fires", async () => {
+    let seenSignal: AbortSignal | undefined;
+    const promise = withDeadline((signal) => {
+      seenSignal = signal;
+      return neverSettles<string>();
+    }, { deadlineMs: 500 });
+    const assertion = expect(promise).rejects.toBeInstanceOf(DeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(500);
+    await assertion;
+    expect(seenSignal?.aborted).toBe(true);
+  });
+
+  it("does not abandon a run that finishes exactly as the deadline fires", async () => {
+    const promise = withDeadline(
+      () => new Promise<string>((resolve) => setTimeout(() => resolve("just in time"), 100)),
+      { deadlineMs: 1000 },
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(promise).resolves.toBe("just in time");
+  });
+});
