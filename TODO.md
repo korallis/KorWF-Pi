@@ -23,7 +23,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Define task and phase state transitions, `paused(cap)`, approval invalidation.
 - [ ] Write the task gate and phase gate formulas (PLAN §2.4–2.5) as testable specs.
 - [ ] Define unattended approval classes (auto / queue / stop) (PLAN §2.6).
-- [ ] Select worker interface (subagent example vs SDK vs RPC).
+- [x] Select worker interface (subagent example vs SDK vs RPC).
 - [ ] Record architecture decisions and threat boundaries.
 - [ ] Write scenarios 2.8 as acceptance test outlines.
 
