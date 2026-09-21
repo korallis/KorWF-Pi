@@ -204,11 +204,13 @@ export interface CircuitBreakerOptions {
 }
 
 /**
- * Standard closed/open/half-open breaker, per host (one instance per Jev
- * base URL / transport). Trips to `open` after `failureThreshold`
- * consecutive failures; after `resetTimeoutMs` it allows a bounded number of
- * probe calls (`half_open`); a probe success closes it, a probe failure
- * reopens it and restarts the timeout.
+ * Standard closed/open/half-open breaker for a single host. One instance
+ * tracks one endpoint's health; `CircuitBreakerRegistry` below is what keys
+ * a *set* of these by host so one failing endpoint's breaker never affects
+ * another's. Trips to `open` after `failureThreshold` consecutive failures;
+ * after `resetTimeoutMs` it allows a bounded number of probe calls
+ * (`half_open`); a probe success closes it, a probe failure reopens it and
+ * restarts the timeout.
  *
  * Success/failure are reported by the caller via `onSuccess`/`onFailure`
  * after `beforeCall` grants permission — this class does not itself know how
@@ -290,6 +292,42 @@ export class CircuitBreaker {
       this.#state = "half_open";
       this.#halfOpenInFlight = 0;
     }
+  }
+}
+
+/** Host key used when a caller does not identify which endpoint it is calling. */
+export const DEFAULT_BREAKER_HOST = "default";
+
+/**
+ * Keys a `CircuitBreaker` per host, all built from the same
+ * `CircuitBreakerOptions`. This is the "per host" half of issue #26's scope:
+ * a failing endpoint's breaker trips only that host's entry, never any
+ * other host sharing the registry, and `snapshot()` gives a future
+ * `/korwf status` one call to render every known host's state.
+ */
+export class CircuitBreakerRegistry {
+  readonly #options: CircuitBreakerOptions;
+  readonly #breakers = new Map<string, CircuitBreaker>();
+
+  constructor(options: CircuitBreakerOptions) {
+    this.#options = options;
+  }
+
+  /** The breaker for `host`, created on first use and reused after. */
+  get(host: string): CircuitBreaker {
+    let breaker = this.#breakers.get(host);
+    if (breaker === undefined) {
+      breaker = new CircuitBreaker(this.#options);
+      this.#breakers.set(host, breaker);
+    }
+    return breaker;
+  }
+
+  /** Read-only status of every host this registry has ever been asked for. */
+  snapshot(): Readonly<Record<string, BreakerStatus>> {
+    const out: Record<string, BreakerStatus> = {};
+    for (const [host, breaker] of this.#breakers) out[host] = breaker.status();
+    return out;
   }
 }
 
