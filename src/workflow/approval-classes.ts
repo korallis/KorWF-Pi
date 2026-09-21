@@ -188,3 +188,43 @@ export const APPROVAL_CLASS_TABLE = [
     act: "Mark a task done after the task gate (docs/gates.md C1–C5) has passed.",
     why: "The gate is the guard; this class decides only whether a human confirms the transition.",
     defaults: pm(S, S, Q, A), payload: ["gateReceiptId"] },
+  // --- never auto (PLAN §3.C: no silent scope expansion) -------------------
+  { id: "scope_change", tier: "no_auto", risk: "medium",
+    act: "Change a task's goal, acceptance criteria or exclusions, or add/remove tasks in the running phase.",
+    why: "Reversible, but PLAN §3.C forbids silent scope expansion; invalidates approvals (plan_revision_changed).",
+    defaults: pm(S, S, Q, Q), payload: ["planRevisionFrom", "planRevisionTo", "diffSummary"] },
+  { id: "replan", tier: "no_auto", risk: "medium",
+    act: "Regenerate the phase plan or task decomposition after a failure or gap.",
+    why: "Reversible, but it is a product decision the user must see; never auto in any mode.",
+    defaults: pm(S, S, Q, Q), payload: ["reason", "planRevisionFrom", "proposedTaskCount"] },
+  // --- high risk (PLAN §7): stop in every mode, not configurable ------------
+  { id: "destructive_cleanup", tier: "high_risk", risk: "high",
+    act: "Delete or overwrite anything not recoverable from git: untracked/ignored files, directories outside the worktree, other worktrees, stores.",
+    why: "Irreversible.", defaults: STOP_ALL, payload: ["paths"] },
+  { id: "destructive_git", tier: "high_risk", risk: "high",
+    act: "Rewrite or discard history that is shared or not owned by this workflow: force-push, branch -D of a non-task branch, reset --hard past pushed commits, reflog expiry, tag deletion.",
+    why: "Irreversible for other people; PLAN §7 'force-pushing or rewriting shared history'.", defaults: STOP_ALL, payload: ["command", "refs"] },
+  { id: "remote_push", tier: "high_risk", risk: "high",
+    act: "Push to a ref the workflow does not own (main/default branch, shared branches, another workflow's branch) or to a remote other than the configured one.",
+    why: "Consumers receive it; may be irreversible downstream. The agent's own task branch is push_own_branch.", defaults: STOP_ALL, payload: ["branch", "remote", "sha"] },
+  { id: "deployment", tier: "high_risk", risk: "high",
+    act: "Any action that changes a running or shared environment: deploy, migrate a shared database, change infrastructure.",
+    why: "Consumer impact; often irreversible.", defaults: STOP_ALL, payload: ["target", "command"] },
+  { id: "publishing", tier: "high_risk", risk: "high",
+    act: "Publish or release: create/push tags, publish to a registry, create a release, anything consumers receive.",
+    why: "Consumers receive it; registries do not un-publish.", defaults: STOP_ALL, payload: ["artifact", "target"] },
+  { id: "credential_access", tier: "high_risk", risk: "high",
+    act: "Read, write, print or transmit a secret, key, token or credential store, or a privacy deny path.",
+    why: "Credential.", defaults: STOP_ALL, payload: ["paths", "secretKind"] },
+  { id: "modify_policy", tier: "high_risk", risk: "high",
+    act: "Change KorWF config or policy: approval classes, allowlist, budgets, privacy lists, execution isolation, or this table.",
+    why: "Policy loosening; the system never weakens its own permission, allowlist or spending policy (AGENTS.md §4).",
+    defaults: STOP_ALL, payload: ["paths", "keysChanged"] },
+] as const satisfies readonly ApprovalClassDefinition[];
+
+export type ApprovalClassTable = Readonly<Record<ApprovalClassId, ApprovalPolicyPerMode>>;
+
+/** `classes` defaults as plain data, in the shape of `config.approvals.classes`. */
+export const DEFAULT_APPROVAL_CLASSES: ApprovalClassTable = Object.fromEntries(
+  APPROVAL_CLASS_TABLE.map((c) => [c.id, c.defaults]),
+) as ApprovalClassTable;
