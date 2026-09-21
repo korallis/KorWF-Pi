@@ -123,7 +123,14 @@ function readyIssues(issues, defs) {
     if (blockers.length) continue;
     const attempts = state.attempts[i.number] ?? [];
     const cap = CONFIG.workers.maxAttemptsPerIssue + (RETRY_STUCK && i.labels.includes("orchestrator-stuck") ? CONFIG.workers.maxAttemptsPerIssue : 0);
-    if (attempts.length >= cap) continue;
+    // A `truncated` attempt produced no work and no usable signal: the turn hit the
+    // output-token ceiling before its tool call. Counting it would let a harness limit
+    // burn an issue's whole budget (it burnt six on #14). Bounded separately so a
+    // persistently truncating issue still cannot loop forever.
+    const truncated = attempts.filter((a) => a.outcome === "truncated").length;
+    const real = attempts.length - truncated;
+    if (truncated >= cap) continue; // every attempt truncating = a real problem, stop
+    if (real >= cap) continue;
     if (attempts.some((a) => a.outcome === "awaiting-review")) continue; // PR open, waiting on Lee
     const dependents = Object.values(defs).filter((x) => x.deps.includes(i.key)).length;
     out.push({ issue: i, def: d, dependents });
@@ -211,7 +218,7 @@ async function profileAndSelect(jev, issue, def, attempt, prev) {
   // Deterministic rather than Jev-gated: it is an evidence count, not a judgment, and it
   // must also hold when Jev is unavailable.
   const repeatedFailures = (prevAttempts) => prevAttempts
-    .filter((a) => a.model === model && ["gap", "timeout", "error"].includes(a.outcome)).length;
+    .filter((a) => a.model === model && ["gap", "timeout", "error", "truncated"].includes(a.outcome)).length;
   const priorAttempts = state.attempts[issue.number] ?? [];
   if (repeatedFailures(priorAttempts) >= 2) {
     const family = (m) => m.split(/[-.]/)[0]; // claude-*, gpt-*, kimi-*, zai-*, grok-*
@@ -457,6 +464,18 @@ ${criteria.map((c) => `   - ${c}`).join("\n")}
 6. \`git push -u origin HEAD\`, then open a PR with \`gh pr create --base main --title "<type>: <summary> (#${issue.number})" --body-file <file>\` using the AGENTS.md §6 template with \`Closes #${issue.number}\`. If a PR for this branch already exists, update it with \`gh pr edit\`.
 7. Post a progress comment on the issue before any long step, and a final comment summarising what was done.
 
+**Write incrementally — this is the most common way workers here fail.** Every assistant
+turn has a hard output-token limit (16384, shared with reasoning at \`--thinking high\`).
+A turn that tries to compose a large document or source file in one go is cut off at
+\`stopReason: "length"\` **before its tool call is emitted**, so nothing is written to disk
+and the whole attempt is lost. Six consecutive attempts on issue #14 failed this way.
+Therefore:
+- Create each file with a small \`write\`, then extend it with successive \`edit\` calls.
+  Never emit more than a few hundred lines in a single tool call.
+- \`git add\` and commit after each file is complete, so progress survives a truncated turn.
+- Keep prose in your replies to one or two lines; narration burns the same budget the
+  tool call needs. Do not restate the plan or summarise what you are about to do.
+
 Constraints (non-negotiable): no credentials or machine-specific paths in shipped code; no bypasses of checks; no live model or TypeSafe API calls (you have no key); do not touch files outside this worktree; do not merge the PR; never run \`git push --force\`; never modify .github workflows to weaken checks.
 You cannot ask questions — if something is genuinely undecidable, make the most conservative choice, document it under "Decisions and deviations" in the PR, and mention it in your final report.
 ${handoff}
@@ -539,7 +558,7 @@ function runWorker({ dir, model, thinking, prompt, issue }) {
       "-p", "--mode", "json", "--no-session", "--", prompt,
     ], { cwd: dir, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
 
-    let stdout = "", stderr = "", lastText = "", usage = null, killed = false;
+    let stdout = "", stderr = "", lastText = "", usage = null, killed = false, stopReason = null;
     const timer = setTimeout(() => { killed = true; try { process.kill(-child.pid, "SIGTERM"); } catch {} setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch {} }, 10_000); }, CONFIG.workers.timeoutMinutes * 60_000);
     child.stdout.on("data", (d) => {
       stdout += d;
@@ -552,6 +571,12 @@ function runWorker({ dir, model, thinking, prompt, issue }) {
             const t = (ev.message.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
             if (t.trim()) lastText = t;
             if (ev.message.usage) usage = ev.message.usage;
+            // `length` means the turn hit the output-token ceiling mid-thought, so any
+            // tool call it was about to make never happened. Without capturing this the
+            // failure is invisible: the attempt looks like a worker that simply stopped
+            // early, and the gate blames the model or the issue. Diagnosed on #14 after
+            // six attempts across two model families wrote zero files.
+            if (ev.message.stopReason) stopReason = ev.message.stopReason;
           }
           if (ev.type === "tool_execution_end" && ev.toolName === "bash" && ev.isError) stderr += `\n[tool error] ${String(ev.result).slice(0, 500)}`;
         } catch {}
@@ -562,7 +587,7 @@ function runWorker({ dir, model, thinking, prompt, issue }) {
       clearTimeout(timer);
       herdrSurfaceEnd(surface, code === 0 && !killed ? "idle" : "blocked",
         killed ? "timed out" : `exit ${code}`);
-      resolvePromise({ code, killed, lastText, usage, stderr: stderr.slice(-8000) });
+      resolvePromise({ code, killed, lastText, usage, stopReason, stderr: stderr.slice(-8000) });
     });
   });
 }
@@ -629,6 +654,12 @@ async function dispatch(jev, cand) {
   attempt.ended = new Date().toISOString();
   attempt.usage = res.usage;
   attempt.report = res.lastText;
+  // Persist the diagnostics that make a failed attempt explicable. `stderr` and
+  // `stopReason` were previously dropped, which is why six identical #14 failures could
+  // not be told apart from ordinary under-performance.
+  attempt.stopReason = res.stopReason ?? null;
+  attempt.exitCode = res.code ?? null;
+  if (res.stderr?.trim()) attempt.stderr = res.stderr.slice(-2000);
   state.sessionTokens += res.usage?.totalTokens ?? 0;
 
   const cap = detectCap(res);
@@ -641,6 +672,21 @@ async function dispatch(jev, cand) {
     return "retry";
   }
   if (res.killed) { attempt.outcome = "timeout"; attempt.feedback = `Previous attempt exceeded ${CONFIG.workers.timeoutMinutes} min. Resume from the worktree; commit and push smaller increments.`; saveState(); log(`#${issue.number}: timeout`); return "retry"; }
+
+  // A turn cut off at the output-token ceiling never emitted its tool call, so the work
+  // was not done and the final JSON report is missing. This is a harness failure, not a
+  // quality failure: do not let it consume the issue's attempt budget or feed the model
+  // "you did not meet the criteria" feedback, which is untrue and unactionable.
+  if (res.stopReason === "length") {
+    attempt.outcome = "truncated";
+    attempt.feedback = "Your previous turn was cut off at the output-token limit before its "
+      + "tool call was emitted, so nothing was written. Work in much smaller steps: create "
+      + "each file with a short `write`, extend it with successive `edit` calls, commit after "
+      + "each file, and keep replies to one or two lines.";
+    saveState();
+    log(`#${issue.number}: TRUNCATED (stopReason=length, ${res.usage?.totalTokens ?? 0} tokens) — retrying with incremental-write guidance, attempt not counted`);
+    return "retry";
+  }
 
   const report = parseReport(res.lastText);
   const checks = deterministicChecks(issue, dir, branch, parseVerification(issue.body));
