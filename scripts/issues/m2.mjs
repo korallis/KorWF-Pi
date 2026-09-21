@@ -55,7 +55,7 @@ Every later issue's Verification section runs \`npm test\`. Set up the test runn
       "Unit tests under `test/unit`, integration under `test/integration`, scenario stubs under `test/scenarios` (from Stage 1).",
       "A `test/helpers/` module with a temp-dir fixture and a fake clock.",
       "GitHub Actions workflow: typecheck, lint, test on ubuntu and macos.",
-      "Pre-commit-style secret scan script `scripts/check-secrets.sh` (grep for `apikey_`, `sk-`, `ghp_`, `JEV_API_KEY=`) wired into CI.",
+      "Pre-commit-style secret scan script `scripts/check-secrets.sh` (grep for `apikey_`, `sk-`, `ghp_`, `JEV_API_KEY=`) wired into CI.", // check-secrets:allow
     ],
     deliverables: ["`.github/workflows/ci.yml`.", "`test/helpers/*`.", "`scripts/check-secrets.sh`.", "`docs/adr/00xx-toolchain.md`."],
     acceptance: ["`npm test` runs at least one real unit test and one integration test and exits 0.", "CI passes on a PR.", "Secret scan fails CI if a fake key is committed (prove with a scratch branch, then delete it)."],
