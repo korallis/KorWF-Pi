@@ -20,7 +20,6 @@ import {
   type JevEvaluateOptions,
   type JevEvaluateResult,
   type JevTransport,
-  type SystemOneRequest,
   type SystemOneResponseRaw,
 } from "./transport.ts";
 

@@ -75,7 +75,7 @@ export const SHIPPED_DENY_PATH_NOTES: Readonly<Record<string, string>> = Object.
   "**/credentials.json": "Conventional name for OAuth client secrets and service-account keys.",
   "**/service-account*.json": "Google service-account keys contain a PEM private key inline.",
   "**/secrets.*": "Files named for their contents, in any format.",
-  "**/*.secret": "Same, by extension.",
+  "**/*.secret": "Files declaring their contents by extension rather than by name.",
   "**/*.keystore": "Android and Java signing keystores.",
   "**/.korwf/**": "KorWF-Pi's own state: config (which may carry a key source), the SQLite store, traces and artefacts.",
   "**/node_modules/**": "Third-party code: never relevant state, and large enough to blow every outbound budget.",
@@ -87,8 +87,8 @@ export const SHIPPED_DENY_PATH_NOTES: Readonly<Record<string, string>> = Object.
   "**/coverage/**": "Coverage reports: derived, bulky, and they mirror source content.",
   "**/*.log": "Logs accumulate tokens, headers and stack traces from every tool that wrote them.",
   "**/*.sqlite": "Databases are opaque binaries; sending one is never minimal state.",
-  "**/*.sqlite3": "Same, alternate extension.",
-  "**/*.db": "Same, generic extension.",
+  "**/*.sqlite3": "The same databases under the other conventional extension.",
+  "**/*.db": "The same databases under the generic extension.",
 });
 
 /**
@@ -127,9 +127,10 @@ export function normalisePath(path: string): string {
   let out = path.replace(/\\/g, "/");
   out = out.replace(/^([A-Za-z]):\//, (_m, drive: string) => `${drive.toLowerCase()}:/`);
   out = out.replace(/\/{2,}/g, "/");
-  out = out.replace(/(^|\/)\.(?=\/)/g, "$1").replace(/\/{2,}/g, "/");
+  while (out.startsWith("./")) out = out.slice(2);
+  out = out.replace(/\/\.(?=\/)/g, "").replace(/\/{2,}/g, "/");
+  if (out.endsWith("/.")) out = out.slice(0, -2);
   if (out.length > 1 && out.endsWith("/")) out = out.slice(0, -1);
-  if (out.startsWith("./")) out = out.slice(2);
   return out;
 }
 
