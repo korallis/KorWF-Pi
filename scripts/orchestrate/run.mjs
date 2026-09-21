@@ -119,7 +119,10 @@ function fetchIssues() {
 
 async function loadDefs() {
   const defs = {};
-  for (const f of ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]) {
+  // `prd` holds issues derived from docs/PRD.md rather than a PLAN stage. They carry a
+  // `milestone` like any other def, so ordering is unaffected; without this they exist
+  // only on GitHub and readyIssues()/select-model skip them for want of a definition.
+  for (const f of ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "prd"]) {
     const mod = await import(`../issues/${f}.mjs`);
     for (const d of mod.default) defs[d.key] = d;
   }

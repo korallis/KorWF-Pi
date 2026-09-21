@@ -108,5 +108,8 @@
   "m8-docs": 107,
   "m8-install": 108,
   "m8-publish-eval": 109,
-  "m8-release": 110
+  "m8-release": 110,
+  "prd-route-identity": 125,
+  "prd-output-budget": 124,
+  "prd-route-health": 123
 }
