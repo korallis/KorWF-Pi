@@ -1,0 +1,56 @@
+{
+  "$comment": "Bootstrap orchestrator config (development-time only; PLAN §11). Edit freely. Nothing here is shipped product code.",
+  "repo": "korallis/KorWF-Pi",
+  "jev": {
+    "model": "jev-latest",
+    "tokenBudget": 400000
+  },
+  "allowlist": {
+    "providers": ["mac-mini"],
+    "models": [
+      "claude-fable-5-1",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "gpt-5.5",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-6-astra",
+      "grok-4.5",
+      "kimi-k3",
+      "zai-glm-5.3"
+    ]
+  },
+  "staticFallbackOrder": ["claude-sonnet-5", "gpt-5.5", "claude-opus-5", "gpt-5.6-sol", "kimi-k3"],
+  "cards": {
+    "$comment": "Aptitude hints Jev ranks against. Registry facts from ~/.pi/agent/models.json; aptitude text is editable and advisory.",
+    "claude-fable-5-1": "Claude family, 128K context, no image input. Aptitudes: careful long-form writing, specifications, ADRs, documentation with precise structure.",
+    "claude-opus-5": "Claude family, 128K context, no image input. Aptitudes: deep reasoning, novel design, subtle concurrency and security logic, large refactors. Slowest of the Claude family.",
+    "claude-sonnet-5": "Claude family, 128K context, no image input. Aptitudes: general TypeScript implementation, tests, tool use, fast turnaround on standard feature work.",
+    "gpt-5.5": "GPT family, 272K context, image input. Aptitudes: large-context work across many files, standard implementation, reading long docs.",
+    "gpt-5.6-luna": "GPT family, 272K context, image input. Aptitudes: unrated beyond family traits (large context, broad coding).",
+    "gpt-5.6-sol": "GPT family, 272K context, image input. Aptitudes: unrated beyond family traits (large context, broad coding).",
+    "gpt-5.6-terra": "GPT family, 272K context, image input. Aptitudes: unrated beyond family traits (large context, broad coding).",
+    "gpt-6-astra": "GPT family, 272K context, image input, always reasons (no 'off'). Aptitudes: hardest reasoning and design problems; most expensive in time.",
+    "grok-4.5": "Grok family, 128K context. Aptitudes: unrated.",
+    "kimi-k3": "Kimi family, 128K context. Aptitudes: unrated; reasonable general coding.",
+    "zai-glm-5.3": "GLM family, 128K context. Aptitudes: unrated; reasonable general coding."
+  },
+  "workers": {
+    "concurrency": 2,
+    "timeoutMinutes": 45,
+    "maxAttemptsPerIssue": 3,
+    "worktreeRoot": "../korwf-worktrees"
+  },
+  "budgets": {
+    "maxWorkerRunsPerSession": 30,
+    "maxWorkerTokensPerSession": 8000000
+  },
+  "policy": {
+    "$comment": "merge: 'never' (open PRs only) | 'auto-low-risk' (squash-merge PRs whose deterministic checks pass, Jev finds no gap, and the issue is not risk:high or needs-human).",
+    "merge": "never",
+    "gapThresholdPass": 0.7,
+    "gapThresholdFail": 0.4,
+    "capCooldownMinutes": 15
+  }
+}
