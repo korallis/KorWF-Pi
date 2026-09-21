@@ -150,6 +150,35 @@ Silence is normal: a spec issue runs 10–40 minutes with no log line. **Never r
 orchestrator or kill a worker to "fix" apparent inactivity** without mtime evidence — it
 destroys the attempt in flight.
 
+## 3.1 Known failure: output-token truncation (`stopReason: "length"`)
+
+**Symptom.** Repeated attempts "fail the gate" with a clean worktree: no files written, a
+final report of 30–100 characters ending mid-sentence, no fenced JSON block, and a high
+`overclaims` score. Different models fail identically.
+
+**Cause.** Every turn has a 16384 output-token ceiling, shared with reasoning at
+`--thinking high`. A worker that tries to compose a whole document or source file in one
+tool call is cut off **before the tool call is emitted**, so nothing reaches disk. This
+cost six attempts and ~400k tokens on #14 across two model families before it was found.
+
+**Do not misread it.** The gate will say "unmet criteria" and "overclaims 0.92". Both are
+artefacts of an empty worktree. The worker did not overclaim; it was truncated. Escalating
+this as a quality problem, or as `needs-human`, is wrong — it is a harness failure.
+
+**Diagnose in one step:**
+
+```bash
+jq -r '.attempts["<n>"][] | "\(.model) \(.outcome) stop=\(.stopReason) chars=\(.report|length)"' .orchestrate/state.json
+```
+
+`stop=length` with `chars` under ~200 is this bug. If `stopReason` is absent the attempt
+predates a1ef22c — re-run one attempt to capture it.
+
+**Handled automatically now:** truncation is outcome `truncated`, does not consume the
+attempt budget, does not feed false "you missed the criteria" feedback, and switches model
+family after two occurrences. If you see it persist, the prompt is asking for too much in
+one turn — split the issue, do not raise the budget.
+
 ## 4. Hard rules (do not let a long session erode these)
 
 1. Only `mac-mini` models from `config.json` `allowlist.models`. Never fall back to another
