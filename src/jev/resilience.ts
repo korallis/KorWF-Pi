@@ -37,6 +37,16 @@ export interface WithDeadlineOptions {
   readonly now?: () => number;
 }
 
+/**
+ * Run `run` with an `AbortSignal` that fires at `deadlineMs`, combined with
+ * `options.signal` when given. Guarantees resolution within `deadlineMs`
+ * (plus a tick) **even if `run` never settles**: a genuinely hung transport
+ * that ignores its abort signal is abandoned via `Promise.race`-style
+ * settlement rather than awaited forever, and the caller receives a typed
+ * `DeadlineExceededError` (issue #26 AC1 "a hung transport is abandoned at
+ * the deadline"). The abandoned promise, if it later settles, is ignored —
+ * this is the same trade-off `AbortController` users always make.
+ */
 export async function withDeadline<T>(
   run: (signal: AbortSignal) => Promise<T>,
   options: WithDeadlineOptions,
@@ -50,22 +60,30 @@ export async function withDeadline<T>(
   const signals = [controller.signal, ...(options.signal ? [options.signal] : [])];
   const combined = signals.length === 1 ? signals[0]! : AbortSignal.any(signals);
 
-  let timedOut = false;
-  const timer = setTimeoutFn(() => {
-    timedOut = true;
-    controller.abort();
-  }, options.deadlineMs);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeoutFn(() => {
+      if (settled) return;
+      settled = true;
+      controller.abort();
+      reject(new DeadlineExceededError(options.deadlineMs, now() - start));
+    }, options.deadlineMs);
 
-  try {
-    return await run(combined);
-  } catch (err) {
-    if (timedOut) {
-      throw new DeadlineExceededError(options.deadlineMs, now() - start);
-    }
-    throw err;
-  } finally {
-    clearTimeoutFn(timer);
-  }
+    run(combined).then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeoutFn(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeoutFn(timer);
+        reject(err);
+      },
+    );
+  });
 }
 
 // ---------------------------------------------------------------------------
