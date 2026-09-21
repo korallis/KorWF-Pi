@@ -128,4 +128,169 @@ export interface ApprovalsConfig {
   readonly classes: ApprovalClasses;
 }
 
-// --- sections are appended below ---
+// ---------------------------------------------------------------------------
+// privacy
+// ---------------------------------------------------------------------------
+
+export interface OutboundLimits {
+  /** Largest single file excerpt sent to Jev or a model provider (bytes). */
+  readonly maxSnippetBytes: number;
+  readonly maxSnippetsPerRequest: number;
+  /** Hard cap on outbound request body size (bytes). */
+  readonly maxRequestBytes: number;
+  /** Send project-relative paths with snippets. Absolute paths are never sent. */
+  readonly sendFilePaths: boolean;
+  /** Include remote URL / repo name in Jev context. Off: only a hash. */
+  readonly sendRepoIdentity: boolean;
+}
+
+export interface RawLoggingConfig {
+  readonly enabled: boolean;
+  readonly retentionDays: number;
+  /** Fixed `true`: deny patterns are applied before writing raw logs. */
+  readonly redactBeforeWrite: true;
+}
+
+/** `privacy` (PLAN §7). `denyPaths`/`denyPatterns` are supersets of the shipped minimum. */
+export interface PrivacyConfig {
+  /** Path globs never read into outbound context or logs. ⊇ `ShippedDenyPaths`. */
+  readonly denyPaths: readonly string[];
+  /** Content regexes (ECMAScript, flags `iu`, per line). ⊇ `ShippedDenyPatterns`. */
+  readonly denyPatterns: readonly string[];
+  /** Explicit per-project carve-outs; validator rule V7. */
+  readonly allowPaths: readonly string[];
+  readonly outbound: OutboundLimits;
+  readonly rawLogging: RawLoggingConfig;
+  readonly firstUseDisclosure: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// fallback
+// ---------------------------------------------------------------------------
+
+/** On a cap mid-task: hand off (packet + intact worktree) or restart (PLAN §3.D). */
+export type MidTaskPolicy = "handoff" | "restart";
+
+export type DwellPolicy = "remainder_of_task" | "remainder_of_phase" | "minutes";
+
+export interface FallbackConfig {
+  /** Task kind → policy. `default` always present. */
+  readonly midTaskPolicy: { readonly default: MidTaskPolicy } & Readonly<
+    Partial<Record<TaskKind, MidTaskPolicy>>
+  >;
+  readonly dwell: DwellPolicy;
+  /** Only used when `dwell === "minutes"`. */
+  readonly dwellMinutes: number;
+  /** Wait for the primary if its cap clears within N minutes. 0 = never wait. */
+  readonly preferWaitIfResetWithinMinutes: number;
+  /** Fixed `true` (PLAN §3.D recovery rule). */
+  readonly retryPrimaryAtTaskBoundary: true;
+  /** Ordered model refs used when Jev is unavailable. ⊆ effective allowlist (V1). */
+  readonly staticOrder: readonly ModelRef[];
+  /** Fixed: all candidates capped → pause the phase. */
+  readonly allCappedBehaviour: "pause_phase";
+  /** Fixed `false`: pins are never overridden without asking. */
+  readonly overridePins: false;
+}
+
+// ---------------------------------------------------------------------------
+// jev
+// ---------------------------------------------------------------------------
+
+/** How the TypeSafe key is resolved. The key itself is never in config. */
+export interface JevKeySource {
+  readonly kind: "env" | "pi_secrets" | "none";
+  /** Env var name or Pi secret name. */
+  readonly name: string;
+}
+
+/** `jev` (docs/adr/0003-jev-transport.md). No key ⇒ optional mode. */
+export interface JevConfig {
+  readonly enabled: boolean;
+  /** HTTPS origin; configurable for proxies. */
+  readonly baseUrl: string;
+  readonly keySource: JevKeySource;
+  /** Pinned Jev version, e.g. `jev-1.13.0`. Never `jev-latest`. */
+  readonly model: `jev-${number}.${number}.${number}`;
+  /** Per-decision deadline including retries. */
+  readonly timeoutMs: number;
+  readonly maxRetries: number;
+  readonly pricePerMillionInputTokensUsd: number;
+  readonly cache: { readonly enabled: boolean; readonly ttlSeconds: number };
+}
+
+// ---------------------------------------------------------------------------
+// notifications
+// ---------------------------------------------------------------------------
+
+export type NotificationEvent =
+  | "approval_queued"
+  | "phase_stopped"
+  | "budget_exhausted"
+  | "all_models_capped"
+  | "workflow_completed"
+  | "workflow_failed"
+  | "model_fallback";
+
+export interface NotificationChannels {
+  /** Pi UI notify/status; no-op when `ctx.hasUI` is false. */
+  readonly ui: { readonly enabled: boolean };
+  readonly desktop: { readonly enabled: boolean };
+  /** User executable with JSON event on stdin; counts as `run_shell` for approvals. */
+  readonly command: { readonly enabled: boolean; readonly argv: readonly string[] };
+  /** HTTPS POST of the redacted event JSON. */
+  readonly webhook: { readonly enabled: boolean; readonly url: string | null };
+}
+
+export interface NotificationsConfig {
+  readonly events: readonly NotificationEvent[];
+  readonly channels: NotificationChannels;
+  readonly quietHours: { readonly enabled: boolean; readonly start: string; readonly end: string };
+}
+
+// ---------------------------------------------------------------------------
+// storage
+// ---------------------------------------------------------------------------
+
+/** `storage` — see `src/storage/paths.ts`. */
+export interface StorageConfig {
+  /** Override for the storage root; `null` = `<project>/.korwf`. */
+  readonly path: string | null;
+  readonly allowOutsideProject: boolean;
+  readonly artifactRetentionDays: number;
+  readonly lockTimeoutMs: number;
+}
+
+// ---------------------------------------------------------------------------
+// root
+// ---------------------------------------------------------------------------
+
+/** Fully resolved configuration (every default applied). */
+export interface KorwfConfig {
+  readonly configVersion: typeof CONFIG_VERSION;
+  readonly models: ModelsConfig;
+  readonly budgets: BudgetsConfig;
+  readonly mode: ModeConfig;
+  readonly approvals: ApprovalsConfig;
+  readonly privacy: PrivacyConfig;
+  readonly fallback: FallbackConfig;
+  readonly jev: JevConfig;
+  readonly notifications: NotificationsConfig;
+  readonly storage: StorageConfig;
+}
+
+/** Raw user input as read from the config file. `{}` is valid. */
+export type KorwfConfigInput = DeepPartial<KorwfConfig> & { readonly $schema?: string };
+
+/** Section names, in schema order. */
+export const CONFIG_SECTIONS = [
+  "models",
+  "budgets",
+  "mode",
+  "approvals",
+  "privacy",
+  "fallback",
+  "jev",
+  "notifications",
+  "storage",
+] as const satisfies readonly (keyof KorwfConfig)[];
