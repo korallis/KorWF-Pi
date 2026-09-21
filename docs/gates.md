@@ -125,3 +125,88 @@ Rules:
   (transitions.ts `all_checks_pass_exact_revision`). It exists for reporting only.
 - Command identity is compared against the **definition**, so evidence produced by running a
   different command (e.g. `true`) under a registered check id is `fail`, not `pass`.
+
+## 5. Condition 2 — Jev evidence-gap assessment and the Jev-disabled fallback
+
+Condition 2 is a **disjunction of two recorded outcomes**. Exactly one of them must be
+present as a fresh `Decision` row; "no row" is neither.
+
+### 5.1 `JEV_NO_GAP(T)` (Jev enabled)
+
+```
+JEV_NO_GAP(T) ≝ ∃ d ∈ D:
+      d.subject = {taskId: T.id, taskRevision: T.rev}
+    ∧ d.freshness.revision = SHA(T)
+    ∧ d.questionId = task_evidence_gap ∧ d.questionVersion = pinned(W.policyVersion)
+    ∧ d.stateHash = H(T.rev, SHA(T), T.ac, T.checks, {(c.id, state(c,T)) | c ∈ T.checks},
+                      {e.id, e.provenance.contentHash | fresh e ∈ E(T)})
+    ∧ d.override = null
+    ∧ d.action = no_gap
+    ∧ d.confidence ≥ θ(W.policyVersion)          -- threshold from policy, deterministic
+```
+
+`H` is the engine's canonical state hash (records.md §7). Because the hash covers check
+states, a decision made while a check was `fail` is stale the moment the check is rerun; a
+decision cannot be "carried" across a fix. `d.action` is set by the **composition policy
+rule** (`d.policyRule`) from `d.rawDistribution`, in code; the raw model output never sets
+`action` directly.
+
+What Jev is asked (question `task_evidence_gap`, versioned under `src/decisions/`): given
+`T.ac`, `T.checks`, the fresh evidence and its provenance, (a) is every criterion supported
+by presented evidence, (b) do the tests exercise the requirement rather than something
+unrelated? Any answer other than a parseable `no_gap` above threshold — `gap`, `unknown`,
+malformed, error, timeout — yields `d.action ∈ {gap, error}` or no row, and C2 falls to
+§5.2 only if the disabled fallback is *separately* recorded. **An error is not disabled.**
+
+### 5.2 `JEV_DISABLED_FALLBACK(T)` (Jev disabled, no key, or unavailable)
+
+The product MUST work with no Jev key (AGENTS.md §4). When Jev is disabled, condition 2 is
+**replaced by a deterministic predicate**, never skipped and never assumed true:
+
+```
+JEV_DISABLED_FALLBACK(T) ≝ ∃ d ∈ D:
+      d.subject = {taskId: T.id, taskRevision: T.rev}
+    ∧ d.freshness.revision = SHA(T)
+    ∧ d.questionId = task_evidence_gap
+    ∧ d.override = {actor: policy, reason ∈ {jev_disabled, jev_no_key, jev_unavailable}}
+    ∧ d.action = deterministic_fallback
+    ∧ d.stateHash = H(...)                       -- same hash as §5.1
+    ∧ DET_COVERAGE(T)
+
+DET_COVERAGE(T) ≝ ∀ a ∈ T.ac:
+      ∃ c ∈ T.checks: a.id ∈ c.coversCriteria ∧ state(c,T) = pass       -- covered by a passing check
+    ∧ ∀ a ∈ T.ac: ∃ e fresh ∈ E(T): e.requirementId = a.id ∧ state(e) = pass -- evidence row per criterion
+    ∧ ∀ c ∈ T.checks with kind ∈ {command, assertion}:
+          ∃ p ∈ provenance(latest(c)): p.path ∩ T.ownership.paths ≠ ∅       -- the test touched owned code
+```
+
+Properties:
+
+- The fallback is **stricter on structure** than Jev: it demands one-to-one criterion →
+  passing-check → evidence-row coverage, and that each command/assertion check's
+  provenance intersects the task's ownership (a deterministic proxy for "tests exercise
+  the requirement").
+- The fallback row is written **by the engine** when it observes disabled/no-key/
+  unavailable *before* asking, or after a transport failure. A worker or tool cannot write
+  `Decision` rows (records.md §4: `decision` is engine-append-only).
+- `jev_unavailable` (transport error/timeout while enabled) records the fallback **only
+  if** `W.mode`/config permits `jev.optional = true`; otherwise the gate rejects with
+  `jev_unavailable` and the task stays in `review` for retry. This is the conservative
+  choice (§9 D2).
+- When disabled, **C1 and C3 are unchanged**. Disabling Jev removes an advisory signal; it
+  never removes a deterministic check or a policy-required review.
+- The fallback also covers the "no Jev key at startup" case: `jev_no_key` is detected
+  once per workflow and every decision in that workflow is a recorded fallback.
+
+Truth table for C2 (rows are the recorded state; anything not listed ⇒ `⊥`):
+
+| Jev config | Recorded row | C2 |
+| --- | --- | --- |
+| enabled | fresh `no_gap`, above threshold, no override | ⊤ |
+| enabled | fresh `gap` / `error` / below threshold | ⊥ (`jev_gap` / `jev_error`) |
+| enabled | none, or stale hash/revision | ⊥ (`jev_decision_missing`) |
+| enabled, `jev.optional=true`, transport failed | override `jev_unavailable` + `DET_COVERAGE` ⊤ | ⊤ |
+| enabled, `jev.optional=false`, transport failed | override `jev_unavailable` | ⊥ (`jev_unavailable`) |
+| disabled / no key | override `jev_disabled`/`jev_no_key` + `DET_COVERAGE` ⊤ | ⊤ |
+| disabled / no key | override recorded, `DET_COVERAGE` ⊥ | ⊥ (`fallback_coverage_gap`) |
+| disabled / no key | no override row | ⊥ (`jev_decision_missing`) — "skipped" is not a state |
