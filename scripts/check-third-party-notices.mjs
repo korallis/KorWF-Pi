@@ -59,14 +59,20 @@ export function parseNoticesTable(markdown) {
   const start = markdown.indexOf("<!-- notices:adapted-files:start -->");
   const end = markdown.indexOf("<!-- notices:adapted-files:end -->");
   if (start < 0 || end < 0 || end < start) {
-    throw new Error("THIRD_PARTY_NOTICES.md: missing notices:adapted-files markers");
+    throw new Error(
+      "THIRD_PARTY_NOTICES.md: missing notices:adapted-files markers",
+    );
   }
   const rows = new Map();
   for (const line of markdown.slice(start, end).split("\n")) {
     if (!line.startsWith("|")) continue;
-    const cells = line.split("|").slice(1, -1).map((c) => c.trim());
+    const cells = line
+      .split("|")
+      .slice(1, -1)
+      .map((c) => c.trim());
     if (cells.length < 3) continue;
-    if (cells[0].startsWith("---") || cells[0] === "File in this repository") continue;
+    if (cells[0].startsWith("---") || cells[0] === "File in this repository")
+      continue;
     if (cells[0].startsWith("_none")) continue;
     const file = cells[0].replace(/^`|`$/g, "");
     const source = cells[1].replace(/^`|`$/g, "");
@@ -93,8 +99,10 @@ export function parseManifestSources(adr) {
  * attributed and no file is listed).
  */
 export function checkNotices(root, options = {}) {
-  const noticesPath = options.noticesPath ?? join(root, "THIRD_PARTY_NOTICES.md");
-  const adrPath = options.adrPath ?? join(root, "docs/adr/0001-reuse-of-pi-examples.md");
+  const noticesPath =
+    options.noticesPath ?? join(root, "THIRD_PARTY_NOTICES.md");
+  const adrPath =
+    options.adrPath ?? join(root, "docs/adr/0001-reuse-of-pi-examples.md");
   const files = options.files ?? listSourceFiles(root);
   const errors = [];
 
@@ -128,28 +136,39 @@ export function checkNotices(root, options = {}) {
       continue;
     }
     if (row.source !== header.source) {
-      errors.push(`${file}: notices list source "${row.source}" but header cites "${header.source}"`);
+      errors.push(
+        `${file}: notices list source "${row.source}" but header cites "${header.source}"`,
+      );
     }
     if (row.version !== header.version) {
-      errors.push(`${file}: notices list pi ${row.version} but header cites pi ${header.version}`);
+      errors.push(
+        `${file}: notices list pi ${row.version} but header cites pi ${header.version}`,
+      );
     }
     if (manifest.size > 0 && !manifest.has(header.source)) {
-      errors.push(`${file}: header cites "${header.source}", which is not in the ADR 0001 copy manifest`);
+      errors.push(
+        `${file}: header cites "${header.source}", which is not in the ADR 0001 copy manifest`,
+      );
     }
   }
   for (const file of listed.keys()) {
     if (!attributed.has(file)) {
-      errors.push(`${file} is listed in THIRD_PARTY_NOTICES.md but carries no ADR 0001 attribution header`);
+      errors.push(
+        `${file} is listed in THIRD_PARTY_NOTICES.md but carries no ADR 0001 attribution header`,
+      );
     }
   }
   return { attributed, listed, errors };
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+const isMain =
+  process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   const root = join(fileURLToPath(import.meta.url), "..", "..");
   const { attributed, listed, errors } = checkNotices(root);
-  console.log(`third-party notices: ${attributed.size} attributed file(s), ${listed.size} listed row(s)`);
+  console.log(
+    `third-party notices: ${attributed.size} attributed file(s), ${listed.size} listed row(s)`,
+  );
   for (const e of errors) console.error(`  ✗ ${e}`);
   process.exit(errors.length ? 1 : 0);
 }

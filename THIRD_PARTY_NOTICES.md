@@ -27,9 +27,11 @@ if a listed file no longer carries the header.
 ## Adapted files
 
 <!-- notices:adapted-files:start -->
+
 | File in this repository | Source (`<pi-install>/examples/extensions/…`) | Pi version | ADR 0001 row |
-|---|---|---|---|
-| _none yet_ | — | — | — |
+| ----------------------- | --------------------------------------------- | ---------- | ------------ |
+| _none yet_              | —                                             | —          | —            |
+
 <!-- notices:adapted-files:end -->
 
 As of the PR that created this file (#113), no file in `src/` has yet been copied or
@@ -44,6 +46,7 @@ from, which may differ per file.
 ## Pi (`@earendil-works/pi-coding-agent`) — MIT
 
 <!-- notices:pi-license:start -->
+
 ```
 MIT License
 
@@ -67,5 +70,5 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
-<!-- notices:pi-license:end -->
 
+<!-- notices:pi-license:end -->

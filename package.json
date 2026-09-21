@@ -28,7 +28,8 @@
     "test": "vitest run && npm run test:spec",
     "lint": "eslint . --ext .ts",
     "format": "prettier --write .",
-    "test:spec": "node --experimental-strip-types --test \"test/workflow/*.test.mjs\" \"test/workflow/*.test.ts\""
+    "test:spec": "node --experimental-strip-types --test \"test/workflow/*.test.mjs\" \"test/workflow/*.test.ts\"",
+    "check:notices": "node scripts/check-third-party-notices.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
