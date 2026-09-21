@@ -41,7 +41,31 @@ export async function withDeadline<T>(
   run: (signal: AbortSignal) => Promise<T>,
   options: WithDeadlineOptions,
 ): Promise<T> {
-  throw new Error("not implemented");
+  const setTimeoutFn = options.setTimeout ?? setTimeout;
+  const clearTimeoutFn = options.clearTimeout ?? clearTimeout;
+  const now = options.now ?? Date.now;
+  const start = now();
+
+  const controller = new AbortController();
+  const signals = [controller.signal, ...(options.signal ? [options.signal] : [])];
+  const combined = signals.length === 1 ? signals[0]! : AbortSignal.any(signals);
+
+  let timedOut = false;
+  const timer = setTimeoutFn(() => {
+    timedOut = true;
+    controller.abort();
+  }, options.deadlineMs);
+
+  try {
+    return await run(combined);
+  } catch (err) {
+    if (timedOut) {
+      throw new DeadlineExceededError(options.deadlineMs, now() - start);
+    }
+    throw err;
+  } finally {
+    clearTimeoutFn(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -66,12 +90,79 @@ export class RetryAbortedError extends Error {
   }
 }
 
+const DEFAULT_BASE_DELAY_MS = 200;
+const DEFAULT_MAX_DELAY_MS = 5_000;
+const DEFAULT_JITTER_RATIO = 0.25;
+
+function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function backoffDelay(
+  attempt: number,
+  baseDelayMs: number,
+  maxDelayMs: number,
+  jitterRatio: number,
+  random: () => number,
+): number {
+  const base = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
+  const jitter = base * jitterRatio * random();
+  return base + jitter;
+}
+
+/**
+ * Retry `run` while `isRetryable` says so, up to `maxAttempts` total
+ * attempts (the first try plus `maxAttempts - 1` retries), with jittered
+ * exponential backoff. `options.idempotent` is a documentation-and-caller
+ * contract: PLAN §3.G forbids blind retry of side effects, so callers must
+ * only pass `idempotent: true` for calls safe to repeat (Jev `evaluate` is
+ * read-only from the workflow's point of view). When `idempotent` is false
+ * this function makes exactly one attempt regardless of `maxAttempts`.
+ *
+ * Aborting `options.signal` stops further attempts within one tick: the
+ * in-flight `run` is responsible for observing the signal itself (it is
+ * passed through unchanged to the caller's own deadline/cancellation
+ * plumbing); this function additionally refuses to start a new attempt or a
+ * new sleep once the signal is aborted, and cuts short an in-progress sleep
+ * immediately.
+ */
 export async function withRetry<T>(
   run: (attempt: number) => Promise<T>,
   isRetryable: (error: unknown, attempt: number) => boolean,
   options: RetryOptions,
 ): Promise<T> {
-  throw new Error("not implemented");
+  const maxAttempts = options.idempotent ? Math.max(1, options.maxAttempts) : 1;
+  const baseDelayMs = options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
+  const maxDelayMs = options.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
+  const jitterRatio = options.jitterRatio ?? DEFAULT_JITTER_RATIO;
+  const random = options.random ?? Math.random;
+  const sleep = options.sleep ?? defaultSleep;
+  const signal = options.signal;
+
+  let attempt = 0;
+  for (;;) {
+    if (signal?.aborted) throw new RetryAbortedError();
+    try {
+      return await run(attempt);
+    } catch (err) {
+      if (signal?.aborted) throw new RetryAbortedError();
+      const nextAttempt = attempt + 1;
+      if (nextAttempt >= maxAttempts || !isRetryable(err, attempt)) throw err;
+      const delay = backoffDelay(attempt, baseDelayMs, maxDelayMs, jitterRatio, random);
+      await sleep(delay, signal ?? new AbortController().signal);
+      if (signal?.aborted) throw new RetryAbortedError();
+      attempt = nextAttempt;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
