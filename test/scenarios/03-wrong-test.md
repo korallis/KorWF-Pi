@@ -157,3 +157,106 @@ Conventions are those of [01-greenfield.md](01-greenfield.md) § Conventions.
   evidence at `SHA(P)` only.
 - `/korwf why T` (#92) shows `D1` with its `Decision.rawDistribution`,
   `Decision.policyRule` and `Decision.action` and no credential material.
+
+## Variant B — Jev disabled: the deterministic fallback
+
+With Jev disabled, C2 is `JEV_DISABLED_FALLBACK` = a recorded fallback `Decision` plus
+`DET_COVERAGE` (gates.md §5.2). `DET_COVERAGE` is **structural**: it checks that every
+criterion maps to a passing check, that a fresh `Evidence.requirementId` row exists per
+criterion, and that each command/assertion check's provenance intersects
+`Task.ownership.paths`. Patch #1's wrong test lives in `test/routes/orders.test.ts`, which
+**is** owned, so the structural proxy is satisfied. The fallback therefore **cannot** see
+that the test exercises the wrong behaviour. This variant documents exactly what the
+product does instead, and what it must not do.
+
+### Step B0 — config difference
+
+- `jev.enabled = false`. In addition the policy fixture (#15) for `supervised` mode
+  requires an **independent model review** for change class `test_change` (any diff
+  touching `test/**`): `policy(low, test_change) == {modelReview: true, humanApproval: false}`.
+  This is the deterministic mechanism that stands in for Jev's "does the test exercise
+  the requirement" judgement. The reviewer is a coding model (#48), not Jev, and its
+  verdict is `Evidence`, not a `Decision`.
+
+### Step B1 — first attempt, fallback row, structural coverage passes
+
+- As A1: `E1`, `E2` fresh at `SHA1`, both `exitStatus == {exited, 0}`.
+- `Decision[D1]`: `Decision.questionId == 'task_evidence_gap'`,
+  `Decision.action == 'deterministic_fallback'`,
+  `Decision.override == {actor:'policy', reason:'jev_disabled'}`,
+  `Decision.jevModelVersion == null`, `Decision.confidence == null`,
+  `Decision.usage.requests == 0`, `Decision.freshness.revision == SHA1`.
+- `DET_COVERAGE(T) == ⊤` is asserted explicitly: `ac1 ∈ chk1.coversCriteria`,
+  `state(chk1,T) == 'pass'`, ∃ fresh `Evidence.requirementId == 'ac1'` with
+  `exitStatus == {exited, 0}`, and `Evidence[E1].provenance[*].path ∩
+  Task[T].ownership.paths ≠ ∅`.
+- `Task[T].status == 'review'` (`task-review` passed: checks pass and the fallback row is
+  present). **This is the documented limitation:** C2 alone did not catch the wrong test.
+
+### Step B2 — independent review catches it; task goes to `needs_changes`
+
+- **When** the engine requests the policy-required review (`task-review` side effect
+  "request independent review by policy").
+- **Then**
+  - `Attempt[R1]`: `Attempt.role == 'reviewer'`, `Attempt.taskId == T.id`,
+    `Attempt.taskRevision == 1`, `Attempt.handedOffFromAttemptId == null`, and
+    `Attempt[R1].id != A1.id` (independence, gates.md §2); `Attempt[R1].inputs` do not
+    include `A1`'s claim artifact as trusted content (independent review context, #48):
+    no `Provenance` in `Attempt[R1].inputs.contextProvenance` points at
+    `Attempt[A1].artifacts[*].relativePath`.
+  - `Evidence[RV1]`: `Evidence.reviewer == {kind:'model', model: <reviewer model>,
+    attemptId: R1.id}`, `Evidence.checkId == null`, `Evidence.requirementId == 'ac1'`,
+    `Evidence.revision == SHA1`, `Evidence.taskRevision == 1`,
+    `Evidence.exitStatus == {kind:'exited', code:1}` (review returned findings),
+    `Evidence.caveats` non-empty and naming `ac1`, `Evidence.artifact` pointing at the
+    findings file, `Evidence.provenance[*].path` includes `test/routes/orders.test.ts`.
+  - `Task[T].status == 'needs_changes'` (`review → needs_changes`, trigger
+    `gap_or_review_changes`, guard `changes_required`), `Task[T].blocker == null`.
+  - Task gate never passed: `count(AuditEntry where recordId == T.id and actor ==
+    'engine:gate:task')` is `0`, or `1` with a rejection reason `review_missing` if the
+    engine evaluated `task-done` before the review landed — in either case no gate
+    receipt exists and `Task[T].status != 'done'`.
+  - `ModelOutcome[O1].result == 'needs_changes'`.
+
+### Step B3 — recovery and second attempt
+
+- As A3/A4, with the gap finding sourced from `Evidence[RV1]` instead of `Decision[D1]`:
+  `Memory[M1].source.kind == 'summary'` with `Memory.source.provenance` covering
+  `RV1.artifact`, or `Memory.source.kind == 'excerpt'` on the findings file.
+- `Attempt[A2]` applies patch #2 at `SHA2`; `E1'`, `E2'` fresh at `SHA2`.
+- `Decision[D2]`: a **new** fallback row at `SHA2`
+  (`Decision.freshness.revision == SHA2`, `Decision.override.reason == 'jev_disabled'`,
+  `Decision.action == 'deterministic_fallback'`); `DET_COVERAGE` holds again.
+- Second review: `Attempt[R2].role == 'reviewer'`, `Evidence[RV2].reviewer.kind ==
+  'model'`, `Evidence[RV2].reviewer.attemptId == R2.id`, `Evidence[RV2].revision == SHA2`,
+  `Evidence[RV2].exitStatus == {kind:'exited', code:0}`, `Evidence[RV2].supersedesId == RV1.id`.
+- `Task[T].status == 'done'`; gate receipt at `SHA2`; C3 satisfied by `RV2`
+  (`review_not_independent` would fire if `RV2.reviewer.attemptId ∈ {A1.id, A2.id}` —
+  negative control included).
+
+### Step B4 — limitation without a review policy (documented false negative)
+
+- **Given** the same fixture but a policy fixture with `modelReview == false`.
+- **Then** after patch #1: `Task[T].status == 'done'` with a passing gate receipt at
+  `SHA1`, `Decision[D1].action == 'deterministic_fallback'`, `count(Attempt where taskId
+  == T.id) == 1`. The test asserts this outcome **and** that the phase report discloses
+  it: `Phase[P].report.openQuestions` contains an entry stating that Jev evidence-gap
+  assessment was disabled for `T` (PLAN §3.I "overrides tracked explicitly"), and
+  `/korwf status` shows Jev disabled. The product must not pretend the semantic check
+  happened: `count(Decision where taskId == T.id and action == 'no_gap') == 0`.
+- What the fallback must **never** do (bypass controls, gates.md §8):
+  - Skip the row: with no fallback `Decision`, `task-done` rejects `jev_decision_missing`.
+  - Weaken C1: with `chk1` set to `exitStatus == {exited, 1}` the gate rejects
+    `check_fail` regardless of the fallback row.
+  - Waive C3: with `policy.modelReview == true` and no `RV*` row the gate rejects
+    `review_missing`.
+
+### Step B5 — cost
+
+- `Σ Decision.usage.requests == 0`; reviewer cost is on `Attempt[R1].usage` and
+  `Attempt[R2].usage` and rolls into `Phase[P].report.cost`.
+
+## Out of scope for this outline
+
+Calibrating the evidence-gap evaluator (#98), the adversarial suite for misleading
+descriptions (#99), and choosing the review policy per mode (#15, #93).
