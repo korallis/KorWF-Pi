@@ -25,6 +25,7 @@ import {
   globToRegExp,
   normalisePath,
   outboundReportOf,
+  pick,
   registerSecretValue,
   truncateToBytes,
 } from "../../../src/security/index.ts";
@@ -201,6 +202,23 @@ describe("AC1: denied paths, node_modules and secrets never survive the filter",
       },
     };
     expect(() => policy.filter({ state: hostile }, { purpose: "jev.decision" })).not.toThrow();
+  });
+});
+
+describe("minimal-state construction (PLAN §6)", () => {
+  it("pick() sends only the named fields, never the rest of the input", () => {
+    const input = { id: "t-1", title: "Add cache", diff: "@@ huge", secret: FAKE_KEY, env: ENV_FILE };
+    const state = pick(input, ["id", "title"]);
+    expect(state).toEqual({ id: "t-1", title: "Add cache" });
+    expect(JSON.stringify(state)).not.toContain(FAKE_KEY);
+    expect(Object.keys(state)).toEqual(["id", "title"]);
+  });
+
+  it("pick() omits undefined fields so the state hashes stably", () => {
+    type Input = { id: string; note?: string | undefined };
+    const a = pick<Input, keyof Input>({ id: "t-1", note: undefined }, ["id", "note"]);
+    const b = pick<Input, keyof Input>({ id: "t-1" }, ["id", "note"]);
+    expect(JSON.stringify(a)).toBe(JSON.stringify(b));
   });
 });
 

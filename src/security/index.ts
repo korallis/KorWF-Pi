@@ -79,5 +79,6 @@ export {
   compileDenyPatterns,
   defaultOutboundPolicy,
   outboundReportOf,
+  pick,
   truncateToBytes,
 } from "./outbound.ts";
