@@ -228,3 +228,50 @@ export type ApprovalClassTable = Readonly<Record<ApprovalClassId, ApprovalPolicy
 export const DEFAULT_APPROVAL_CLASSES: ApprovalClassTable = Object.fromEntries(
   APPROVAL_CLASS_TABLE.map((c) => [c.id, c.defaults]),
 ) as ApprovalClassTable;
+
+// ---------------------------------------------------------------------------
+// Validation (config → effective table). Deterministic; never waivable.
+// ---------------------------------------------------------------------------
+
+export type ApprovalClassViolation =
+  | { readonly rule: "V4"; readonly classId: ApprovalClassId; readonly mode: WorkflowMode; readonly message: string }
+  | { readonly rule: "V10"; readonly classId: ApprovalClassId; readonly mode: WorkflowMode; readonly message: string }
+  | { readonly rule: "V11"; readonly classId: ApprovalClassId; readonly mode: WorkflowMode; readonly message: string }
+  | { readonly rule: "V12"; readonly classId: ApprovalClassId; readonly message: string };
+
+/** Mutation classes may not be `auto` in the non-mutating modes (config-reference V4). */
+export const NON_MUTATING_MODES = ["shadow", "advisory"] as const satisfies readonly WorkflowMode[];
+export const MUTATION_CLASSES: readonly ApprovalClassId[] = APPROVAL_CLASS_TABLE
+  .filter((c) => !["read_repository", "model_fallback", "model_substitute_more_expensive", "spend_over_estimate"].includes(c.id))
+  .map((c) => c.id);
+
+/**
+ * Checks a full or partial `approvals.classes` object against the rules that the
+ * JSON schema cannot express after a layered merge:
+ *  - V10: high-risk classes are `stop` in every mode (schema `const`, re-checked here).
+ *  - V11: `scope_change`/`replan` are never `auto`.
+ *  - V4:  mutation classes are never `auto` in shadow/advisory.
+ *  - V12: every listed class has a decision for all four modes.
+ * Returns an empty array when valid. Unknown class ids are rejected by the
+ * schema (`additionalProperties: false`) and are ignored here.
+ */
+export function validateApprovalClasses(
+  classes: Readonly<Partial<Record<ApprovalClassId, Partial<ApprovalPolicyPerMode>>>>,
+): readonly ApprovalClassViolation[] {
+  const out: ApprovalClassViolation[] = [];
+  for (const def of APPROVAL_CLASS_TABLE) {
+    const row = classes[def.id];
+    if (row === undefined) continue;
+    for (const mode of WORKFLOW_MODES) {
+      const d = row[mode];
+      if (d === undefined) { out.push({ rule: "V12", classId: def.id, message: `${def.id} has no decision for mode ${mode}` }); continue; }
+      if (def.tier === "high_risk" && d !== "stop")
+        out.push({ rule: "V10", classId: def.id, mode, message: `${def.id} is high-risk (PLAN §7) and must be "stop" in ${mode}, got "${d}"` });
+      if (def.tier === "no_auto" && d === "auto")
+        out.push({ rule: "V11", classId: def.id, mode, message: `${def.id} may never be "auto" (PLAN §3.C: no silent scope expansion)` });
+      if (d === "auto" && (NON_MUTATING_MODES as readonly WorkflowMode[]).includes(mode) && MUTATION_CLASSES.includes(def.id))
+        out.push({ rule: "V4", classId: def.id, mode, message: `${def.id} mutates; ${mode} is non-mutating so it cannot be "auto"` });
+    }
+  }
+  return out;
+}
