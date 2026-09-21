@@ -194,3 +194,315 @@ export function compileDenyPatterns(
   }
   return { compiled, invalid };
 }
+
+// ---------------------------------------------------------------------------
+// the policy
+// ---------------------------------------------------------------------------
+
+export interface OutboundPolicyOptions {
+  /** Per-purpose override of the whole-request cap, in bytes. */
+  readonly maxRequestBytesByPurpose?: Partial<Record<OutboundPurpose, number>>;
+  /** Maximum object depth walked when redacting state. Deeper is dropped. */
+  readonly maxDepth?: number;
+}
+
+export interface FilterOptions {
+  readonly purpose: OutboundPurpose;
+}
+
+/** Mutable accumulator threaded through one `filter()` call. */
+interface Accumulator {
+  readonly removed: RemovedItem[];
+  readonly truncated: TruncationItem[];
+  redactedStrings: number;
+}
+
+/**
+ * The enforcement point for `privacy` (PLAN §7). Construct it once from the
+ * effective config and share it: it holds only compiled patterns and caps,
+ * never data.
+ */
+export class OutboundPolicy {
+  readonly #matcher: DenyMatcher;
+  readonly #patterns: readonly RegExp[];
+  readonly #invalidPatterns: readonly string[];
+  readonly #limits: OutboundLimits;
+  readonly #perPurpose: Partial<Record<OutboundPurpose, number>>;
+  readonly #maxDepth: number;
+
+  constructor(config: KorwfConfig, options: OutboundPolicyOptions = {}) {
+    const privacy = config.privacy;
+    this.#matcher = new DenyMatcher({
+      denyPaths: privacy.denyPaths,
+      allowPaths: privacy.allowPaths,
+    });
+    const { compiled, invalid } = compileDenyPatterns(privacy.denyPatterns);
+    this.#patterns = compiled;
+    this.#invalidPatterns = invalid;
+    this.#limits = privacy.outbound;
+    this.#perPurpose = options.maxRequestBytesByPurpose ?? {};
+    this.#maxDepth = Math.max(1, options.maxDepth ?? 12);
+  }
+
+  /** Deny patterns in config that could not be compiled (diagnostics only). */
+  get invalidPatterns(): readonly string[] {
+    return this.#invalidPatterns;
+  }
+
+  get limits(): OutboundLimits {
+    return this.#limits;
+  }
+
+  /** Whole-request cap for a purpose, falling back to the config default. */
+  maxRequestBytes(purpose: OutboundPurpose): number {
+    const override = this.#perPurpose[purpose];
+    return override === undefined ? this.#limits.maxRequestBytes : override;
+  }
+
+  /** Would this path's content be refused? Exposed for callers that read files. */
+  denies(path: string): boolean {
+    return this.#matcher.denies(path);
+  }
+
+  /** Redact one string with the global redactor plus configured deny patterns. */
+  redact(text: string): string {
+    let out = redactString(text);
+    for (const pattern of this.#patterns) {
+      pattern.lastIndex = 0;
+      out = out.replace(pattern, REDACTED);
+    }
+    return out;
+  }
+
+  /**
+   * Walk the caller's state, redacting strings and dropping anything that
+   * cannot be sent safely: values below a denied key name, paths that the
+   * deny list refuses, cycles, functions, symbols and BigInt. Depth beyond
+   * `maxDepth` is dropped rather than flattened.
+   */
+  #filterState(value: unknown, acc: Accumulator, path: string, depth: number, seen: WeakSet<object>): unknown {
+    if (value === null || value === undefined) return value === undefined ? undefined : null;
+
+    const type = typeof value;
+    if (type === "string") {
+      const text = value as string;
+      const redacted = this.redact(text);
+      if (redacted !== text) acc.redactedStrings += 1;
+      return redacted;
+    }
+    if (type === "number" || type === "boolean") return value;
+    if (type === "bigint" || type === "function" || type === "symbol") {
+      acc.removed.push({ kind: "field", what: path, reason: "unsupported", glob: null, rule: null, bytes: 0 });
+      return undefined;
+    }
+
+    if (depth > this.#maxDepth) {
+      acc.removed.push({ kind: "field", what: path, reason: "over_budget", glob: null, rule: null, bytes: 0 });
+      return undefined;
+    }
+
+    const object = value as object;
+    if (seen.has(object)) {
+      acc.removed.push({ kind: "field", what: path, reason: "unsupported", glob: null, rule: null, bytes: 0 });
+      return undefined;
+    }
+    seen.add(object);
+
+    if (Array.isArray(value)) {
+      const out: unknown[] = [];
+      for (const [index, entry] of value.entries()) {
+        const filtered = this.#filterState(entry, acc, `${path}[${index}]`, depth + 1, seen);
+        if (filtered !== undefined) out.push(filtered);
+      }
+      seen.delete(object);
+      return out;
+    }
+
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      const child = path === "" ? key : `${path}.${key}`;
+      // A key whose *name* declares a path gets the deny list applied to its
+      // value, so `{ file: "a/.env" }` cannot smuggle one in.
+      if (typeof entry === "string" && isPathKey(key)) {
+        const verdict = this.#matcher.verdict(entry);
+        if (verdict.denied) {
+          acc.removed.push({
+            kind: "field",
+            what: child,
+            reason: "denied",
+            glob: verdict.glob,
+            rule: verdict.rule,
+            bytes: byteLength(entry),
+          });
+          continue;
+        }
+      }
+      const filtered = this.#filterState(entry, acc, child, depth + 1, seen);
+      if (filtered !== undefined) out[key] = filtered;
+    }
+    seen.delete(object);
+    return out;
+  }
+
+  /** Filter snippets: deny list, count cap, redaction, per-snippet byte cap. */
+  #filterSnippets(snippets: readonly Snippet[], acc: Accumulator): Snippet[] {
+    const kept: Snippet[] = [];
+    for (const snippet of snippets) {
+      const raw = typeof snippet.text === "string" ? snippet.text : "";
+      const verdict = this.#matcher.verdict(snippet.path ?? "");
+      if (verdict.denied) {
+        acc.removed.push({
+          kind: "snippet",
+          what: verdict.normalised,
+          reason: "denied",
+          glob: verdict.glob,
+          rule: verdict.rule,
+          bytes: byteLength(raw),
+        });
+        continue;
+      }
+      if (kept.length >= this.#limits.maxSnippetsPerRequest) {
+        acc.removed.push({
+          kind: "snippet",
+          what: verdict.normalised,
+          reason: "over_budget",
+          glob: null,
+          rule: null,
+          bytes: byteLength(raw),
+        });
+        continue;
+      }
+
+      const redacted = this.redact(raw);
+      if (redacted !== raw) acc.redactedStrings += 1;
+
+      const { kept: text, droppedBytes } = truncateToBytes(redacted, this.#limits.maxSnippetBytes);
+      if (droppedBytes > 0) {
+        acc.truncated.push({ kind: "snippet", what: verdict.normalised, keptBytes: byteLength(text), droppedBytes });
+      }
+      kept.push({
+        // `sendFilePaths: false` means the path never leaves this process; the
+        // snippet still goes, identified only by position.
+        path: this.#limits.sendFilePaths ? verdict.normalised : "",
+        text,
+        ...(snippet.startLine !== undefined ? { startLine: snippet.startLine } : {}),
+      });
+    }
+    return kept;
+  }
+
+  /** Filter bare paths: deny list, then redaction of the path string itself. */
+  #filterPaths(paths: readonly string[], acc: Accumulator): string[] {
+    if (!this.#limits.sendFilePaths) {
+      for (const path of paths) {
+        acc.removed.push({ kind: "path", what: "", reason: "denied", glob: null, rule: "config", bytes: byteLength(path) });
+      }
+      return [];
+    }
+    const kept: string[] = [];
+    for (const path of paths) {
+      const verdict = this.#matcher.verdict(path ?? "");
+      if (verdict.denied) {
+        acc.removed.push({
+          kind: "path",
+          what: verdict.normalised,
+          reason: "denied",
+          glob: verdict.glob,
+          rule: verdict.rule,
+          bytes: byteLength(path),
+        });
+        continue;
+      }
+      kept.push(verdict.normalised);
+    }
+    return kept;
+  }
+
+  /**
+   * The only way to produce a `FilteredPayload`. Never throws on caller data.
+   *
+   * Order matters and is fixed: deny paths first (identity), then redact
+   * (content), then cap (size). Redacting before capping means a truncated
+   * snippet cannot end mid-secret, and capping last means the request cap is
+   * measured on exactly what will be sent.
+   */
+  filter(payload: OutboundPayload, options: FilterOptions): FilteredPayload {
+    const acc: Accumulator = { removed: [], truncated: [], redactedStrings: 0 };
+    const offered = payload.snippets ?? [];
+
+    const state = this.#filterState(payload.state, acc, "", 0, new WeakSet<object>()) ?? null;
+    let snippets = this.#filterSnippets(offered, acc);
+    const paths = this.#filterPaths(payload.paths ?? [], acc);
+
+    // Whole-request cap, measured on the serialised form actually sent. Drop
+    // whole snippets from the end first (a partial snippet is worth less than
+    // a complete one), then truncate the last survivor if still over.
+    const cap = this.maxRequestBytes(options.purpose);
+    const sizeOf = (list: readonly Snippet[]): number => byteLength(serialise(state, list, paths));
+
+    while (snippets.length > 0 && sizeOf(snippets) > cap) {
+      const dropped = snippets[snippets.length - 1] as Snippet;
+      snippets = snippets.slice(0, -1);
+      acc.removed.push({
+        kind: "snippet",
+        what: dropped.path,
+        reason: "over_budget",
+        glob: null,
+        rule: null,
+        bytes: byteLength(dropped.text),
+      });
+    }
+
+    let sentBytes = sizeOf(snippets);
+    if (sentBytes > cap) {
+      // Nothing left to drop but the state itself is over budget: truncate the
+      // serialised state rather than send something oversized.
+      const serialisedState = typeof state === "string" ? state : JSON.stringify(state) ?? "";
+      const { kept, droppedBytes } = truncateToBytes(serialisedState, Math.max(0, cap));
+      acc.truncated.push({ kind: "request", what: options.purpose, keptBytes: byteLength(kept), droppedBytes });
+      const truncatedState: unknown = kept;
+      sentBytes = byteLength(serialise(truncatedState, snippets, paths));
+      return finalise(truncatedState, snippets, paths, acc, options.purpose, sentBytes, offered.length);
+    }
+
+    return finalise(state, snippets, paths, acc, options.purpose, sentBytes, offered.length);
+  }
+}
+
+/** Exactly what goes on the wire, for measuring. */
+function serialise(state: unknown, snippets: readonly Snippet[], paths: readonly string[]): string {
+  return JSON.stringify({ state, snippets, paths }) ?? "";
+}
+
+function finalise(
+  state: unknown,
+  snippets: readonly Snippet[],
+  paths: readonly string[],
+  acc: Accumulator,
+  purpose: OutboundPurpose,
+  sentBytes: number,
+  snippetsOffered: number,
+): FilteredPayload {
+  const droppedBytes =
+    acc.removed.reduce((sum, item) => sum + item.bytes, 0) +
+    acc.truncated.reduce((sum, item) => sum + item.droppedBytes, 0);
+  const report: OutboundReport = Object.freeze({
+    purpose,
+    removed: Object.freeze([...acc.removed]),
+    truncated: Object.freeze([...acc.truncated]),
+    redactedStrings: acc.redactedStrings,
+    sentBytes,
+    droppedBytes,
+    snippetsKept: snippets.length,
+    snippetsOffered,
+    clean: acc.removed.length === 0 && acc.truncated.length === 0 && acc.redactedStrings === 0,
+  });
+  // The brand exists only in the type system; at runtime this is plain data.
+  return Object.freeze({ state, snippets: Object.freeze([...snippets]), paths: Object.freeze([...paths]), report }) as unknown as FilteredPayload;
+}
+
+/** Key names whose string value is a path and must face the deny list. */
+function isPathKey(key: string): boolean {
+  const k = key.toLowerCase();
+  return k === "path" || k === "file" || k === "filename" || k === "filepath" || k.endsWith("path") || k.endsWith("file");
+}
