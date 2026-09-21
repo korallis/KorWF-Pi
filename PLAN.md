@@ -4,6 +4,15 @@
 
 This is the full-scope plan for a Jev-assisted autonomous development workflow package for Pi. It is intended for public distribution; nothing in the shipped product may depend on the author's machine, providers, or credentials.
 
+> **Product rationale:** [docs/PRD.md](docs/PRD.md) states the product thesis — a
+> Jev-centred agentic software factory — and reconciles it with this plan. Where the two
+> disagree, **PLAN.md wins** and the PRD is corrected. The PRD records four things this
+> plan did not cover: per-model route health and circuit breaking (#123), output-token
+> budget awareness in planning (#124), an opaque `routeId` reserving a future multi-account
+> dimension (#125), and worker visibility as a product property (#68). It also records
+> what is explicitly **not** being built: multi-host SSH execution, a standalone
+> orchestrator daemon, and per-account credential fan-out.
+
 - Authorized now: this project folder and planning documents.
 - Not authorized by that request: implementation, installations, paid requests, uploading project data.
 - The full scope below is one deliverable. Stages express dependency and validation order, not reduced releases.
