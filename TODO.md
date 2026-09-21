@@ -42,7 +42,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Revision-aware caching and invalidation.
 - [x] Usage accounting; atomic budget reservations; known/estimated/unknown cost.
 - [x] Decision traces; retention; raw-payload logging opt-in. (#31)
-- [ ] Isolated-session load test; no-key load test; lifecycle cleanup test.
+- [x] Isolated-session load test; no-key load test; lifecycle cleanup test. (#32)
 
 ## 3. Context, planning, phases, durable tasks (Stage 3)
 
