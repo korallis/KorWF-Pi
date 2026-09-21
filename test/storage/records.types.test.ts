@@ -4,6 +4,7 @@
  * These are type-level assertions: the file must typecheck under `--strict`.
  * Each block names the acceptance criterion it exercises. No runtime, no I/O.
  */
+import { describe, it, expect } from "vitest";
 import {
   APPEND_ONLY_TABLES,
   MUTABLE_TABLES,
@@ -142,3 +143,11 @@ type _Partition = Assert<
 
 // Every FK targets a known table (checked by the ForeignKey type) and the list is non-empty.
 if (FOREIGN_KEYS.length === 0) throw new Error("FOREIGN_KEYS must not be empty");
+
+describe("storage record type assertions (issue #12 compile-time acceptance criteria)", () => {
+  it("type-level assertions compile and runtime helper smoke checks pass", () => {
+    expect(sameRevision).toBe(true);
+    expect(movedRevision).toBe("task_revision_changed");
+    expect(FOREIGN_KEYS.length).toBeGreaterThan(0);
+  });
+});
