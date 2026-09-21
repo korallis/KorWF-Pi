@@ -35,6 +35,8 @@ const DRY = flag("--dry-run");
 const ONCE = flag("--once");
 const ONLY_ISSUE = opt("--issue") ? Number(opt("--issue")) : null;
 const MAX_RUNS = opt("--max") ? Number(opt("--max")) : CONFIG.budgets.maxWorkerRunsPerSession;
+const MERGE = opt("--merge") ? Number(opt("--merge")) : null; // merge-review an awaiting-review issue's PR; merge if it passes
+const REVIEW = opt("--review") ? Number(opt("--review")) : null; // re-run gate on the last attempt of an issue without a new worker run
 
 mkdirSync(STATE_DIR, { recursive: true });
 const log = (msg) => {
@@ -197,26 +199,41 @@ async function profileAndSelect(jev, issue, def, attempt, prev) {
   return { profile, model, rule, ranking, thinking };
 }
 
-async function evidenceGap(jev, issue, criteria, report, checks) {
+function branchDiff(dir) {
+  try {
+    const stat = sh("git", ["diff", "--stat", "origin/main...HEAD"], { cwd: dir });
+    const diff = sh("git", ["diff", "origin/main...HEAD", "--", ".", ":!package-lock.json", ":!scripts/issues/created.json"], { cwd: dir, maxBuffer: 64 * 1024 * 1024 });
+    return { stat, diff: diff.length > 60_000 ? diff.slice(0, 60_000) + "\n[... diff truncated ...]" : diff };
+  } catch { return { stat: "", diff: "" }; }
+}
+
+async function evidenceGap(jev, issue, criteria, report, checks, dir) {
+  const { stat, diff } = branchDiff(dir);
   const st = {
     acceptance_criteria: criteria,
-    worker_final_report: report.slice(-6000),
     deterministic_checks: checks,
+    changed_files: stat,
+    actual_changes_diff: diff,
+    worker_final_report: report.slice(-4000),
   };
   const q = {
-    overclaims: noul("Does `worker_final_report` claim work or verification that `deterministic_checks` does not support?", {
-      true: "The report asserts tests passed, files exist, or a PR exists where the checks show otherwise",
-      false: "Every claim in the report is consistent with the checks",
+    overclaims: noul("Does `worker_final_report` claim work that is not present in `actual_changes_diff`, or verification results that `deterministic_checks` contradict?", {
+      true: "The report describes files, sections, tests, or results that the diff and checks do not contain",
+      false: "The report's claims are all visible in the diff or consistent with the checks",
     }),
   };
   criteria.forEach((c, i) => {
-    q[`c${i}`] = noul({ criterion: c, question: "Do `worker_final_report` and `deterministic_checks` demonstrate that `criterion` has been met?" });
+    q[`c${i}`] = noul({ criterion: c, question: "Judging primarily from `actual_changes_diff` (the real work) and `deterministic_checks`, and treating `worker_final_report` only as a guide to where to look, has `criterion` been met?" }, {
+      true: "The diff contains what the criterion requires",
+      false: "The diff is missing, incomplete, or contradicts what the criterion requires",
+    });
   });
   const a = await jev.ask("gap", st, q, { issue: issue.number });
   if (!a) return { source: "fallback", pass: checks.prExists && checks.closesRef && checks.testsExit === 0 || checks.testsExit === null && checks.prExists && checks.closesRef, unmet: [], overclaims: null };
-  const unmet = criteria.map((c, i) => ({ c, p: a[`c${i}`].noul })).filter((x) => x.p < CONFIG.policy.gapThresholdPass);
+  const scores = criteria.map((c, i) => ({ c, p: a[`c${i}`].noul }));
+  const unmet = scores.filter((x) => x.p < CONFIG.policy.gapThresholdPass);
   const pass = unmet.length === 0 && a.overclaims.noul < 0.5 && checks.prExists && checks.closesRef;
-  return { source: "jev", pass, unmet, overclaims: a.overclaims.noul };
+  return { source: "jev", pass, unmet, scores, overclaims: a.overclaims.noul };
 }
 
 // ---------- worker ----------
@@ -376,7 +393,7 @@ async function dispatch(jev, cand) {
 
   const report = parseReport(res.lastText);
   const checks = deterministicChecks(issue, dir, branch, parseVerification(issue.body));
-  const gap = await evidenceGap(jev, issue, criteria, res.lastText, checks);
+  const gap = await evidenceGap(jev, issue, criteria, res.lastText, checks, dir);
   attempt.checks = checks; attempt.gap = gap; attempt.pr = checks.prUrl; attempt.reportStatus = report?.status ?? "unparsed";
 
   if (gap.pass && report?.status === "done") {
@@ -408,12 +425,96 @@ async function dispatch(jev, cand) {
   return "retry";
 }
 
+async function reviewOnly(jev, n) {
+  const issues = fetchIssues(); const issue = issues[n];
+  const attempts = state.attempts[n] ?? []; const attempt = attempts.at(-1);
+  if (!attempt) throw new Error(`no attempts recorded for #${n}`);
+  const { dir, branch } = ensureWorktree(issue);
+  const criteria = parseCriteria(issue.body);
+  const checks = deterministicChecks(issue, dir, branch, parseVerification(issue.body));
+  const gap = await evidenceGap(jev, issue, criteria, attempt.report ?? "", checks, dir);
+  log(`#${n} re-review: checks=${JSON.stringify({ pushed: checks.pushed, pr: checks.prExists, closes: checks.closesRef, tests: checks.testsExit })} gap=${JSON.stringify({ pass: gap.pass, overclaims: gap.overclaims, unmet: gap.unmet })}`);
+  attempt.checks = checks; attempt.gap = gap; attempt.pr = checks.prUrl;
+  if (gap.pass) {
+    attempt.outcome = "awaiting-review";
+    if (!DRY) gh(["issue", "comment", String(n), "-b", `Orchestrator (re-review of attempt ${attempt.attempt}, judging the diff directly): all acceptance criteria supported (min criterion p=${Math.min(...gap.scores.map((x) => x.p)).toFixed(2)}; overclaim p=${gap.overclaims?.toFixed(2)}). PR: ${checks.prUrl}\n\n**Awaiting human review and merge.**`]);
+  }
+  saveState();
+}
+
+// Merge gate. Code enforces the hard rules (PR clean/mergeable, checks green, no risk:high /
+// needs-human, no secrets or machine paths in diff). Jev answers the semantic questions a
+// reviewer would: is the change complete for the issue, does the PR describe it honestly,
+// does it violate PLAN §2.4/§7 constraints, is anything out of scope. Jev can only block.
+async function mergeReview(jev, n) {
+  const issues = fetchIssues(); const issue = issues[n];
+  const attempt = (state.attempts[n] ?? []).at(-1);
+  if (!attempt || attempt.outcome !== "awaiting-review") throw new Error(`#${n} is not awaiting review (last outcome: ${attempt?.outcome ?? "none"})`);
+  const { dir, branch } = ensureWorktree(issue);
+  sh("git", ["fetch", "-q", "origin"], { cwd: dir });
+  const pr = JSON.parse(gh(["pr", "view", branch, "--json", "number,url,body,title,mergeable,mergeStateStatus"]));
+  const hard = [];
+  if (pr.mergeable !== "MERGEABLE" || pr.mergeStateStatus !== "CLEAN") hard.push(`PR state ${pr.mergeable}/${pr.mergeStateStatus}`);
+  if (issue.labels.some((l) => ["risk:high", "needs-human"].includes(l))) hard.push("issue labelled risk:high or needs-human — human merge only");
+  const { stat, diff } = branchDiff(dir);
+  const added = diff.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).join("\n");
+  if (/\/home\/[a-z]+\//.test(added)) hard.push("diff adds an absolute home-directory path");
+  if (/(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|JEV_API_KEY\s*=\s*\S)/.test(added)) hard.push("diff appears to add a credential");
+  const checks = deterministicChecks(issue, dir, branch, parseVerification(issue.body));
+  if (checks.testsExit) hard.push(`npm test exited ${checks.testsExit}`);
+  for (const v of checks.verification) if (v.exit) hard.push(`verification '${v.cmd}' exited ${v.exit}`);
+
+  const criteria = parseCriteria(issue.body);
+  const a = await jev.ask("merge", {
+    issue: { number: n, title: issue.title, scope: ISSUE_DEFS[issue.key]?.scope, acceptance: criteria, out_of_scope_rule: "Only what the issue's scope lists; nothing else" },
+    pr: { title: pr.title, body: pr.body.slice(0, 4000) },
+    changed_files: stat,
+    diff,
+    hard_rules: "PLAN §2.4/§7: no credentials or machine-specific paths in shipped code; no hardcoded provider names in src/; no bypass of checks; docs must not invent APIs that do not exist",
+  }, {
+    complete: noul("Taken as a whole, does `diff` fully deliver `issue.scope` and every item in `issue.acceptance`?", { true: "Nothing required by the issue is missing from the diff", false: "At least one required element is absent or only partially done" }),
+    honest: noul("Does `pr.body` accurately describe what `diff` contains, without claiming more than was done?", { true: "PR description matches the diff", false: "PR description overstates, omits, or misdescribes the change" }),
+    in_scope: noul("Is everything in `diff` within `issue.scope` (no unrelated refactors, extra features, or unrequested files)?", { true: "All changes serve the issue", false: "The diff contains unrelated or unrequested changes" }),
+    rule_violation: noul("Does `diff` violate any of `hard_rules`?", { true: "A concrete violation is present in the diff", false: "No violation found" }),
+    quality: score("How would a careful senior reviewer rate the quality of `diff` for merging into main?", [
+      "Would request changes: errors, confusion, or sloppiness that must be fixed first",
+      "Acceptable: minor nits only, fine to merge",
+      "Strong: clear, precise, and complete; merge without hesitation",
+    ]),
+  }, { issue: n, pr: pr.number });
+  const soft = [];
+  if (!a) soft.push("Jev unavailable — no semantic review; human merge only");
+  else {
+    if (a.complete.noul < CONFIG.policy.gapThresholdPass) soft.push(`Jev: p(complete)=${a.complete.noul.toFixed(2)}`);
+    if (a.honest.noul < CONFIG.policy.gapThresholdPass) soft.push(`Jev: p(honest PR description)=${a.honest.noul.toFixed(2)}`);
+    if (a.in_scope.noul < 0.5) soft.push(`Jev: p(in scope)=${a.in_scope.noul.toFixed(2)}`);
+    if (a.rule_violation.noul >= 0.4) soft.push(`Jev: p(rule violation)=${a.rule_violation.noul.toFixed(2)}`);
+    if (a.quality.score < 0.75) soft.push(`Jev: quality=${a.quality.score.toFixed(2)} (<0.75)`);
+  }
+  const verdict = a ? { complete: a.complete.noul, honest: a.honest.noul, in_scope: a.in_scope.noul, rule_violation: a.rule_violation.noul, quality: a.quality.score } : null;
+  const blockers = [...hard, ...soft];
+  const summary = `Merge review of ${pr.url} for #${n}\n\nHard checks: ${hard.length ? hard.join("; ") : "all pass"} (pushed=${checks.pushed}, verification exits=${checks.verification.map((v) => v.exit).join(",") || "n/a"}, tests=${checks.testsExit ?? "n/a"})\nJev merge review: ${verdict ? Object.entries(verdict).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(" ") : "unavailable"}\nVerdict: ${blockers.length ? "**NOT MERGED** — " + blockers.join("; ") : "**MERGE**"}`;
+  log(summary);
+  attempt.mergeReview = { at: new Date().toISOString(), hard, soft, verdict };
+  if (DRY) { saveState(); return; }
+  gh(["pr", "comment", String(pr.number), "-b", summary]);
+  if (blockers.length) { attempt.outcome = "merge-blocked"; attempt.feedback = blockers.join("\n"); saveState(); gh(["issue", "edit", String(n), "--add-label", "needs-human"]); return; }
+  gh(["pr", "merge", String(pr.number), "--squash", "--delete-branch"]);
+  attempt.outcome = "merged"; saveState();
+  try { sh("git", ["worktree", "remove", "--force", dir], { cwd: ROOT }); } catch {}
+  log(`#${n}: merged ${pr.url}`);
+}
+
+let ISSUE_DEFS = {};
+
 // ---------- main loop ----------
 async function main() {
   const apiKey = process.env.JEV_API_KEY ?? process.env.TYPESAFE_API_KEY;
   const jev = new Jev({ apiKey, model: CONFIG.jev.model, logPath: join(STATE_DIR, "decisions.jsonl"), budgetTokens: CONFIG.jev.tokenBudget });
   if (!DRY) acquireLock();
-  const defs = await loadDefs();
+  const defs = await loadDefs(); ISSUE_DEFS = defs;
+  if (REVIEW) { await reviewOnly(jev, REVIEW); return; }
+  if (MERGE) { await mergeReview(jev, MERGE); return; }
   // Clean up attempts left 'running' by a crashed orchestrator.
   for (const list of Object.values(state.attempts)) for (const a of list) if (a.outcome === "running") { a.outcome = "interrupted"; a.feedback = "Orchestrator was interrupted; resume from the worktree."; }
   saveState();

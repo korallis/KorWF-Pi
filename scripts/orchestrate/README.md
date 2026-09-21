@@ -13,7 +13,9 @@ so the product is dogfooded from the first commit:
 | Writing the code / docs / tests | Pi worker (`pi -p --mode json` on `mac-mini/<model>`) |
 | Deterministic checks (branch pushed, PR exists with `Closes #n`, verification commands, `npm test`) | code |
 | Evidence-gap review: does the report + checks support each acceptance criterion? overclaiming? | **Jev** (`evidenceGap`) — can only *fail* an attempt, never waive a check |
-| Merge | human (default `merge: never`) |
+| Merge review: mergeable, checks green, no secrets/home paths, not risk:high | code (`--merge N`) |
+| Merge review: complete for the issue, honest PR description, in scope, no PLAN rule violation, reviewer quality | **Jev** (`--merge N`) — any low score blocks and adds `needs-human` |
+| Merge | code, only when every hard and Jev check passes (`--merge N`); never in the dispatch loop |
 
 Every Jev call is appended to `.orchestrate/decisions.jsonl` with the full raw distributions.
 Worker attempts, models used, fallback reasons, checks, and gap results are in `.orchestrate/state.json`.
@@ -26,6 +28,8 @@ set -a; . ~/Projects/.env; set +a        # JEV_API_KEY (never forwarded to worke
 node scripts/orchestrate/run.mjs --dry-run          # show Jev's selection for ready issues, no workers
 node scripts/orchestrate/run.mjs --once --issue 7   # one attempt on one issue
 node scripts/orchestrate/run.mjs --max 10           # loop until nothing is ready or 10 worker runs
+node scripts/orchestrate/run.mjs --review 7         # re-run the evidence gate on the last attempt (no new worker)
+node scripts/orchestrate/run.mjs --merge 7          # merge review: hard checks + Jev (complete, honest, in-scope, rule violation, quality); squash-merge if all pass
 ```
 
 Workers run in `../korwf-worktrees/issue-<n>` on branch `issue-<n>-<slug>`, open a PR, and
