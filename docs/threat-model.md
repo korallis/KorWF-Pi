@@ -213,3 +213,48 @@ PLAN §1: "Jev is not … a security boundary."* Actors: T2, T4, T5.
 | Policy cannot be weakened at runtime | High-risk classes are `const "stop"` in the schema; deny lists are floors; `retryPrimaryAtTaskBoundary`, `allCappedBehaviour`, `overridePins`, `redactBeforeWrite` are `const`; a layered merge is re-validated after merge so a higher-precedence file cannot drop a floor (V5). `/korwf off` disables assistance, never controls (PLAN §4 UI). No record has a waiver field (`docs/gates.md` §7 "No waiver field"). | `src/config/schema.json`; validator V4/V5/V7 (#21); `docs/gates.md` §7 | R5 (the *user* can loosen configurable rows; that is their right, and the first-use disclosure and `/korwf status` make it visible) |
 | Non-UI contexts (workers in `--mode rpc`, `-p`) where a gate would otherwise prompt | Block by default (`ctx.hasUI === false` ⇒ `{ block: true }`); a worker's `extension_ui_request` is routed to the orchestrator's approval policy and **times out to denial** (ADR 0004 "Approvals") | `security/execution-policy`; `workers/`; `docs/pi-integration-map.md` §4 "Non-UI modes" | — |
 | Approvals surviving fork/resume/rewind or plan changes | `Approval` rows are scoped to task + plan revision and expire; invalidated on revision change; fork/resume "never resurrects obsolete approvals" (PLAN §5); the only mutable field is `invalidation` (`docs/records.md` §4) | `docs/state-machine.md`; `docs/records.md`; `workflow/recovery` | — |
+
+### B4 — Role-specific tools, constrained environments, path boundaries, network policy
+
+*PLAN §7 execution policy, second bullet.* Actors: T3, T1.
+
+| Aspect | Mitigation | Enforced by | Residual |
+|---|---|---|---|
+| A role can only call the tools its contract lists | `--tools <role list>` on the worker command line; no role lists a spawn tool; `--no-extensions` plus explicit `-e` for shipped role extensions only; `KORWF_WORKER_DEPTH` makes the orchestration extension register nothing at depth ≥ `workers.maxDepth` (default 1) — three independent guards (ADR 0004) | `workers/spawn`; `extension/` load-time check; Stage 2 test "fails if `KORWF_WORKER_DEPTH` handling is removed" (ADR 0004 follow-up) | R6 (compiled-in extensions survive `--no-extensions`) |
+| Read-only roles (scout, planner, reviewer, verifier) cannot mutate | `edit`/`write` removed **and** every `bash` call classified by the `isSafeCommand` allowlist/denylist copied from `plan-mode/` (ADR 0001 row 2) **and** custom tools checked by the same `tool_call` gate **and** KorWF's own `pi.exec` paths routed through `security/` (ADR 0002) — PLAN §7: "disabling `edit`/`write` alone is not read-only enforcement" | `security/execution-policy`; Stage 2 tests must exercise **every** mutation route: `bash`, `write`, `edit`, a custom tool, `pi.exec` from KorWF code | R7 (a regex shell classifier is bypassable; the gate is policy, not sandbox) |
+| Path boundaries | A worker's cwd is its worktree (ADR 0009); `protected-paths` mechanism (ADR 0001 row 9) blocks writes outside the worktree and to deny-path files; `storage.allowOutsideProject: false` | `security/data-boundaries`; `git/worktrees`; V8 | R8 (an absolute path in a `bash` command is not stopped by cwd; only by the classifier or a sandbox) |
+| Network policy | KorWF has no network layer of its own besides edges 1–3 (§4). `PI_OFFLINE=1` is set for roles that need nothing beyond the model endpoint (ADR 0004). Per-process network restriction requires a sandbox the platform provides; KorWF records whether one is present and states this residual (ADR 0001 row 3) | `workers/spawn`; `security/` sandbox presence detection | R9 (no shipped sandbox ⇒ no network isolation for `bash`) |
+| Execution isolation is a process boundary, not a worktree | ADR 0004 chose RPC subprocesses precisely so that a worker exception, a hung tool, or a runaway process tree cannot take down the user's session (A8); three-tier cancellation with descendant snapshot | `workers/` canceller | R10 (SIGKILL orphans detached commands — see §6) |
+
+### B5 — Data policy: default-deny outbound, minimal snippets, sanitised logs, disclosure
+
+*PLAN §7 data policy, bullets 1–3.* Actors: T1, T3, T6, T4.
+
+| Aspect | Mitigation | Enforced by | Residual |
+|---|---|---|---|
+| Secrets and sensitive paths never leave | Deny globs (floor, 40 shipped) exclude files from context entirely; deny patterns (floor, 10 shipped) redact lines; both applied before *every* outbound edge and every log write (§4 filter order) — one function, called by `jev/`, by the worker context builder, and by `telemetry/` | `security/data-boundaries` (pure); schema floors; V5/V6/V7 (`allowPaths` can only carve out narrower, never re-open a class, and never applies to logging) | R11 (patterns are heuristic; an unusual secret format can pass — mitigated by defence in depth: deny paths, size caps, `jev.enabled: false` default) |
+| Minimal outbound snippets | Size caps (`maxSnippetBytes 4096`, `maxSnippetsPerRequest 16`, `maxRequestBytes 262144`); absolute paths stripped; repo identity hashed by default; PLAN §6 "minimal relevant state per evaluation" | `security/data-boundaries`; `decisions/` state builders | — |
+| Sanitised logs; raw payload logging opt-in | `rawLogging.enabled: false`; when on, `redactBeforeWrite` is `const true` and retention is 1–365 days (default 7) with automatic deletion; `Authorization` never logged (ADR 0003 rule 7); decision traces store the validated distribution, not the request | schema; `telemetry/` | — |
+| First-use disclosure | `firstUseDisclosure: true` shows which data classes go to TypeSafe and to model providers before the first outbound request; §4 is the source text for that disclosure | `extension/ui`; schema | — |
+| Nothing sent to TypeSafe unless the user turns it on | `jev.enabled: false`; `true` without a key downgrades to optional mode with a warning (V9); the transport is not constructed without a key (ADR 0003 rule 3) | schema; `jev/optional-mode`; ADR 0007 | — |
+
+### B6 — High-risk actions require explicit approval regardless of mode
+
+*PLAN §7 execution policy, fourth bullet.* Actors: T3, T5.
+
+| Aspect | Mitigation | Enforced by | Residual |
+|---|---|---|---|
+| Destructive cleanup, deployment, credential access, publishing, remote push, force-push/history rewrite, policy changes | Approval classes `destructive_cleanup`, `remote_push`, `deployment`, `credential_access`, `publishing` are `const "stop"` in every mode; force-push and history rewrite are `remote_push` + `destructive_cleanup`; changes to permission/allowlist/spending policy are not an action the product performs at all — they are config edits by the user, validated on load | schema `$defs/HighRiskPolicy`; `workflow/approvals`; `git/` (the only module that runs git — a `push --force` outside it is a review failure, ADR 0002) | — |
+| Ordinary local commits and the worker's own branch | `local_commit` is `auto` only in `bounded_autonomous`, never touches the user's checkout (ADR 0009 integration owner); `remote_push` is `stop` in the *product* — the build-agent policy (ADR 0005) is a different scope | `workflow/approvals`; PLAN §7 scope note | — |
+| Preserving uncommitted user work (A2) | Workers never run in the user's checkout; the integrator is the single writer to it and refuses when the tree is dirty (ADR 0001 row 7 `dirty-repo-guard` mechanism); checkpoints before integration (`git-checkpoint`, row 5); "no blind retry of side effects" (PLAN §3.G) | `git/status`, `git/checkpoints`; `workflow/integration`; ADR 0009 | R12 (a user who works in a worktree KorWF owns is outside the guarantee) |
+
+### B7 — Store integrity and concurrent access
+
+*Implied by PLAN §5 (single writer, append-only audit) and §3.F (evidence cannot be
+forged).* Actors: T3, T7, T5.
+
+| Aspect | Mitigation | Enforced by | Residual |
+|---|---|---|---|
+| Two orchestrators or a worker writing the store | One writer process holds the lockfile; workers report over RPC and never open the database (ADR 0006); `lockTimeoutMs` fails a second instance fast | `storage/lockfile`; ADR 0006 | R13 (a worker with `bash` can open the SQLite file directly — same class as R7; the audit table and append-only triggers make tampering detectable, not impossible) |
+| Evidence/decision tampering | `decision`, `evidence`, `model_outcome`, `audit_entry` are append-only at the type level (`UpdatePatch<T> = never`) and by `RAISE(ABORT)` triggers in the migration (`docs/records.md` §4); corrections are new rows with `supersedesId` | `storage/` migrations (#23); compile-time tests | R13 |
+| Evidence from a worker's own claim | `Evidence.reviewer.kind = deterministic` rows are written by the engine from the check's exit code and command identity, not by the worker; independent review (C3) rejects the same attempt chain (B7 in `docs/gates.md`) | `verification/`; `docs/gates.md` §2 | — |
