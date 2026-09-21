@@ -286,33 +286,43 @@ alone. The adapter should treat a 429 with no `retry-after`, or repeated 429s be
 budget, as `quota_exhausted` (long reset, pause + surface), and a 429 with a short
 `retry-after` as `rate_limited`. Revisit if TypeSafe publishes a distinct code.
 
-## 8. Data retention and privacy (quoted, checked 2026-09-21)
+## 8. Data retention and privacy (quoted verbatim, checked 2026-09-21)
 
-Models page (https://docs.typesafe.ai/models#data-handling):
+### 8.1 Canonical retention statement
 
-> Jev is not trained on customer requests or responses. See Legal for the Data Processing
-> Agreement, the Privacy Policy, and details on zero data retention (ZDR) for enterprise customers.
+The governing retention statement is the **"Retention" section of the TypeSafe Privacy
+Policy**, quoted verbatim and in full:
 
-Legal index (https://docs.typesafe.ai/legal):
+> We retain personal data about you for as long as reasonably necessary to provide you with
+> the Services, or otherwise in support of our business or commercial purposes. When you
+> request that we do so, we take measures to delete your personal data or keep it in a form
+> that does not permit identifying you when this personal data is no longer reasonably
+> necessary for the purposes for which we process it, unless we are required by law to keep
+> this data for a longer period.
 
-> These documents cover how TypeSafe handles your data when you have an account with us,
-> including data retention, our commitment not to train models on user data …
-> We also offer zero data retention (ZDR) for enterprise customers. Contact privacy@typesafe.ai
+- **URL:** https://typesafe.ai/legal/privacy-policy (section heading "Retention")
+- **Document version:** "Last updated" 2025-11-19 (page metadata `2025-11-19`)
+- **Date checked:** 2026-09-21 (fetched read-only over HTTPS; no API key involved)
 
-Privacy Policy (https://typesafe.ai/legal/privacy-policy, "Last updated Nov 19, 2025"):
+"Input" in that policy is defined as "your prompts, data, instructions, and other input" sent
+to the Services (Playground and APIs) — i.e. it covers the text KorWF-Pi sends to Jev.
 
-> We (1) will not train or fine tune any artificial intelligence or machine learning models on
-> Input, and (2) will not disclose any Input to a third party other than our service providers.
+### 8.2 Supporting statements (all checked 2026-09-21)
 
-> Retention: We retain personal data about you for as long as reasonably necessary to provide
-> you with the Services, or otherwise in support of our business or commercial purposes.
+| # | Source (URL) | Section | Version | Verbatim quote |
+| --- | --- | --- | --- | --- |
+| 1 | https://typesafe.ai/legal/privacy-policy | "Personal Data You Provide to Us → Services" | Last updated 2025-11-19 | "We collect the personal data you provide when you use the Services, including your prompts, data, instructions, and other input (“Input”). We will not train or fine tune any artificial intelligence or machine learning models on your prompts or other Input." |
+| 2 | https://typesafe.ai/legal/privacy-policy | "How We Use the Personal Data We Collect" | Last updated 2025-11-19 | "We (1) will not train or fine tune any artificial intelligence or machine learning models on Input, and (2) will not disclose any Input to a third party other than our service providers." |
+| 3 | https://typesafe.ai/legal/privacy-policy | "International Visitors" | Last updated 2025-11-19 | "The Services are hosted in the United States (“U.S.”). … you are transferring your personal data outside of those regions to the U.S. for storage and processing." |
+| 4 | https://typesafe.ai/legal/data-processing | Schedule I §8 "Duration of Processing" | Last updated 2026-04-24 | "The period for which the Personal Data will be retained, or, if that is not possible, the criteria used to determine that period: Customer Personal Data will be retained for as long as necessary taking into account the purpose of the Processing, and in compliance with applicable laws, including laws on the statute of limitations and Data Protection Law." |
+| 5 | https://typesafe.ai/legal/data-processing | §2.2 "Typesafe Responsibilities" | Last updated 2026-04-24 | "Typesafe will not … (b) retain, use, or disclose Customer Personal Data for any purpose other than in accordance with the Documented Instructions, (c) retain, use, or disclose Customer Personal Data outside of the direct business relationship between Customer and Typesafe …" |
+| 6 | https://docs.typesafe.ai/models (section "Data handling") | — | page fetched 2026-09-21 | "Jev is not trained on customer requests or responses. See Legal for the Data Processing Agreement, the Privacy Policy, and details on zero data retention (ZDR) for enterprise customers." |
+| 7 | https://docs.typesafe.ai/legal | — | page fetched 2026-09-21 | "These documents cover how TypeSafe handles your data when you have an account with us, including data retention, our commitment not to train models on user data, and the general customer agreements that govern your use of TypeSafe." … "We also offer zero data retention (ZDR) for enterprise customers. Contact privacy@typesafe.ai to learn more." |
 
-Data Processing Addendum (https://typesafe.ai/legal/data-processing, "Last updated Apr 24, 2026"),
-Annex "Duration of Processing":
-
-> Customer Personal Data will be retained for as long as necessary taking into account the
-> purpose of the Processing, and in compliance with applicable laws, including laws on the
-> statute of limitations and Data Protection Law.
+Re-check procedure (no key, no API calls): `curl -sL https://docs.typesafe.ai/models.md`,
+`curl -sL https://docs.typesafe.ai/legal.md`, and the two `typesafe.ai/legal/*` HTML pages;
+compare the "Last updated" dates and the quotes above. If any differ, update this section and
+the date in the heading.
 
 Implications for KorWF-Pi:
 
