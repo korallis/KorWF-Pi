@@ -67,3 +67,18 @@ Two rules from PLAN §1 shape everything below:
 | A6 | **KorWF store** — records, evidence, decisions, audit log | Integrity of the gate (`docs/gates.md`) depends on evidence not being forged or edited | `<project>/.korwf/korwf.sqlite`, artifacts dir (ADR 0006) |
 | A7 | **Source and instruction text** — project instructions, skills, role prompts, PLAN | Instruction sources are trusted; anything that can impersonate them can steer the model | `resources/`, `AGENTS.md`, `.pi/`, Pi's context files |
 | A8 | **The user's Pi session** — its transcript, its extensions, its TUI | A worker crash or a runaway tool must not take it down or alter it (ADR 0004) | The orchestrator process |
+
+## 3. Actors
+
+| Id | Actor | Capability | Intent assumed |
+|---|---|---|---|
+| T1 | **Malicious repository content** — files, comments, test fixtures, git hooks, `package.json` scripts, `.pi/` project files in a cloned repo | Read by every role; executed if any check or install runs; can contain instructions that look like ours | Hostile. A repo the user opens may have been crafted to steer or exfiltrate. |
+| T2 | **Prompt injection via tool output** — command stdout/stderr, fetched pages, dependency READMEs, error messages, Jev responses | Enters the model's context as if it were an observation; may contain "ignore previous instructions", fake approval text, fake evidence | Hostile. Indistinguishable from T1 in effect; differs in that it arrives at run time. |
+| T3 | **Misbehaving worker** — a Pi subprocess whose model has been steered (by T1/T2), is confused, or is simply wrong | Full tool access of its role within its worktree; can claim completion, write fake evidence, spawn processes, try to spawn workers | Non-malicious but untrusted. Treated as adversarial for authorisation purposes (PLAN §3.F "independent review contexts"). |
+| T4 | **Jev outage or compromise** — TypeSafe unreachable, rate-limited, returning malformed data, or a proxy in the path returning attacker-chosen answers | Can delay, deny, or *shape* every Jev-assisted decision | Outage: benign. Compromise: hostile — assume responses are attacker-controlled. |
+| T5 | **Buggy policy** — a defect in KorWF's own `security/`, `workflow/approvals`, `config/` merge, or gate code; a config file that validates but is wrong | Can silently widen what is allowed | Non-malicious. The system must fail closed when the policy layer is absent or errors. |
+| T6 | **Model provider** — the endpoints the user's Pi already talks to | Sees whatever context Pi sends; may log it | Trusted by the user already (PLAN §3.D: "whatever the user's Pi has configured"); KorWF adds no provider and must not widen what is sent. |
+| T7 | **Second instance / concurrent process** — another Pi session, a stale orchestrator, an editor, `git` run by the user | Can write the store or the worktree concurrently | Benign. Guarded by ADR 0006 (single writer) and ADR 0009 (integration owner). |
+
+Not modelled as actors: the user (owns everything), Pi (trusted runtime; extensions run
+as the user — Pi `docs/security.md`), the OS.
