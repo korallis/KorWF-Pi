@@ -36,7 +36,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] SQLite store, migrations, lockfile ownership, append-only audit, artifact directory.
 - [x] Jev transport behind mockable interface; configurable base URL; optional mode when no key.
 - [x] Response validation for Choice/Score/Noul (unknown fields, bounds, malformed).
-- [ ] Cancellation, deadlines, bounded retries, backoff, circuit breaking.
+- [x] Cancellation, deadlines, bounded retries, backoff, circuit breaking. (#26)
 - [x] Versioned question definitions and composition policy.
 - [ ] Minimal-state construction, outbound limits, default-deny path/data filtering.
 - [ ] Revision-aware caching and invalidation.
