@@ -13,7 +13,7 @@
  *   timestamp and before/after hashes (PLAN §5).
  */
 import { createHash } from "node:crypto";
-import type { DatabaseSync, SQLInputValue } from "node:sqlite";
+import type { Database, SqlInputValue } from "../sqlite.ts";
 import { RecordNotFoundError, RecordRuleError } from "../errors.ts";
 import type {
   AppendOnlyRecord,
@@ -25,7 +25,7 @@ import type {
 } from "../records.ts";
 
 /** Values the indexed columns of a table may hold. */
-export type ColumnValue = SQLInputValue;
+export type ColumnValue = SqlInputValue;
 
 /** Describes how one record type maps onto its table. */
 export interface TableSpec<T extends RecordEnvelope<string>> {
@@ -54,7 +54,7 @@ export interface AuditSink {
 
 /** Context a repository needs: the write connection, a clock, and the actor. */
 export interface RepoContext {
-  readonly db: DatabaseSync;
+  readonly db: Database;
   now(): IsoTimestamp;
   /** Who is making the change; recorded on every audit row. */
   actor(): string;

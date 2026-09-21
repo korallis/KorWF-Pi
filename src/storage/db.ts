@@ -13,7 +13,7 @@
  * (ADR 0006 rule 2) — the store path is not on their command line.
  */
 import { mkdirSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type Database } from "./sqlite.ts";
 import { ReadOnlyStoreError } from "./errors.ts";
 import { acquireLock, DEFAULT_LOCK_TIMEOUT_MS, type AcquireLockOptions, type LockHandle } from "./lock.ts";
 import { currentSchemaVersion, latestSchemaVersion, migrate, type MigrateResult } from "./migrations.ts";
@@ -97,7 +97,7 @@ export class Store {
   readonly modelOutcomes: ModelOutcomeRepository;
   readonly audit: AuditRepository;
 
-  readonly #db: DatabaseSync;
+  readonly #db: Database;
   readonly #lock: LockHandle | null;
   readonly #now: () => IsoTimestamp;
   readonly #newId: () => string;
@@ -106,7 +106,7 @@ export class Store {
   #closed = false;
 
   constructor(params: {
-    db: DatabaseSync;
+    db: Database;
     storageRoot: string;
     databasePath: string;
     writable: boolean;
@@ -153,7 +153,7 @@ export class Store {
   }
 
   /** Raw connection, for migrations and the schema-drift test only. */
-  get connection(): DatabaseSync {
+  get connection(): Database {
     return this.#db;
   }
 
@@ -305,7 +305,7 @@ export function openStore(options: OpenStoreOptions): { store: Store; report: Op
     });
   }
 
-  let db: DatabaseSync;
+  let db: Database;
   try {
     db = new DatabaseSync(databasePath, writable ? {} : { readOnly: true });
     db.exec("PRAGMA journal_mode = WAL");

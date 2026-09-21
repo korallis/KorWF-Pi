@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
+import type { Database } from "./sqlite.ts";
 import { MigrationFailedError, SchemaTooNewError } from "./errors.ts";
 
 /** Directory holding the numbered `.sql` files. */
@@ -88,7 +88,7 @@ export function latestSchemaVersion(dir: string = MIGRATIONS_DIR): number {
 }
 
 /** `true` once migration 0001 has created the ledger. */
-function hasLedger(db: DatabaseSync): boolean {
+function hasLedger(db: Database): boolean {
   const row = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migration'")
     .get();
@@ -96,7 +96,7 @@ function hasLedger(db: DatabaseSync): boolean {
 }
 
 /** Migrations already applied to this database, oldest first. */
-export function appliedMigrations(db: DatabaseSync): readonly AppliedMigration[] {
+export function appliedMigrations(db: Database): readonly AppliedMigration[] {
   if (!hasLedger(db)) return [];
   const rows = db
     .prepare("SELECT version, name, checksum, appliedAt FROM schema_migration ORDER BY version")
@@ -110,7 +110,7 @@ export function appliedMigrations(db: DatabaseSync): readonly AppliedMigration[]
 }
 
 /** Current schema version of an open database; `0` for an empty one. */
-export function currentSchemaVersion(db: DatabaseSync): number {
+export function currentSchemaVersion(db: Database): number {
   const applied = appliedMigrations(db);
   return applied.length === 0 ? 0 : (applied[applied.length - 1]?.version ?? 0);
 }
@@ -143,7 +143,7 @@ export interface MigrateResult {
  * the transaction is rolled back, so a crash during migration leaves the
  * store at the previous version with no partial schema.
  */
-export function migrate(db: DatabaseSync, options: MigrateOptions = {}): MigrateResult {
+export function migrate(db: Database, options: MigrateOptions = {}): MigrateResult {
   const dir = options.dir ?? MIGRATIONS_DIR;
   const all = loadMigrations(dir);
   const known = all.length === 0 ? 0 : (all[all.length - 1]?.version ?? 0);
@@ -161,7 +161,7 @@ export function migrate(db: DatabaseSync, options: MigrateOptions = {}): Migrate
 }
 
 function applyOne(
-  db: DatabaseSync,
+  db: Database,
   migration: Migration,
   now: string,
   beforeCommit: MigrateOptions["beforeCommit"],
