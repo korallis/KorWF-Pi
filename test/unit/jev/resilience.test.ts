@@ -12,6 +12,7 @@ import {
   withDeadline,
   withRetry,
   CircuitBreaker,
+  CircuitBreakerRegistry,
   DeadlineExceededError,
   RetryAbortedError,
   wrapWithCircuitBreaker,
@@ -187,6 +188,90 @@ describe("wrapWithCircuitBreaker: end-to-end over the mock transport", () => {
     // reopens it (cancellation is not a failure) — it stays half-open, so the
     // next call gets a fresh probe attempt rather than being locked out.
     expect(wrapped.breakerStatus().state).toBe("half_open");
+  });
+});
+
+describe("CircuitBreakerRegistry: per host", () => {
+  it("a failing host's breaker trips independently of a healthy host on the same registry", () => {
+    const registry = new CircuitBreakerRegistry({ failureThreshold: 2, resetTimeoutMs: 1000 });
+    const bad = registry.get("bad.example.com");
+    const good = registry.get("good.example.com");
+    bad.onFailure();
+    bad.onFailure();
+    expect(bad.status().state).toBe("open");
+    expect(good.status().state).toBe("closed");
+    expect(good.canProceed()).toBe(true);
+  });
+
+  it("the same host key returns the same breaker instance across calls", () => {
+    const registry = new CircuitBreakerRegistry({ failureThreshold: 2, resetTimeoutMs: 1000 });
+    const a = registry.get("host-a");
+    a.onFailure();
+    const aAgain = registry.get("host-a");
+    expect(aAgain.status().failures).toBe(1);
+  });
+
+  it("snapshot() exposes every seen host's state for a future /korwf status", () => {
+    const registry = new CircuitBreakerRegistry({ failureThreshold: 1, resetTimeoutMs: 1000 });
+    registry.get("host-a").onFailure();
+    registry.get("host-b");
+    const snapshot = registry.snapshot();
+    expect(Object.keys(snapshot).sort()).toEqual(["host-a", "host-b"]);
+    expect(snapshot["host-a"]!.state).toBe("open");
+    expect(snapshot["host-b"]!.state).toBe("closed");
+  });
+
+  it("a host never requested is absent from the snapshot", () => {
+    const registry = new CircuitBreakerRegistry({ failureThreshold: 1, resetTimeoutMs: 1000 });
+    expect(registry.snapshot()).toEqual({});
+  });
+});
+
+describe("wrapWithCircuitBreaker: per-host isolation and status exposure over the mock transport", () => {
+  it("two transports on different hosts, sharing a registry, fail independently", async () => {
+    const registry = new CircuitBreakerRegistry({ failureThreshold: 2, resetTimeoutMs: 60_000 });
+    const badMock = new MockJevTransport({ responder: () => errorResult("jev.unavailable", true) });
+    const goodMock = new MockJevTransport({ responses: [ok()] });
+    const bad = wrapWithCircuitBreaker(badMock, { deadlineMs: 1000, maxRetries: 0, host: "bad.example.com", registry });
+    const good = wrapWithCircuitBreaker(goodMock, { deadlineMs: 1000, maxRetries: 0, host: "good.example.com", registry });
+
+    await bad.evaluate(REQUEST);
+    await bad.evaluate(REQUEST);
+    expect(bad.breakerStatus().state).toBe("open");
+
+    // The good host's own evaluate still runs: its breaker was never touched.
+    const result = await good.evaluate(REQUEST);
+    expect(result.kind).toBe("ok");
+    expect(good.breakerStatus().state).toBe("closed");
+    expect(goodMock.calls).toHaveLength(1);
+  });
+
+  it("defaults the host key to the transport's baseUrl when it exposes one", async () => {
+    const registry = new CircuitBreakerRegistry({ failureThreshold: 1, resetTimeoutMs: 60_000 });
+    const mockWithBaseUrl = Object.assign(
+      new MockJevTransport({ responses: [errorResult("jev.unavailable", true)] }),
+      { baseUrl: "https://a.example.com" },
+    );
+    const wrapped = wrapWithCircuitBreaker(mockWithBaseUrl, { deadlineMs: 1000, maxRetries: 0, registry });
+    await wrapped.evaluate(REQUEST);
+    expect(Object.keys(registry.snapshot())).toEqual(["a.example.com"]);
+  });
+
+  it("exposes breaker state via breakerStatusByHost() for a future /korwf status", async () => {
+    const registry = new CircuitBreakerRegistry({ failureThreshold: 1, resetTimeoutMs: 60_000 });
+    const badMock = new MockJevTransport({ responses: [errorResult("jev.unavailable", true)] });
+    const goodMock = new MockJevTransport({ responses: [ok()] });
+    const bad = wrapWithCircuitBreaker(badMock, { deadlineMs: 1000, maxRetries: 0, host: "bad-host", registry });
+    const good = wrapWithCircuitBreaker(goodMock, { deadlineMs: 1000, maxRetries: 0, host: "good-host", registry });
+    await bad.evaluate(REQUEST);
+    await good.evaluate(REQUEST);
+
+    const snapshot = bad.breakerStatusByHost();
+    expect(snapshot["bad-host"]!.state).toBe("open");
+    expect(snapshot["bad-host"]!.failures).toBe(1);
+    expect(snapshot["good-host"]!.state).toBe("closed");
+    // The other wrapper, sharing the same registry, sees the identical snapshot.
+    expect(good.breakerStatusByHost()).toEqual(snapshot);
   });
 });
 
