@@ -98,6 +98,14 @@ export interface QuestionDefinition<TState, TResult> {
   interpret(answer: JevAnswer, input: TState): Outcome<TResult> | null;
   /** Deterministic answer used whenever Jev did not supply a usable one. */
   fallback(input: TState, reason: FallbackReason): FallbackOutcome<TResult>;
+  /**
+   * Rebuild the typed result from a *recorded* `Decision.action`, so a
+   * decision whose complete versioned state hash still matches can be
+   * replayed instead of re-asked (docs/records.md §10 rule 4). Returns `null`
+   * when the question cannot rebuild it, in which case the question is simply
+   * asked again — reuse is an optimisation, never a correctness dependency.
+   */
+  replay(action: string, input: TState): TResult | null;
 }
 
 /**
@@ -105,7 +113,7 @@ export interface QuestionDefinition<TState, TResult> {
  * arrow properties) are bivariant, so every concrete definition is assignable
  * here without `any`.
  */
-export type AnyQuestionDefinition = QuestionDefinition<never, unknown>;
+export type AnyQuestionDefinition = QuestionDefinition<unknown, unknown>;
 
 // ---------------------------------------------------------------------------
 // content hashing and the version rule
@@ -171,6 +179,8 @@ interface CommonSpec<TState, TResult> {
   state: (input: TState) => JevState;
   fallback: (input: TState, reason: FallbackReason) => FallbackOutcome<TResult>;
   readonly boundaries: readonly BoundaryExample<TState, TResult>[];
+  /** Opt in to decision replay by rebuilding the result from the action. */
+  replay?: (action: string, input: TState) => TResult | null;
 }
 
 export interface NoulSpec<TState, TResult> extends CommonSpec<TState, TResult> {
@@ -195,7 +205,7 @@ export interface ScoreSpec<TState, TResult> extends CommonSpec<TState, TResult> 
   decide: (answer: ScoreAnswer, input: TState) => Outcome<TResult>;
 }
 
-function checkBoundaries(id: string, boundaries: readonly BoundaryExample<never, unknown>[]): void {
+function checkBoundaries(id: string, boundaries: readonly BoundaryExample<unknown, unknown>[]): void {
   if (boundaries.length === 0) {
     throw new QuestionDefinitionError(
       `question ${id} declares no boundary examples; PLAN §6 requires explicit boundary cases`,
@@ -223,7 +233,7 @@ function checkConfidence(id: string, minConfidence: number | undefined): number 
 /** Define a noul (true/false probability) question. */
 export function defineNoul<TState, TResult>(spec: NoulSpec<TState, TResult>): QuestionDefinition<TState, TResult> {
   assertQuestionNaming(spec.id, spec.version);
-  checkBoundaries(spec.id, spec.boundaries as readonly BoundaryExample<never, unknown>[]);
+  checkBoundaries(spec.id, spec.boundaries);
   const abstainBand = checkBand(spec.id, spec.abstainBand);
   const criteria = spec.criteria ?? {};
   const contentHash = questionContentHash({
@@ -252,13 +262,14 @@ export function defineNoul<TState, TResult>(spec: NoulSpec<TState, TResult>): Qu
     buildQuestion: () => body,
     interpret: (answer, input) => (answer.type === "noul" ? spec.decide((answer as NoulAnswer).noul, input) : null),
     fallback: (input, reason) => spec.fallback(input, reason),
+    replay: (action, input) => spec.replay?.(action, input) ?? null,
   };
 }
 
 /** Define a choice question. Always include an explicit none/unknown option. */
 export function defineChoice<TState, TResult>(spec: ChoiceSpec<TState, TResult>): QuestionDefinition<TState, TResult> {
   assertQuestionNaming(spec.id, spec.version);
-  checkBoundaries(spec.id, spec.boundaries as readonly BoundaryExample<never, unknown>[]);
+  checkBoundaries(spec.id, spec.boundaries);
   const minConfidence = checkConfidence(spec.id, spec.minConfidence);
   if (Object.keys(spec.options).length < 2) {
     throw new QuestionDefinitionError(`question ${spec.id}: a choice needs at least two options`);
@@ -286,13 +297,14 @@ export function defineChoice<TState, TResult>(spec: ChoiceSpec<TState, TResult>)
     buildQuestion: () => body,
     interpret: (answer, input) => (answer.type === "choice" ? spec.decide(answer, input) : null),
     fallback: (input, reason) => spec.fallback(input, reason),
+    replay: (action, input) => spec.replay?.(action, input) ?? null,
   };
 }
 
 /** Define an ordered score question (levels are indexed `"0".."n-1"`). */
 export function defineScore<TState, TResult>(spec: ScoreSpec<TState, TResult>): QuestionDefinition<TState, TResult> {
   assertQuestionNaming(spec.id, spec.version);
-  checkBoundaries(spec.id, spec.boundaries as readonly BoundaryExample<never, unknown>[]);
+  checkBoundaries(spec.id, spec.boundaries);
   const minConfidence = checkConfidence(spec.id, spec.minConfidence);
   if (spec.levels.length < 2) {
     throw new QuestionDefinitionError(`question ${spec.id}: a score needs at least two levels`);
@@ -320,6 +332,7 @@ export function defineScore<TState, TResult>(spec: ScoreSpec<TState, TResult>): 
     buildQuestion: () => body,
     interpret: (answer, input) => (answer.type === "score" ? spec.decide(answer, input) : null),
     fallback: (input, reason) => spec.fallback(input, reason),
+    replay: (action, input) => spec.replay?.(action, input) ?? null,
   };
 }
 
@@ -336,7 +349,7 @@ export function defineScore<TState, TResult>(spec: ScoreSpec<TState, TResult>): 
  * - a noul inside the definition's abstain band is not an answer;
  * - a choice/score below the definition's `minConfidence` is not an answer.
  */
-export function abstentionOf(definition: QuestionDefinition<never, unknown>, answer: JevAnswer): FallbackReason | null {
+export function abstentionOf(definition: QuestionDefinition<unknown, unknown>, answer: JevAnswer): FallbackReason | null {
   if (answer.type === "noul") {
     const band = definition.abstainBand;
     if (band !== null && answer.noul > band[0] && answer.noul < band[1]) return "abstained";

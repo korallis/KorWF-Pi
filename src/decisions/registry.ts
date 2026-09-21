@@ -18,7 +18,7 @@ import { assertBoundaries, QuestionDefinitionError, type QuestionDefinition } fr
 
 /** A definition plus the hash it was reviewed at (`null` = unpinned). */
 export interface RegisteredQuestion {
-  readonly definition: QuestionDefinition<never, unknown>;
+  readonly definition: QuestionDefinition<unknown, unknown>;
   readonly pinnedHash: string | null;
 }
 
@@ -48,19 +48,19 @@ export class QuestionRegistry {
     }
     assertBoundaries(definition);
     this.#byKey.set(definition.key, {
-      definition: definition as unknown as QuestionDefinition<never, unknown>,
+      definition,
       pinnedHash,
     });
     return definition;
   }
 
   /** Look up by `id@version`. `undefined` when absent; never throws. */
-  get(key: string): QuestionDefinition<never, unknown> | undefined {
+  get(key: string): QuestionDefinition<unknown, unknown> | undefined {
     return this.#byKey.get(key)?.definition;
   }
 
   /** Look up by `id@version` or throw with the list of known keys. */
-  require(key: string): QuestionDefinition<never, unknown> {
+  require(key: string): QuestionDefinition<unknown, unknown> {
     const found = this.get(key);
     if (found === undefined) {
       throw new QuestionDefinitionError(`no question registered as ${key}; known: ${this.keys().join(", ") || "(none)"}`);
@@ -78,7 +78,7 @@ export class QuestionRegistry {
   }
 
   /** Every version of one question id, newest version last. */
-  versionsOf(id: string): readonly QuestionDefinition<never, unknown>[] {
+  versionsOf(id: string): readonly QuestionDefinition<unknown, unknown>[] {
     return this.keys()
       .filter((key) => key.startsWith(`${id}@`))
       .map((key) => this.#byKey.get(key))
@@ -88,7 +88,7 @@ export class QuestionRegistry {
   }
 
   /** Highest registered version of `id`, or `undefined`. */
-  latest(id: string): QuestionDefinition<never, unknown> | undefined {
+  latest(id: string): QuestionDefinition<unknown, unknown> | undefined {
     const all = this.versionsOf(id);
     return all.length === 0 ? undefined : all[all.length - 1];
   }
