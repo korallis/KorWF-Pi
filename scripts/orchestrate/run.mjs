@@ -669,6 +669,15 @@ function deterministicChecks(issue, dir, branch, verification) {
     catch (e) { checks.verification.push({ cmd, exit: e.status ?? 1, tail: String(e.stdout ?? "").slice(-800) + String(e.stderr ?? "").slice(-800) }); }
   }
   if (existsSync(join(dir, "package.json"))) {
+    // Install first, or the result measures the environment rather than the work. A
+    // worktree created before the package gained a test runner has no node_modules, so
+    // `npm test` exits 127 ("vitest: command not found") and the gate blames the worker.
+    // This blocked #11's PR while its 20 vitest + 12 node:test cases all passed once the
+    // dependencies were present. 127 is "command not found", never a test verdict.
+    if (!existsSync(join(dir, "node_modules"))) {
+      try { execFileSync("npm", ["install", "--silent", "--no-audit", "--no-fund"], { cwd: dir, stdio: "pipe", timeout: 900_000 }); }
+      catch (e) { checks.installFailed = String(e.stderr ?? e.message).slice(-500); }
+    }
     try { execFileSync("npm", ["test", "--silent"], { cwd: dir, stdio: "pipe", timeout: 900_000 }); checks.testsExit = 0; }
     catch (e) { checks.testsExit = e.status ?? 1; }
   }
