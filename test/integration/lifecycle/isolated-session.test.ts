@@ -43,6 +43,19 @@ function listTree(dir: string): string[] {
   return out.sort();
 }
 
+describe("M2 exit: the load tests actually run", () => {
+  it("has the Pi CLI available, so nothing below is silently skipped in CI", () => {
+    // `describe.skipIf` keeps a developer without `npm ci` from seeing red,
+    // but a skipped exit criterion in CI would be worthless. CI installs the
+    // dev dependency, so there it must be present.
+    if (process.env["CI"] === undefined) {
+      expect(typeof available).toBe("boolean");
+      return;
+    }
+    expect(available).toBe(true);
+  });
+});
+
 describe.skipIf(!available)("M2 exit: the package loads in an isolated Pi session", () => {
   let pi: IsolatedPi;
 
