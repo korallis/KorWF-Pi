@@ -57,6 +57,32 @@ export interface OutboundPayload {
 }
 
 // ---------------------------------------------------------------------------
+// minimal-state construction
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the state for a question by *naming* the fields it needs (PLAN §6
+ * "minimal relevant state per evaluation").
+ *
+ * `pick` is allow-list construction: a field absent from `keys` cannot reach
+ * the request even by accident, so state grows only when someone writes the
+ * field name down. A question that passes its whole input object instead is
+ * sending more than the question needs, and the answer gets worse as well as
+ * leakier — more state means more surface for a spurious correlation.
+ *
+ * Values are copied shallowly and `undefined` fields are omitted, so the
+ * result hashes stably for the decision cache key.
+ */
+export function pick<T extends object, K extends keyof T>(input: T, keys: readonly K[]): Pick<T, K> {
+  const out: Partial<Pick<T, K>> = {};
+  for (const key of keys) {
+    const value = input[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out as Pick<T, K>;
+}
+
+// ---------------------------------------------------------------------------
 // report
 // ---------------------------------------------------------------------------
 
