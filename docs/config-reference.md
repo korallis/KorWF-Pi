@@ -69,6 +69,19 @@ optional allowlist. The system never uses a provider or model outside the allowl
 
 `TaskKind` = `default | plan | implement | test | review | docs | refactor | research`.
 
+### 2.1.1 Routes: the same model id under two providers (#125)
+
+Pi provider keys are user-chosen names, each with its own `baseUrl` and `apiKey`, so a
+user with two subscriptions to one vendor lists the same model id under two providers.
+The product treats each `(provider, model)` pair as a separate **route** with its own
+opaque `routeId`; caps, health and outcome history are tracked per route, while model
+cards stay per model id. **No configuration is required**: the provider list already in
+Pi's `models.json` is the only source of truth, and a single-provider setup has exactly
+one route per model. `fallback.staticOrder` refs name a provider, so listing
+`<provider-b>/<model>` after `<provider-a>/<model>` makes the second account a legitimate
+fallback when the first is rate-limited. **Renaming a provider key creates a new route
+and does not carry over its history** — see `docs/adr/0006-route-identity.md`.
+
 ### 2.2 `models.overrides`
 
 `{ [ModelRef]: { notes?: string (≤ 2000), aptitudes?: string[], disabled?: boolean } }`, default `{}`.

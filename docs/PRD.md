@@ -70,11 +70,12 @@ maps onto PLAN as:
 
 ## 2. Inventory model, corrected for the proxy
 
-A schedulable route is **a model**, not a four-way product.
+A schedulable route is **one provider entry × one model id**, not a four-way product
+(Account/Host/Profile remain rejected, §4). Through the proxy this collapses to one route
+per model; for a downloaded user with two subscriptions to one vendor it is two (§3.4).
 
 ```text
-RouteSlot = Model                      (shipped default, proxy case)
-RouteSlot = Model × Account            (optional extension, §3.4 — deferred)
+Route = Provider entry × Model id      (v1, #125 — see §3.4; one route per model in the proxy case)
 ```
 
 Entities the shipped product needs, all already in PLAN §5 or §3.D:
@@ -82,8 +83,8 @@ Entities the shipped product needs, all already in PLAN §5 or §3.D:
 | Entity | Fields | Status |
 | --- | --- | --- |
 | Model card | id, provider, context window, maxTokens, modalities, reasoning, cost, aptitude hints | PLAN §3.D — 4-layer merge, built (#10) |
-| `ModelAvailability` | model id, cap kind, detected at, estimated reset, last probe | PLAN §5 — record defined (#12) |
-| `ModelOutcome` | model, task profile, result, cost, latency | PLAN §5 — feeds card refinement (M7 #88) |
+| `ModelAvailability` | route id (provider + model id), cap kind, detected at, estimated reset, last probe | PLAN §5 — record defined (#12), keyed per route (#125) |
+| `ModelOutcome` | route id, model, task profile, result, cost, latency | PLAN §5 — feeds card refinement (M7 #88), attributed per route (#125) |
 | Task profile | domain, modality needs, reasoning depth, context size, risk | PLAN §3.D — built |
 | Policy | data classification, risk class, network/deployment permission | PLAN §7, config schema (#11, merged) |
 
