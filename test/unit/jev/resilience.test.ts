@@ -52,6 +52,107 @@ function neverSettles<T>(): Promise<T> {
   });
 }
 
+describe("wrapWithCircuitBreaker: end-to-end over the mock transport", () => {
+  it("AC1: a transport that never resolves is abandoned at the deadline as a typed jev.unavailable error", async () => {
+    const mock = new MockJevTransport({ responder: () => neverSettles<JevEvaluateResult>() });
+    const wrapped = wrapWithCircuitBreaker(mock, { deadlineMs: 1000, maxRetries: 0 });
+    const promise = wrapped.evaluate(REQUEST);
+    await vi.advanceTimersByTimeAsync(1000);
+    const result = await promise;
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") expect(result.error.code).toBe("jev.unavailable");
+  });
+
+  it("AC2: breaker opens after N failures and returns disabled-mode results while open", async () => {
+    const mock = new MockJevTransport({
+      responder: () => errorResult("jev.unavailable", true),
+    });
+    const wrapped = wrapWithCircuitBreaker(mock, {
+      deadlineMs: 1000,
+      maxRetries: 0,
+      failureThreshold: 2,
+      resetTimeoutMs: 60_000,
+    });
+    await wrapped.evaluate(REQUEST);
+    await wrapped.evaluate(REQUEST);
+    expect(wrapped.breakerStatus().state).toBe("open");
+    const result = await wrapped.evaluate(REQUEST);
+    expect(result.kind).toBe("disabled");
+    // No underlying call was made for the third evaluate: breaker short-circuited.
+    expect(mock.calls).toHaveLength(2);
+  });
+
+  it("a successful call keeps the breaker closed and forwards the ok result", async () => {
+    const mock = new MockJevTransport({ responses: [ok()] });
+    const wrapped = wrapWithCircuitBreaker(mock, { deadlineMs: 1000, maxRetries: 0 });
+    const result = await wrapped.evaluate(REQUEST);
+    expect(result.kind).toBe("ok");
+    expect(wrapped.breakerStatus().state).toBe("closed");
+  });
+
+  it("retries a retryable error up to maxRetries then reports it", async () => {
+    const mock = new MockJevTransport({
+      responder: () => errorResult("jev.overloaded", true),
+    });
+    const wrapped = wrapWithCircuitBreaker(mock, {
+      deadlineMs: 60_000,
+      maxRetries: 2,
+      failureThreshold: 100,
+    });
+    const promise = wrapped.evaluate(REQUEST);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+    expect(result.kind).toBe("error");
+    expect(mock.calls).toHaveLength(3);
+  });
+
+  it("does not retry a non-retryable error (jev.auth)", async () => {
+    const mock = new MockJevTransport({ responses: [errorResult("jev.auth", false)] });
+    const wrapped = wrapWithCircuitBreaker(mock, { deadlineMs: 1000, maxRetries: 3 });
+    const result = await wrapped.evaluate(REQUEST);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") expect(result.error.code).toBe("jev.auth");
+    expect(mock.calls).toHaveLength(1);
+  });
+
+  it("AC3: aborting mid-retry (during backoff) stops the second attempt from ever starting", async () => {
+    const controller = new AbortController();
+    const mock = new MockJevTransport({ responder: () => errorResult("jev.overloaded", true) });
+    const wrapped = wrapWithCircuitBreaker(mock, {
+      deadlineMs: 60_000,
+      maxRetries: 3,
+      failureThreshold: 100,
+    });
+    const promise = wrapped.evaluate(REQUEST, { signal: controller.signal });
+    // Let the first attempt run and fail; it is now sleeping out the backoff.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mock.calls).toHaveLength(1);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await promise;
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") expect(result.error.code).toBe("jev.cancelled");
+    // No second attempt was made after the abort, even though maxRetries allowed one.
+    expect(mock.calls).toHaveLength(1);
+  });
+
+  it("cancellation does not trip the breaker", async () => {
+    const controller = new AbortController();
+    const mock = new MockJevTransport({ responder: () => errorResult("jev.overloaded", true) });
+    const wrapped = wrapWithCircuitBreaker(mock, {
+      deadlineMs: 60_000,
+      maxRetries: 3,
+      failureThreshold: 1,
+    });
+    const promise = wrapped.evaluate(REQUEST, { signal: controller.signal });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    await promise;
+    expect(wrapped.breakerStatus().state).toBe("closed");
+  });
+});
+
 describe("CircuitBreaker: closed/open/half-open", () => {
   it("stays closed below the failure threshold", () => {
     const b = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 1000 });
