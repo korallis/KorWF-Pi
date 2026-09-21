@@ -210,3 +210,109 @@ Truth table for C2 (rows are the recorded state; anything not listed ⇒ `⊥`):
 | disabled / no key | override `jev_disabled`/`jev_no_key` + `DET_COVERAGE` ⊤ | ⊤ |
 | disabled / no key | override recorded, `DET_COVERAGE` ⊥ | ⊥ (`fallback_coverage_gap`) |
 | disabled / no key | no override row | ⊥ (`jev_decision_missing`) — "skipped" is not a state |
+
+## 6. Phase gate — `PHASE_GATE(P)`
+
+The `phase-done` transition (`gating → done`, `Phase.gateStatus = passed`) commits **iff**
+`PHASE_GATE(P) = ⊤`. It is evaluated on the **merged result** at `SHA(P)`, by the sole
+integration owner (PLAN §3.E), and re-evaluated whenever `SHA(P)` changes
+(`phase-stale-evidence`).
+
+```
+PHASE_GATE(P) ≝ P1(P) ∧ P2(P) ∧ P3(P) ∧ P4(P) ∧ P0(P)
+
+P0(P)  ≝ P.gateStatus ∈ gating substates (integrating|verifying|review)
+       ∧ integrationOwner(P) is a single Attempt with role = integrator
+       ∧ SHA(P) is an ancestor-descendant of every done task's completion revision
+                                                                  -- merged result contains the work
+
+P1(P)  ≝ |P.tasks| ≥ 1                                            -- all tasks done
+       ∧ ∀ T ∈ P.tasks: T.status = done
+       ∧ ∀ T ∈ P.tasks: gateReceipt(T) exists                     -- done was reached via task-done, not by write
+         -- cancelled, failed, blocked, paused_cap ⇒ ⊥. A cancelled task must be removed
+         -- from the phase (plan revision bump) before the phase can pass.
+
+P2(P)  ≝ let CH = ⋃_{T ∈ P.tasks} T.checks ∪ P.integratedChecks in   -- integrated verification
+         |CH| ≥ 1
+       ∧ ∀ c ∈ CH: stateP(c, P) = pass
+         -- stateP is §4 with fresh(e) ≝ e.revision = SHA(P) ∧ e.taskRevision matches the
+         -- owning task's current revision (or null for phase-level checks) ∧ ¬superseded(e).
+         -- Task-level evidence from the task's own worktree does NOT count here: it was
+         -- captured at SHA(T) ≠ SHA(P).
+
+P3(P)  ≝ PHASE_JEV_NO_GAP(P) ∨ PHASE_JEV_DISABLED_FALLBACK(P)       -- §6.1
+
+P4(P)  ≝ let r = policy(max_{T ∈ P.tasks} T.riskClass, phaseChangeClass(P)) in
+         (r.modelReview   ⇒ ∃ fresh independent review e ∈ E(P) at SHA(P))
+       ∧ (r.humanApproval ⇒ ∃ a ∈ A: valid, a.scope = {phase, P.id}, a.planRevision = W.planRev,
+                                      a.permittedAction = complete_phase, a.actor.kind = user)
+       ∧ (∃ T ∈ P.tasks: T.riskClass = high ⇒ r.humanApproval)
+       ∧ policyResultRecorded(P)
+```
+
+`P.integratedChecks` are the workflow-level checks registered on the phase (PLAN §3.F
+"integrated checks after merges"); they live in `Phase.integrationPoint` config and are
+part of `Workflow.planRevision`, so adding one after the fact bumps the plan revision and
+invalidates phase approvals.
+
+### 6.1 Phase condition 3 and the Jev-disabled fallback
+
+Identical in shape to §5 with `questionId = phase_evidence_gap`, subject
+`{phaseId: P.id, planRevision: W.planRev}`, `freshness.revision = SHA(P)`, and the hash
+over `P.ac`, every task's gate receipt, `{(c.id, stateP(c,P))}` and fresh phase evidence.
+
+```
+PHASE_JEV_DISABLED_FALLBACK(P) ≝ ∃ d ∈ D (override reason ∈ {jev_disabled, jev_no_key, jev_unavailable},
+                                          action = deterministic_fallback, fresh)
+    ∧ PHASE_DET_COVERAGE(P)
+
+PHASE_DET_COVERAGE(P) ≝ ∀ a ∈ P.ac:
+      ∃ T ∈ P.tasks, a' ∈ T.ac: a'.coversPhaseCriterion = a.id ∧ TASK_GATE receipt for T   -- mapped down
+    ∨ ∃ c ∈ P.integratedChecks: a.id ∈ c.coversCriteria ∧ stateP(c,P) = pass                 -- or integrated
+```
+
+The same truth table as §5.2 applies with the phase reason codes. When Jev is disabled,
+**P1, P2 and P4 are unchanged.** `PHASE_JEV_NO_GAP` never substitutes for `P2`
+(a failing integrated check with `no_gap` ⇒ `⊥`), and never for `P1` (a task that is not
+`done` cannot be "assessed as effectively done").
+
+## 7. Rejection, audit and non-bypassability
+
+Every gate evaluation, pass or reject, writes exactly one `AuditEntry`:
+
+```
+AuditEntry{ table: "task" | "phase", recordId: T.id | P.id, operation: "update",
+            beforeHash: H(record before), afterHash: H(record after — equal to beforeHash on reject),
+            actor: "engine:gate:task" | "engine:gate:phase" }
+```
+
+and a gate receipt (on pass) or a rejection record (on reject) containing
+`{gate, reasonCode, detail, revision, taskRevision|planRevision, evaluatedAt, inputHash}`.
+Rejection reason codes (closed set; tests assert on them):
+
+`not_in_review`, `no_checks`, `check_trivial`, `check_fail`, `check_flaky`,
+`check_missing`, `check_unavailable`, `check_timeout`, `criterion_uncovered`,
+`evidence_stale_revision`, `evidence_stale_task_revision`, `evidence_superseded`,
+`command_identity_mismatch`, `jev_gap`, `jev_error`, `jev_decision_missing`,
+`jev_unavailable`, `fallback_coverage_gap`, `review_missing`, `review_not_independent`,
+`approval_missing`, `approval_invalid:<approvalInvalidReason>`, `approval_actor_not_user`,
+`policy_result_missing`, `status_write_forbidden`, `tasks_not_done`, `no_gate_receipt`,
+`integration_owner_invalid`, `merged_revision_changed`.
+
+Structural guarantees the implementation MUST provide (each is a bypass test in §8):
+
+1. **Single writer.** `Task.status → done` and `Phase.gateStatus → passed` are written only
+   inside `task-done` / `phase-done` by the engine, in the same transaction as the gate
+   receipt. The store rejects any patch to these fields that does not carry a gate receipt
+   whose `inputHash` matches (`status_write_forbidden`). This applies to every path: worker
+   tool calls, `korwf` commands, bash, direct SQLite access through the product, resume,
+   fork, and migration.
+2. **No waiver field.** No record has a field whose value can make C1/C3 or P1/P2/P4
+   evaluate to `⊤` without the evidence they name. `CheckDefinition.required`,
+   `Decision.override`, `Approval`, `W.mode` and `W.policyVersion` cannot do so.
+3. **Freshness is derived, not stored.** Freshness is recomputed from `SHA` and
+   `Task.revision` on every evaluation; there is no `evidence.valid` flag to flip.
+4. **Decisions are engine-only.** `Decision` rows are append-only and written by
+   `src/jev/`/`src/decisions/`; a worker cannot write one (records.md §4).
+5. **Audit before return.** The audit entry is written before the evaluation result is
+   returned, so a crash after rejection still leaves the entry.
