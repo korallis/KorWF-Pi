@@ -125,3 +125,111 @@ Conventions are those of [01-greenfield.md](01-greenfield.md) § Conventions.
   - `Task[T].status == 'review'`; policy result recorded with
     `modelReview == false`, `humanApproval == false` for `riskClass == 'low'` in
     `supervised` mode (per #15 policy fixture).
+
+### Step A4 — a later edit invalidates the check
+
+- **Given** `Task[T].status == 'review'` with `E1`, `E2`, `D1` fresh at `SHA1`.
+- **When** a commit touching `src/db/repo.ts` (inside `Task[T].ownership.paths`) lands on
+  the task branch, producing `SHA2`, before `task-done` commits.
+- **Then**
+  - `task-stale-evidence` fires: `Task[T].status == 'verifying'` (from `review`), with an
+    `AuditEntry` whose detail references old `SHA1`, new `SHA2`, and evidence ids `E1`, `E2`.
+  - `Task[T].revision == 1` still (no criteria/check change ⇒ no revision bump,
+    records.md §5.1).
+  - `E1`, `E2`, `D1` are **retained, not deleted**: rows still exist with
+    `Evidence.revision == SHA1`; `Evidence.updatedAt == Evidence.createdAt`;
+    `Decision.updatedAt == Decision.createdAt`.
+  - They are **stale** for gate purposes: `state(chk1, T) == 'missing'` and
+    `state(chk2, T) == 'missing'` at `SHA2` (gates.md §2 fresh evidence, §4).
+  - If `task-done` is attempted now (negative control), it rejects with
+    `evidence_stale_revision` (or `jev_decision_missing` if the check evidence were
+    somehow fresh), writes one `AuditEntry` with `AuditEntry.actor == 'engine:gate:task'`,
+    and `Task[T].status` is unchanged (`afterHash == beforeHash`).
+
+### Step A5 — re-verification at `SHA2`
+
+- **When** the engine reruns the registered checks at `SHA2`.
+- **Then**
+  - `Evidence[E1']`: `Evidence.checkId == 'chk1'`, `Evidence.revision == SHA2`,
+    `Evidence.taskRevision == 1`, `Evidence.supersedesId == E1.id`,
+    `Evidence.exitStatus == {kind:'exited', code:0}`,
+    `Evidence.commandIdentity.command == chk1.command` (identity unchanged).
+  - `Evidence[E2']` likewise with `Evidence.supersedesId == E2.id`.
+  - `superseded(E1) == true` (∃ row with `supersedesId == E1.id`), so `E1` contributes
+    nothing even if `SHA1` were revisited.
+  - `Decision[D2]`: `Decision.questionId == 'task_evidence_gap'`,
+    `Decision.freshness.revision == SHA2`, `Decision.stateHash != D1.stateHash`,
+    `Decision.action == 'no_gap'`, `Decision.override == null`. `D1` is not replayed
+    (records.md §10 rule 4 applies only to matching hashes).
+  - `Task[T].status: verifying → review → done`; gate receipt `revision == SHA2`,
+    `taskRevision == 1`; exactly one `AuditEntry` with `AuditEntry.actor == 'engine:gate:task'`
+    for the passing evaluation.
+  - `ModelOutcome`: one row with `ModelOutcome.attemptId == A1.id`,
+    `ModelOutcome.model == 'M-fast'`, `ModelOutcome.result == 'succeeded'`,
+    `ModelOutcome.wasFallback == false`, `ModelOutcome.taskProfile == Attempt[A1].taskProfile`.
+  - Phase gate then evaluates at `SHA(P)` (merged), exactly as scenario 1 A4–A5:
+    `Phase[P].gateStatus == 'passed'`, `Phase[P].report.evidenceIds` contains integrated
+    evidence at `SHA(P)`, not `E1'`/`E2'`.
+
+### Step A6 — cost
+
+- `Attempt[A1].usage.requests >= 1`; `Attempt[A1].usage.costBasis` set.
+- `Σ Decision.usage.requests` over the workflow equals the number of Jev mock calls
+  observed by the test harness (retrieval + task profile + selection + 2 gap questions).
+- `Phase[P].report.cost.requests` includes both attempt and decision requests.
+
+## Variant B — Jev disabled
+
+Only the differences from Variant A are asserted.
+
+### Step B1 — retrieval without ranking
+
+- Retrieval still happens through ordinary search/symbol tools (PLAN §3.B); ranking
+  falls back to deterministic ordering (e.g. symbol/dependency hits before plain-text
+  hits — exact rule owned by #35). Each retrieval `Decision` has
+  `Decision.override == {actor:'policy', reason:'jev_disabled'}`,
+  `Decision.action == 'deterministic_fallback'`, `Decision.usage.requests == 0`.
+- Explicit files and pinned context survive regardless of ranking:
+  `Attempt.inputs.pinnedPaths` includes any file the user named in the goal.
+- The three target files are still in `Attempt[A1].inputs.contextProvenance` (they are
+  reachable by symbol/dependency from `orders`); the decoys **may** also be present —
+  the disabled variant asserts inclusion, not exclusion.
+
+### Step B2 — static selection
+
+- Task profile `Decision.override.reason == 'jev_disabled'`; `Attempt[A1].taskProfile`
+  comes from the deterministic profile evaluator (#59) — `TaskProfile.risk == Task.riskClass`.
+- Selection `Decision.override.reason == 'jev_disabled'`,
+  `Decision.action == 'static_fallback_order'` semantics: `Attempt[A1].requestedModel ==
+  config.models.staticFallbackOrder[0] == 'M-fast'`, `Attempt[A1].usedModel == 'M-fast'`,
+  `Attempt[A1].fallbackReason == null` (the primary was available; static order is the
+  *selection* rule, not a fallback event).
+
+### Step B3 — first verification and gate
+
+- `E1`, `E2` as in A3. `Decision[D1]`: `Decision.questionId == 'task_evidence_gap'`,
+  `Decision.action == 'deterministic_fallback'`,
+  `Decision.override == {actor:'policy', reason:'jev_disabled'}`,
+  `Decision.jevModelVersion == null`, `Decision.confidence == null`,
+  `Decision.freshness.revision == SHA1`.
+- `DET_COVERAGE` holds: `ac1`, `ac2` each covered by a passing check and by a fresh
+  `Evidence.requirementId == ac.id`; `chk1` provenance intersects
+  `Task[T].ownership.paths` (`test/routes/orders.test.ts`).
+
+### Step B4 — invalidation and re-verification
+
+- Identical to A4/A5 — invalidation is derived from `Evidence.revision` vs `SHA(T)` and
+  has no Jev term. Assert additionally that `Decision[D2]` is a **new** fallback row at
+  `SHA2` (`Decision.freshness.revision == SHA2`, `Decision.override.reason == 'jev_disabled'`);
+  "skipped" is not a state (gates.md B10): if the test suppresses the fallback row, the
+  gate rejects with `jev_decision_missing`.
+- `Task[T].status == 'done'`; `ModelOutcome.wasFallback == false`.
+
+### Step B5 — cost
+
+- `Σ Decision.usage.requests == 0`; `Phase[P].report.cost.requests == Attempt[A1].usage.requests`.
+
+## Out of scope for this outline
+
+Retrieval quality thresholds (numeric ranking targets belong to #95/#96), prompt
+injection through fixture files (#44), and multi-task scheduling (scenario 1).
