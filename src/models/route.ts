@@ -18,10 +18,9 @@
  * Pure module: no I/O, no Pi imports, no provider names.
  */
 import { createHash } from "node:crypto";
-import type { ModelRef, RecordId } from "../storage/records.ts";
+import type { ModelRef, RouteId } from "../storage/records.ts";
 
-/** Opaque, branded route identifier. Derived, never user-supplied. */
-export type RouteId = RecordId<"route">;
+export type { RouteId };
 
 /** Version prefix so a future derivation change cannot collide with v1 ids. */
 export const ROUTE_ID_PREFIX = "r1_" as const;
