@@ -127,3 +127,73 @@ concurrently while `T1` is a hard dependency.
   - After P0 the repository has a runnable test command: `Task[T0b].checks` includes a
     check with `CheckDefinition.kind == 'command'` whose command is the test runner, and
     that same command is present in `Phase[P1].integrationPoint`-level integrated checks.
+
+### Step A3 — run phase 1: `T1` first, then `T2` ∥ `T3`
+
+- **When** the user runs `/korwf run P1` and walks away (unattended).
+- **Then**
+  - `Phase[P1].gateStatus == 'running'`; `Phase[P1].integrationPoint.baseRevision`
+    equals the merged SHA that closed P0 (`SHA(P0)`).
+  - Ordering: `Task[T1]` reaches `done` before `Task[T2].status` or `Task[T3].status`
+    becomes `ready`. Assert via `AuditEntry` order: the `task-ready` entries for `T2` and
+    `T3` have `AuditEntry.createdAt > ` the `task-done` entry for `T1`.
+  - Parallelism: `Attempt[A2].timestamps.startedAt < Attempt[A3].timestamps.endedAt` and
+    `Attempt[A3].timestamps.startedAt < Attempt[A2].timestamps.endedAt` (the two attempts
+    overlap in time). Never more than `Workflow.budgets.maxConcurrency` attempts with
+    `Attempt.outcome == null` at once.
+  - Isolation: `Attempt[A2].worktree.relativePath != Attempt[A3].worktree.relativePath`,
+    `Attempt[A2].worktree.branch != Attempt[A3].worktree.branch`, both
+    `Attempt.worktree.baseRevision == SHA(T1 completion)`.
+  - Every attempt: `Attempt.inputs.taskRevision == 1`,
+    `Attempt.inputs.contextProvenance[*].path` is relative and each has a non-empty
+    `contentHash`; `Attempt.inputs.bundleHash` non-empty.
+  - Every attempt: `Attempt.usage.requests >= 1`, `Attempt.usage.costBasis` in
+    `{known, estimated, unknown}` (never absent).
+  - Per task, one `ModelOutcome` with `ModelOutcome.attemptId == A.id`,
+    `ModelOutcome.result == 'succeeded'`, `ModelOutcome.wasFallback == false`.
+  - Task gate for each of `T1`, `T2`, `T3` (gates.md §3): fresh passing `Evidence` per
+    check (as in A2), a fresh `Decision.action == 'no_gap'` with `Decision.override == null`,
+    and a recorded policy result. Given `Task.riskClass == 'low'` for all three, no
+    `Approval` with `Approval.scope.kind == 'task'` is required and none is created; the
+    policy evaluation is still recorded (gates.md C3 `policyResultRecorded`).
+  - No task went through `needs_changes`, `failed`, `blocked` or `paused_cap`:
+    `count(AuditEntry where table == 'task' and afterHash corresponds to those statuses) == 0`
+    (implemented as: no `Task.blocker != null` at any audited point).
+
+### Step A4 — integration (single owner) and integrated verification
+
+- **When** all three tasks are `done`.
+- **Then**
+  - `Phase[P1].gateStatus == 'integrating'` (`phase-gate` from `running`).
+  - Exactly one `Attempt` with `Attempt.role == 'integrator'` for P1;
+    `Attempt.taskId` refers to a task in P1 (or the phase's integration task as decided in
+    Stage 6) and no second integrator attempt overlaps it in time.
+  - `SHA(P1)` (head of `Phase[P1].integrationPoint.branch`) is a descendant of each task's
+    completion revision (gates.md P0).
+  - Integrated checks run at `SHA(P1)`: for every check in `⋃ Task.checks ∪ P.integratedChecks`
+    there is `Evidence.revision == SHA(P1)`, `Evidence.exitStatus == {kind:'exited', code:0}`,
+    `Evidence.reviewer.kind == 'deterministic'`. Task-worktree evidence
+    (`Evidence.revision == SHA(T)`) is **not** reused (gates.md P2).
+  - `Phase[P1].gateStatus` moves `integrating → verifying → review`.
+  - One fresh `Decision` with `Decision.questionId == 'phase_evidence_gap'`,
+    `Decision.subject == {phaseId: P1.id}`, `Decision.action == 'no_gap'`,
+    `Decision.override == null`, `Decision.freshness.revision == SHA(P1)`.
+
+### Step A5 — phase gate and report
+
+- **When** the phase gate is evaluated.
+- **Then**
+  - `Phase[P1].gateStatus == 'passed'` (`phase-done`); exactly one `AuditEntry` with
+    `AuditEntry.actor == 'engine:gate:phase'`, `AuditEntry.recordId == P1.id`.
+  - `Phase[P1].report != null`; `Phase[P1].report.summary` non-empty;
+    `Phase[P1].report.evidenceIds` ⊇ the ids of every integrated-check `Evidence` at `SHA(P1)`;
+    `Phase[P1].report.openQuestions` is an array (may be empty);
+    `Phase[P1].report.cost.requests == Σ Attempt.usage.requests` over P1 attempts plus
+    P1 `Decision.usage.requests`; `Phase[P1].report.cost.costBasis != 'known'` only if some
+    contributing `Usage.costBasis != 'known'`; `Phase[P1].report.producedAt != null`.
+  - `Workflow.status == 'completed'` (both phases passed, `run` was scoped to P1 which was
+    the last phase).
+  - Budget: `Phase[P1].report.cost.spendUsd <= Workflow.budgets.maxSpendUsd` when
+    `spendUsd != null`.
+  - Nothing external happened without approval: `count(Approval where permittedAction
+    not in {approve_plan, run_phase}) == 0` (no publish/deploy/etc. approvals exist).
