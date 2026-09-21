@@ -89,6 +89,116 @@
       "type": "string",
       "enum": ["default", "plan", "implement", "test", "review", "docs", "refactor", "research"],
       "description": "Task kinds used for pins and fallback policy. `default` applies where no specific kind is set."
+    },
+    "BudgetCaps": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Matches the `Budget` record in docs/records.md. `null` = no cap of this kind. All numeric caps are >= 0.",
+      "properties": {
+        "maxSpendUsd": { "$ref": "#/$defs/NonNegativeOrNull" },
+        "maxTokens": { "$ref": "#/$defs/NonNegativeOrNull" },
+        "maxRequests": { "$ref": "#/$defs/NonNegativeOrNull" },
+        "maxConcurrency": { "$ref": "#/$defs/NonNegativeOrNull" },
+        "maxElapsedMs": { "$ref": "#/$defs/NonNegativeOrNull" }
+      }
+    },
+    "Budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "description": "Hard-stop caps (PLAN §2.6). Exceeding any cap stops the scope and surfaces a resumable state. Task <= phase <= workflow is enforced by the validator when both are non-null.",
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/BudgetCaps",
+          "default": { "maxSpendUsd": 10, "maxTokens": null, "maxRequests": null, "maxConcurrency": 2, "maxElapsedMs": null }
+        },
+        "phase": {
+          "$ref": "#/$defs/BudgetCaps",
+          "default": { "maxSpendUsd": null, "maxTokens": null, "maxRequests": null, "maxConcurrency": null, "maxElapsedMs": null }
+        },
+        "task": {
+          "$ref": "#/$defs/BudgetCaps",
+          "default": { "maxSpendUsd": null, "maxTokens": null, "maxRequests": 200, "maxConcurrency": 1, "maxElapsedMs": 3600000 }
+        },
+        "jev": {
+          "$ref": "#/$defs/BudgetCaps",
+          "default": { "maxSpendUsd": 1, "maxTokens": null, "maxRequests": null, "maxConcurrency": 4, "maxElapsedMs": null },
+          "description": "Per-workflow cap on Jev (TypeSafe) spend, separate from model spend. Irrelevant when Jev is disabled."
+        },
+        "costEstimateBeforeRun": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a cost estimate and require confirmation before `run` begins (PLAN §2.6)."
+        }
+      }
+    },
+    "Mode": {
+      "type": "string",
+      "enum": ["shadow", "advisory", "supervised", "bounded_autonomous"],
+      "default": "shadow",
+      "description": "Operating mode (docs/records.md `WorkflowMode`). Shadow: observe and record only, no mutation. Advisory: propose, never act. Supervised: act only on explicit approval. Bounded autonomous: act within budgets and approval classes."
+    },
+    "ApprovalDecision": {
+      "type": "string",
+      "enum": ["auto", "queue", "stop"],
+      "description": "PLAN §2.6: auto = pre-approved for the mode; queue = block this task, continue others, notify; stop = stop the phase and wait for the user."
+    },
+    "ApprovalPolicyPerMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shadow", "advisory", "supervised", "bounded_autonomous"],
+      "properties": {
+        "shadow": { "$ref": "#/$defs/ApprovalDecision" },
+        "advisory": { "$ref": "#/$defs/ApprovalDecision" },
+        "supervised": { "$ref": "#/$defs/ApprovalDecision" },
+        "bounded_autonomous": { "$ref": "#/$defs/ApprovalDecision" }
+      }
+    },
+    "HighRiskPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "High-risk classes (PLAN §7) are `stop` in every mode; the schema forbids any other value so config cannot weaken it.",
+      "properties": {
+        "shadow": { "const": "stop" },
+        "advisory": { "const": "stop" },
+        "supervised": { "const": "stop" },
+        "bounded_autonomous": { "const": "stop" }
+      }
+    },
+    "Approvals": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "queueTimeoutMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Minutes a queued approval waits before the task is marked blocked. 0 = wait indefinitely (never auto-approve on timeout)."
+        },
+        "classes": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "Action class → decision per mode. Low/medium-risk classes are configurable; high-risk classes are fixed to `stop`.",
+          "properties": {
+            "read_repository": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "auto", "advisory": "auto", "supervised": "auto", "bounded_autonomous": "auto" } },
+            "edit_worktree": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "auto" } },
+            "run_checks": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "auto", "bounded_autonomous": "auto" } },
+            "run_shell": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "queue" } },
+            "install_dependencies": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "queue" } },
+            "local_commit": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "auto" } },
+            "spawn_worker": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "auto" } },
+            "model_fallback": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "auto", "advisory": "auto", "supervised": "queue", "bounded_autonomous": "auto" } },
+            "complete_task": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "auto" } },
+            "destructive_cleanup": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } },
+            "remote_push": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } },
+            "deployment": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } },
+            "credential_access": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } },
+            "publishing": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } }
+          }
+        }
+      }
     }
   }
 }
