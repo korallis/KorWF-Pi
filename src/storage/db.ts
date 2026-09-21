@@ -265,7 +265,7 @@ export class Store {
     try {
       return this.write(() =>
         reconcileAbandonedAttempts(
-          { attempts: this.attempts, audit: this.audit },
+          { attempts: this.attempts, audit: this.audit, ledger: this.ledger },
           { ...options, now: options.now ?? (() => this.#now()) },
         ),
       );

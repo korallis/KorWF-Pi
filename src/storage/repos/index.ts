@@ -258,9 +258,19 @@ export class LedgerRepository extends AppendOnlyRepository<LedgerEntry> {
     super(ctx, ledgerEntrySpec);
   }
 
-  /** Every row of one reservation's life, oldest first. */
+  /**
+   * Every row of one reservation's life, in insertion order.
+   *
+   * Ordered by `rowid` rather than `createdAt, id`: a reservation and its
+   * settlement are frequently written within the same millisecond, and an id
+   * is opaque, so a timestamp tie must not be broken by lexical id order.
+   * `rowid` is SQLite's own monotonic insertion counter.
+   */
   forReservation(reservationId: string): readonly LedgerEntry[] {
-    return this.findBy("reservationId", reservationId);
+    const rows = this.ctx.db
+      .prepare("SELECT payload FROM ledger_entry WHERE reservationId = ? ORDER BY rowid")
+      .all(reservationId) as unknown as { payload: string }[];
+    return rows.map((row) => JSON.parse(row.payload) as LedgerEntry);
   }
 
   /** Reservations with no terminal row yet: what reconciliation examines. */

@@ -40,11 +40,15 @@ export type { ArtifactManifest, ArtifactManifestEntry } from "./artifacts.ts";
 
 export {
   ABANDONED_OUTCOME,
+  LEDGER_ABANDONED_REASON,
   assumeWorkersGone,
   reconcileAbandonedAttempts,
+  reconcileOpenReservations,
 } from "./reconcile.ts";
 export type {
+  AbandonedReservationRow,
   ReconcileOptions,
+  ReconcileReservationsOptions,
   ReconciledAttempt,
   ReconciliationReport,
   WorkerLiveness,

@@ -43,6 +43,11 @@ import { RECORDS_SCHEMA_VERSION } from "../storage/records.ts";
 import type { LedgerScopeColumn } from "../storage/repos/index.ts";
 import type { Store } from "../storage/db.ts";
 import { StoreError } from "../storage/errors.ts";
+import {
+  LEDGER_ABANDONED_REASON,
+  reconcileOpenReservations,
+  type AbandonedReservationRow,
+} from "../storage/reconcile.ts";
 import type { BudgetsConfig } from "../config/types.ts";
 
 // ---------------------------------------------------------------------------
@@ -616,15 +621,8 @@ function normaliseScope(scope: ChargeScope): LedgerScope {
 // Startup reconciliation (issue #30 AC 3)
 // ---------------------------------------------------------------------------
 
-/** One reservation closed by reconciliation. */
-export interface AbandonedReservation {
-  readonly reservationId: ReservationId;
-  readonly sessionId: string;
-  readonly channel: UsageChannel;
-  readonly workflowId: WorkflowId;
-  /** The estimate that stays charged, because we cannot know what was used. */
-  readonly estimate: Usage;
-}
+/** One reservation closed by reconciliation. Re-exported from the store half. */
+export type AbandonedReservation = AbandonedReservationRow;
 
 export interface LedgerReconciliationReport {
   readonly at: IsoTimestamp;
@@ -633,8 +631,7 @@ export interface LedgerReconciliationReport {
   readonly reservations: readonly AbandonedReservation[];
 }
 
-export const LEDGER_ABANDONED_REASON =
-  "reservation had no settlement when the store was reopened";
+export { LEDGER_ABANDONED_REASON };
 
 export interface LedgerReconcileOptions {
   /**
@@ -665,41 +662,15 @@ export function reconcileAbandonedReservations(
   options: LedgerReconcileOptions = {},
 ): LedgerReconciliationReport {
   const now = options.now ?? (() => new Date().toISOString());
-  const newId = options.newId ?? defaultLedgerId;
-  const keep = options.keepSessionId ?? ledger.sessionId;
   const at = now();
-  const closed: AbandonedReservation[] = [];
-
-  store.write(() => {
-    for (const open of store.ledger.openReservations()) {
-      if (open.sessionId === keep) continue;
-      store.ledger.insert({
-        id: newId() as LedgerEntryId,
-        createdAt: at,
-        updatedAt: at,
-        schemaVersion: RECORDS_SCHEMA_VERSION,
-        kind: "append_only",
-        scope: open.scope,
-        channel: open.channel,
-        entryKind: "abandonment",
-        reservationId: open.reservationId,
-        sessionId: open.sessionId,
-        // The estimate stands: we cannot verify what the dead call used.
-        usage: open.usage,
-        elapsedMs: open.elapsedMs,
-        label: open.label,
-        reason: LEDGER_ABANDONED_REASON,
-      });
-      closed.push({
-        reservationId: open.reservationId,
-        sessionId: open.sessionId,
-        channel: open.channel,
-        workflowId: open.scope.workflowId,
-        estimate: open.usage,
-      });
-    }
-  });
-
+  const keep = options.keepSessionId ?? ledger.sessionId;
+  const closed = store.write(() =>
+    reconcileOpenReservations(store.ledger, {
+      keepSessionId: keep,
+      now: () => at,
+      ...(options.newId === undefined ? {} : { newId: options.newId }),
+    }),
+  );
   return { at, examined: closed.length, abandoned: closed.length, reservations: closed };
 }
 
