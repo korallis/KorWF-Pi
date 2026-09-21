@@ -26,7 +26,6 @@ import {
   makeIsolatedPi,
   piCliAvailable,
   runKorwf,
-  type IsolatedPi,
 } from "./pi-session.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));

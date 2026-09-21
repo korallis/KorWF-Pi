@@ -115,10 +115,12 @@ export function sessionEnv(
     PI_SKIP_VERSION_CHECK: "1",
     PI_TELEMETRY: "0",
     NO_COLOR: "1",
-    ...extra,
   };
+  // Drop credential-shaped names *first*, then apply the caller's additions:
+  // a test that deliberately supplies a fake key (`no-credential-leak`) must
+  // still get it, while the default is an environment with none.
   for (const name of CREDENTIAL_ENV_VARS) delete env[name];
-  return env;
+  return { ...env, ...extra };
 }
 
 /** Result of one Pi invocation. */
