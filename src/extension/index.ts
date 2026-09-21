@@ -19,8 +19,10 @@ import { getPackageVersion } from "./commands/version.ts";
 import { RouteAvailabilityTable } from "../models/availability.ts";
 import { guardHandler, redactedUi } from "./redacted-ui.ts";
 import { jevStatusMessage } from "./commands/jev-status.ts";
+import { purgeMessage, whyMessage } from "./commands/why.ts";
+import { openStore, resolveStorageRoot } from "../storage/index.ts";
 
-const SUBCOMMANDS = ["version", "models", "status", "config", "disclosure", "jev"] as const;
+const SUBCOMMANDS = ["version", "models", "status", "config", "disclosure", "jev", "why", "purge"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 function isSubcommand(value: string): value is Subcommand {
@@ -43,7 +45,7 @@ export default function korwfExtension(pi: ExtensionAPI): void {
       // (#22): a raw `ctx.ui` is never notified below this line, and
       // `guardHandler` redacts anything thrown before Pi sees it.
       const ui = redactedUi(ctx.ui);
-      const [sub] = args.trim().split(/\s+/);
+      const [sub, ...rest] = args.trim().split(/\s+/);
 
       if (!sub || !isSubcommand(sub)) {
         ui.notify(`Unknown subcommand. Use: ${SUBCOMMANDS.join(", ")}`, "warning");
@@ -74,6 +76,30 @@ export default function korwfExtension(pi: ExtensionAPI): void {
           case "jev": {
             // Credential status: source, length and fingerprint — never a key.
             ui.notify(jevStatusMessage(loadForProject(ctx.cwd)), "info");
+            return;
+          }
+          case "why":
+          case "purge": {
+            // Traces and their retention both live in the store (#23); this
+            // opens it read-write for `purge` (deletion) and read-only for
+            // `why`, so explaining a decision can never mutate anything.
+            const result = loadForProject(ctx.cwd);
+            if (!result.ok) {
+              ui.notify(configMessage(result), "error");
+              return;
+            }
+            const storageRoot = resolveStorageRoot(ctx.cwd, result.config.storage.path ?? undefined);
+            const { store } = openStore({ storageRoot, writable: sub === "purge" });
+            try {
+              ui.notify(
+                sub === "why"
+                  ? whyMessage(store, rest.join(" "))
+                  : purgeMessage(store, result.config, { all: rest.includes("--all") }),
+                "info",
+              );
+            } finally {
+              store.close();
+            }
             return;
           }
           case "disclosure": {
