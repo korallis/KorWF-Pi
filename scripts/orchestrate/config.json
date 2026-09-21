@@ -47,8 +47,8 @@
     "maxWorkerTokensPerSession": 8000000
   },
   "policy": {
-    "$comment": "merge: 'never' (open PRs only) | 'auto-low-risk' (squash-merge PRs whose deterministic checks pass, Jev finds no gap, and the issue is not risk:high or needs-human).",
-    "merge": "never",
+    "$comment": "merge: 'never' (open PRs only, human merges) | 'jev-review' (after the evidence gate passes, run the merge review: hard checks + Jev complete/honest/in-scope/violation/quality; squash-merge only if all pass, otherwise needs-human). Never merges risk:high.",
+    "merge": "jev-review",
     "gapThresholdPass": 0.7,
     "gapThresholdFail": 0.4,
     "capCooldownMinutes": 15

@@ -400,10 +400,9 @@ async function dispatch(jev, cand) {
     attempt.outcome = "awaiting-review"; saveState();
     log(`#${issue.number}: PASS → ${checks.prUrl} (gap source ${gap.source})`);
     gh(["issue", "comment", String(issue.number), "-b", `Orchestrator: attempt ${attemptNo} complete. Deterministic checks: pushed=${checks.pushed} pr=${checks.prExists} closesRef=${checks.closesRef} tests=${checks.testsExit ?? "n/a"}. Jev evidence-gap review: no unmet criteria (overclaim p=${gap.overclaims?.toFixed(2) ?? "n/a"}). PR: ${checks.prUrl}\n\n**Awaiting human review and merge.**`]);
-    if (CONFIG.policy.merge === "auto-low-risk" && !issue.labels.some((l) => ["risk:high", "needs-human"].includes(l)) && checks.testsExit !== 1) {
-      gh(["pr", "merge", checks.prUrl, "--squash", "--delete-branch"]);
-      attempt.outcome = "merged"; saveState();
-      log(`#${issue.number}: auto-merged`);
+    if (CONFIG.policy.merge === "jev-review") {
+      try { await mergeReview(jev, issue.number); }
+      catch (e) { log(`#${issue.number}: merge review error ${e.message}`); }
     }
     return "done";
   }
@@ -452,8 +451,21 @@ async function mergeReview(jev, n) {
   if (!attempt || attempt.outcome !== "awaiting-review") throw new Error(`#${n} is not awaiting review (last outcome: ${attempt?.outcome ?? "none"})`);
   const { dir, branch } = ensureWorktree(issue);
   sh("git", ["fetch", "-q", "origin"], { cwd: dir });
-  const pr = JSON.parse(gh(["pr", "view", branch, "--json", "number,url,body,title,mergeable,mergeStateStatus"]));
+  const prState = () => JSON.parse(gh(["pr", "view", branch, "--json", "number,url,body,title,mergeable,mergeStateStatus"]));
+  let pr = prState();
   const hard = [];
+  if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") {
+    // Earlier PRs in the batch landed first (e.g. adjacent TODO.md ticks). Orchestrator-only rebase; workers never force-push.
+    try {
+      sh("git", ["rebase", "origin/main"], { cwd: dir });
+      sh("git", ["push", "--force-with-lease", "origin", branch], { cwd: dir });
+      log(`#${n}: rebased ${branch} onto origin/main`);
+      for (let i = 0; i < 6; i++) { await new Promise((r) => setTimeout(r, 5000)); pr = prState(); if (pr.mergeable === "MERGEABLE") break; }
+    } catch (e) {
+      try { sh("git", ["rebase", "--abort"], { cwd: dir }); } catch {}
+      hard.push(`rebase onto main conflicts: ${String(e.stderr ?? e.message).slice(-300)}`);
+    }
+  }
   if (pr.mergeable !== "MERGEABLE" || pr.mergeStateStatus !== "CLEAN") hard.push(`PR state ${pr.mergeable}/${pr.mergeStateStatus}`);
   if (issue.labels.some((l) => ["risk:high", "needs-human"].includes(l))) hard.push("issue labelled risk:high or needs-human — human merge only");
   const { stat, diff } = branchDiff(dir);
