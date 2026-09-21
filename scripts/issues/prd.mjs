@@ -143,4 +143,66 @@ route for the same model id.
     files: ["src/models/*", "src/config/schema.json", "test/models/*"],
     deps: ["prd-route-identity", "m5-workers"],
   },
+  {
+    key: "m2-third-party-notices",
+    title: "Add THIRD_PARTY_NOTICES.md and attribution header when first Pi example code is copied",
+    milestone: "M2",
+    labels: ["stage:2", "type:docs", "area:docs"],
+    planRef: "ADR 0001 (docs/adr/0001-reuse-of-pi-examples.md)",
+    todoRef: "n/a (opened directly)",
+    context: `
+ADR 0001 decides that several Pi 0.86.0 example extensions are copied or adapted. Pi is MIT
+(author Mario Zechner / earendil-works). The install tree ships no LICENSE file, so the notice
+text must come from the upstream repository github.com/earendil-works/pi.
+
+Attribution is a licence obligation, not a nicety: shipping adapted MIT code without the notice
+would be a licence violation in a package intended for public distribution (PLAN \u00a73.J).
+`,
+    plan: "> ADR 0001 \u2014 reuse/extend/replace table for Pi's shipped examples.",
+    scope: [
+      "`THIRD_PARTY_NOTICES.md` at repo root reproducing the upstream MIT notice, listing each adapted file with its source path and Pi version.",
+      "Every adapted file starts with the ADR 0001 header comment.",
+      "A test or lint step fails if a file cites a Pi example in its header but is absent from THIRD_PARTY_NOTICES.md.",
+    ],
+    deliverables: ["`THIRD_PARTY_NOTICES.md`.", "Attribution headers on adapted files.", "A check that enforces the pairing."],
+    acceptance: [
+      "`THIRD_PARTY_NOTICES.md` exists and reproduces the upstream MIT notice with author and Pi version.",
+      "Every file adapted from a Pi example carries the ADR 0001 header.",
+      "The check fails when a header cites a Pi example that the notices file omits.",
+    ],
+    verification: ["`npm run typecheck && npm run build`", "`npm test`"],
+    files: ["THIRD_PARTY_NOTICES.md", "test/**"],
+    deps: ["m2-package"],
+  },
+  {
+    key: "m2-third-party-notices",
+    title: "Add THIRD_PARTY_NOTICES.md and attribution header when first Pi example code is copied",
+    milestone: "M2",
+    labels: ["stage:2", "type:docs", "area:docs"],
+    planRef: "ADR 0001 (docs/adr/0001-reuse-of-pi-examples.md)",
+    todoRef: "n/a (opened directly)",
+    context: `
+ADR 0001 decides that several Pi 0.86.0 example extensions are copied or adapted. Pi is MIT
+(author Mario Zechner / earendil-works). The install tree ships no LICENSE file, so the notice
+text must come from the upstream repository github.com/earendil-works/pi.
+
+Attribution is a licence obligation, not a nicety: shipping adapted MIT code without the notice
+would be a licence violation in a package intended for public distribution (PLAN \u00a73.J).
+`,
+    plan: "> ADR 0001 \u2014 reuse/extend/replace table for Pi's shipped examples.",
+    scope: [
+      "`THIRD_PARTY_NOTICES.md` at repo root reproducing the upstream MIT notice, listing each adapted file with its source path and Pi version.",
+      "Every adapted file starts with the ADR 0001 header comment.",
+      "A test or lint step fails if a file cites a Pi example in its header but is absent from THIRD_PARTY_NOTICES.md.",
+    ],
+    deliverables: ["`THIRD_PARTY_NOTICES.md`.", "Attribution headers on adapted files.", "A check that enforces the pairing."],
+    acceptance: [
+      "`THIRD_PARTY_NOTICES.md` exists and reproduces the upstream MIT notice with author and Pi version.",
+      "Every file adapted from a Pi example carries the ADR 0001 header.",
+      "The check fails when a header cites a Pi example that the notices file omits.",
+    ],
+    verification: ["`npm run typecheck && npm run build`", "`npm test`"],
+    files: ["THIRD_PARTY_NOTICES.md", "test/**"],
+    deps: ["m2-package"],
+  },
 ];

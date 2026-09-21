@@ -111,5 +111,6 @@
   "m8-release": 110,
   "prd-route-identity": 125,
   "prd-output-budget": 124,
-  "prd-route-health": 123
+  "prd-route-health": 123,
+  "m2-third-party-notices": 113
 }
