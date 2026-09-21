@@ -151,6 +151,11 @@ export class HttpJevTransport implements JevTransport {
     this.#userAgent = options.userAgent ?? DEFAULT_USER_AGENT;
   }
 
+  /** The configured origin. Read-only; lets a wrapper (e.g. #26's circuit breaker) key state per host. */
+  get baseUrl(): string {
+    return this.#baseUrl;
+  }
+
   async ping(options: JevEvaluateOptions = {}): Promise<JevEvaluateResult> {
     // A minimal, cheap request: one noul question over empty state. Real
     // reachability probe, still a billed call, so callers use it sparingly.

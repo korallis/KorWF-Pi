@@ -3,7 +3,7 @@
  * throws, no live network request is ever attempted.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { createJev, DisabledJevTransport, HttpJevTransport } from "../../../src/jev/index.ts";
+import { createJev, DisabledJevTransport } from "../../../src/jev/index.ts";
 import { defaultConfig } from "../../../src/config/index.ts";
 import { clearRegisteredSecrets } from "../../../src/security/redact.ts";
 import type { KorwfConfig } from "../../../src/config/types.ts";
@@ -65,7 +65,8 @@ describe("createJev: key present => HttpJevTransport with the configured base UR
       jev: { ...base.jev, enabled: true, baseUrl: "https://proxy.example.internal" },
     } as KorwfConfig;
     const jev = createJev(config, { env: { TYPESAFE_API_KEY: "apikey_ZZZZfakefakefake0123456789abcdef" } }); // check-secrets:allow
-    expect(jev).toBeInstanceOf(HttpJevTransport);
+    // createJev now wraps the transport in the resilience layer (#26); the
+    // wrapper still reports kind "http", forwarding the underlying transport's.
     expect(jev.kind).toBe("http");
   });
 });

@@ -28,11 +28,32 @@ export { JevTransportError, noulQuestion, choiceQuestion, scoreQuestion } from "
 export type { HttpJevTransportOptions, FetchLike } from "./http.ts";
 export type { MockCall, MockResponder, MockJevTransportOptions } from "./mock.ts";
 
+export {
+  withDeadline,
+  withRetry,
+  CircuitBreaker,
+  CircuitBreakerRegistry,
+  DEFAULT_BREAKER_HOST,
+  DeadlineExceededError,
+  RetryAbortedError,
+  wrapWithCircuitBreaker,
+} from "./resilience.ts";
+export type {
+  WithDeadlineOptions,
+  RetryOptions,
+  BreakerState,
+  BreakerStatus,
+  CircuitBreakerOptions,
+  ResilientJevOptions,
+  ResilientJevTransport,
+} from "./resilience.ts";
+
 import type { KorwfConfig } from "../config/types.ts";
 import { resolveJevKey, type ResolveOptions } from "../security/secrets.ts";
 import { DisabledJevTransport } from "./disabled.ts";
 import { HttpJevTransport, type FetchLike } from "./http.ts";
 import { MockJevTransport } from "./mock.ts";
+import { wrapWithCircuitBreaker } from "./resilience.ts";
 import type { JevTransport } from "./transport.ts";
 
 export { HttpJevTransport, MockJevTransport, DisabledJevTransport };
@@ -54,12 +75,16 @@ export function createJev(config: Pick<KorwfConfig, "jev">, options: CreateJevOp
   if (!resolution.jevEnabled || resolution.secret === null) {
     return new DisabledJevTransport(resolution.message);
   }
-  return new HttpJevTransport({
+  const http = new HttpJevTransport({
     baseUrl: config.jev.baseUrl,
     model: config.jev.model,
     apiKey: resolution.secret,
     timeoutMs: config.jev.timeoutMs,
     maxRetries: config.jev.maxRetries,
     ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+  });
+  return wrapWithCircuitBreaker(http, {
+    deadlineMs: config.jev.timeoutMs,
+    maxRetries: config.jev.maxRetries,
   });
 }
