@@ -148,6 +148,39 @@ EOF
 )" --wait --timeout 2700000
 ```
 
+### 2.4b Run a fleet — parallel without losing quality
+
+`herdr agent prompt --wait` blocks until the agent settles, which serialises a fleet. Do
+not drop `--wait` to get around that: **without it the submission is not reliably
+delivered**, and an agent will sit at `0.0%` context while you believe it is working. That
+has happened three times here.
+
+Use the helper, which backgrounds the blocking call *and verifies delivery*:
+
+```bash
+D=.pi/skills/korwf-worker-delegation/scripts/dispatch-worker.sh
+$D issue-15  /tmp/p15.md      # {"agent":"issue-15","delivered":true,...}
+$D issue-17  /tmp/p17.md
+$D issue-125 /tmp/p125.md
+```
+
+It polls the agent out of `idle` and reports `delivered:false` if the prompt did not land
+(`agent_prompt_stalled` on a freshly started agent is transient — it retries once). **Never
+treat a dispatch as successful without that confirmation.**
+
+What keeps quality up while running several at once:
+
+| Rule | Why |
+|---|---|
+| One issue, one branch, one worktree, one agent | No two agents ever touch the same files |
+| Pick issues with **disjoint deliverables** | Two spec issues writing different docs are safe; two touching `src/models/` are not |
+| Respect declared `deps` | `ask-jev.mjs pick-issue` already filters on real issue state |
+| Keep `workers.concurrency` (2–3) in mind as the honest ceiling | More agents means more of *your* attention per merge, and review is the bottleneck, not dispatch |
+| Review and merge **serially** | Each merge changes `main`; the next PR must rebase onto it and be re-verified (§2.6) |
+
+A fleet does not lower the bar: every PR still passes the same evidence gate, the same
+independent re-run of its verification commands, and the same merge review.
+
 ### 2.5 Supervise — this is the part batch mode cannot do
 
 ```bash
