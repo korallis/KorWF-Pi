@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  ensureDisclosureAccepted,
   DISCLOSURE_VERSION,
   DisclosureRequiredError,
   acceptDisclosure,
@@ -18,8 +19,12 @@ import {
   type DisclosureStore,
   type OutboundEdge,
 } from "../../../src/extension/disclosure.ts";
+import { createFileDisclosureStore, disclosureRecordPath } from "../../../src/extension/disclosure.ts";
 import { defaultConfig } from "../../../src/config/index.ts";
 import type { KorwfConfig } from "../../../src/config/index.ts";
+import { makeTempDir } from "../../helpers/temp-dir.ts";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 
 const PROJECT = "/tmp/project-a";
 const OTHER = "/tmp/project-b";
@@ -172,5 +177,89 @@ describe("AC3: the disclosure text names every data class and reflects the effec
     const d = defaultConfig();
     const config = { ...d, privacy: { ...d.privacy, denyPaths: [...d.privacy.denyPaths, "docs/private/**"] } } as KorwfConfig;
     expect(buildDisclosure(config).neverLeaves[0]).toContain("41 deny globs");
+  });
+});
+
+describe("AC3/AC4: the interactive flow shows once, records acceptance, and honours a decline", () => {
+  it("prompts on first use only, and the gate opens after acceptance", async () => {
+    const config = defaultConfig();
+    const store = createMemoryDisclosureStore();
+    let prompts = 0;
+    const ui = {
+      confirm: () => {
+        prompts += 1;
+        return true;
+      },
+    };
+    const first = await ensureDisclosureAccepted(config, PROJECT, store, ui, { packageVersion: PKG });
+    expect(first).toEqual({ shown: true, accepted: true, reason: "never_shown" });
+    const second = await ensureDisclosureAccepted(config, PROJECT, store, ui, { packageVersion: PKG });
+    expect(second).toEqual({ shown: false, accepted: true, reason: "accepted" });
+    expect(prompts).toBe(1);
+    expect(() => assertOutboundAllowed(config, PROJECT, store, "typesafe")).not.toThrow();
+  });
+
+  it("a decline records nothing and leaves the outbound gate shut", async () => {
+    const config = defaultConfig();
+    const store = createMemoryDisclosureStore();
+    const transport = stubTransport();
+    const outcome = await ensureDisclosureAccepted(config, PROJECT, store, { confirm: () => false }, { packageVersion: PKG });
+    expect(outcome).toEqual({ shown: true, accepted: false, reason: "declined" });
+    expect(store.get(PROJECT)).toBeNull();
+    expect(() => guardOutbound(config, PROJECT, store, "typesafe", transport.send)()).toThrow(DisclosureRequiredError);
+    expect(transport.calls).toBe(0);
+  });
+
+  it("with no UI (print/RPC mode) nothing is auto-accepted on the user's behalf", async () => {
+    const config = defaultConfig();
+    const store = createMemoryDisclosureStore();
+    const outcome = await ensureDisclosureAccepted(
+      config,
+      PROJECT,
+      store,
+      { confirm: () => true, hasUI: false },
+      { packageVersion: PKG },
+    );
+    expect(outcome).toEqual({ shown: false, accepted: false, reason: "no_ui" });
+    expect(store.get(PROJECT)).toBeNull();
+  });
+});
+
+describe("AC3: acceptance is recorded in the project's storage root and survives a restart", () => {
+  it("writes disclosureAcceptedAt and the package version, then reads them back", () => {
+    const dir = makeTempDir();
+    try {
+      const config = defaultConfig();
+      const store = createFileDisclosureStore(config);
+      expect(disclosureStatus(config, dir.path, store).required).toBe(true);
+      acceptDisclosure(dir.path, store, { packageVersion: PKG, now: () => new Date("2026-03-04T05:06:07Z") });
+      expect(existsSync(disclosureRecordPath(dir.path, config))).toBe(true);
+
+      // A fresh store stands in for a new session.
+      const reopened = createFileDisclosureStore(config);
+      const status = disclosureStatus(config, dir.path, reopened);
+      expect(status.required).toBe(false);
+      expect(status.reason === "accepted" && status.acceptance.disclosureAcceptedAt).toBe("2026-03-04T05:06:07.000Z");
+      expect(status.reason === "accepted" && status.acceptance.packageVersion).toBe(PKG);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  it("treats a corrupt record as not accepted, so the gate stays closed", () => {
+    const dir = makeTempDir();
+    try {
+      const config = defaultConfig();
+      const file = disclosureRecordPath(dir.path, config);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, "{ not json");
+      const store = createFileDisclosureStore(config);
+      expect(disclosureStatus(config, dir.path, store)).toEqual({ required: true, reason: "never_shown" });
+      const transport = stubTransport();
+      expect(() => guardOutbound(config, dir.path, store, "typesafe", transport.send)()).toThrow(DisclosureRequiredError);
+      expect(transport.calls).toBe(0);
+    } finally {
+      dir.cleanup();
+    }
   });
 });

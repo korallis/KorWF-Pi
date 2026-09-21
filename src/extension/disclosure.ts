@@ -13,6 +13,9 @@
  * The gate itself is deterministic and cannot be waived by Jev, by a worker,
  * or by a config flag other than the documented `privacy.firstUseDisclosure`.
  */
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { resolveStorageRoot } from "../storage/paths.ts";
 import type { KorwfConfig } from "../config/types.ts";
 
 /**
@@ -133,6 +136,46 @@ export function createMemoryDisclosureStore(
   };
 }
 
+/** File name of the disclosure record inside the storage root. */
+export const DISCLOSURE_RECORD_FILE = "disclosure.json";
+
+/** Absolute path of the disclosure record for a project under its storage root. */
+export function disclosureRecordPath(projectRoot: string, config: KorwfConfig): string {
+  return join(resolveStorageRoot(projectRoot, config.storage.path ?? undefined), DISCLOSURE_RECORD_FILE);
+}
+
+/**
+ * Disclosure state persisted in the project's own storage root
+ * (`<project>/.korwf/disclosure.json` by default), so acceptance survives
+ * restarts and is visible to the user alongside the rest of the workflow
+ * state. A malformed or unreadable record is treated as "not accepted" —
+ * the safe direction, since it only ever re-shows the disclosure.
+ */
+export function createFileDisclosureStore(config: KorwfConfig): DisclosureStore {
+  return {
+    get: (projectRoot) => {
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(disclosureRecordPath(projectRoot, config), "utf8"));
+        if (typeof parsed !== "object" || parsed === null) return null;
+        const r = parsed as Partial<DisclosureAcceptance>;
+        if (typeof r.disclosureAcceptedAt !== "string" || typeof r.disclosureVersion !== "number") return null;
+        return {
+          disclosureAcceptedAt: r.disclosureAcceptedAt,
+          disclosureVersion: r.disclosureVersion,
+          packageVersion: typeof r.packageVersion === "string" ? r.packageVersion : "unknown",
+        };
+      } catch {
+        return null;
+      }
+    },
+    set: (projectRoot, acceptance) => {
+      const file = disclosureRecordPath(projectRoot, config);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, `${JSON.stringify(acceptance, null, 2)}\n`, "utf8");
+    },
+  };
+}
+
 /** Why an outbound request is or is not permitted. */
 export type DisclosureStatus =
   | { readonly required: false; readonly reason: "accepted"; readonly acceptance: DisclosureAcceptance }
@@ -204,6 +247,55 @@ export function assertOutboundAllowed(
 ): void {
   const status = disclosureStatus(config, projectRoot, store);
   if (status.required) throw new DisclosureRequiredError(edge, status.reason);
+}
+
+/**
+ * The slice of Pi's `ctx.ui` this module needs. Declared structurally so the
+ * module stays independent of the Pi API surface and is testable without it.
+ */
+export interface DisclosurePrompt {
+  readonly confirm: (title: string, body: string) => Promise<boolean> | boolean;
+  readonly notify?: (message: string, level?: string) => void;
+  /** False in print/RPC mode: there is no one to show a disclosure to. */
+  readonly hasUI?: boolean;
+}
+
+export type DisclosureOutcome =
+  | { readonly shown: false; readonly accepted: true; readonly reason: "accepted" | "disabled_by_config" }
+  | { readonly shown: true; readonly accepted: true; readonly reason: "never_shown" | "version_changed" }
+  | { readonly shown: true; readonly accepted: false; readonly reason: "declined" }
+  | { readonly shown: false; readonly accepted: false; readonly reason: "no_ui" };
+
+/**
+ * Show the disclosure if this project still owes one, and record acceptance.
+ *
+ * Declining is honoured: nothing is recorded and the outbound gate stays shut,
+ * so the deterministic workflow keeps running with no outbound calls. With no
+ * UI (print/RPC mode) the disclosure cannot be shown, so the gate also stays
+ * shut rather than being implicitly accepted on the user's behalf.
+ */
+export async function ensureDisclosureAccepted(
+  config: KorwfConfig,
+  projectRoot: string,
+  store: DisclosureStore,
+  ui: DisclosurePrompt,
+  options: { readonly packageVersion: string; readonly now?: () => Date },
+): Promise<DisclosureOutcome> {
+  const status = disclosureStatus(config, projectRoot, store);
+  if (!status.required) return { shown: false, accepted: true, reason: status.reason };
+  if (ui.hasUI === false) return { shown: false, accepted: false, reason: "no_ui" };
+
+  const text = buildDisclosure(config);
+  const accepted = await ui.confirm(text.title, text.lines.join("\n"));
+  if (!accepted) {
+    ui.notify?.(
+      "KorWF-Pi will run with no outbound requests until the data disclosure is accepted (/korwf disclosure).",
+      "warning",
+    );
+    return { shown: true, accepted: false, reason: "declined" };
+  }
+  acceptDisclosure(projectRoot, store, options);
+  return { shown: true, accepted: true, reason: status.reason };
 }
 
 /**
