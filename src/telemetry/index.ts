@@ -70,9 +70,11 @@ export {
   RAW_LOG_ATTEMPT_DIR,
   createRawPayloadSink,
   expiryOf,
+  prepareRawPayload,
   purgeExpiredRawPayloads,
   purgeRawPayloadsNow,
   retentionSummary,
   runRetentionSweep,
+  wouldRefusePayload,
 } from "./retention.ts";
-export type { RawPayloadSinkOptions, RetentionOptions, RetentionReport } from "./retention.ts";
+export type { PreparedRawPayload, RawPayloadSinkOptions, RetentionOptions, RetentionReport } from "./retention.ts";

@@ -46,6 +46,32 @@ export function expiryOf(at: string, days: number): string {
   return new Date(Date.parse(at) + days * DAY_MS).toISOString();
 }
 
+/**
+ * Defence in depth: would these bytes still leak something?
+ *
+ * By construction this should always be `false` by the time the sink asks —
+ * `redactValue` plus the project's deny patterns have already run. It is
+ * checked anyway, and exported so the invariant is directly testable,
+ * because a redactor regression must cost a dropped payload rather than a
+ * leaked credential.
+ */
+export function wouldRefusePayload(text: string): boolean {
+  return containsSecret(text);
+}
+
+/** Outcome of preparing raw bytes for disk: text to write, or a refusal. */
+export type PreparedRawPayload = { readonly ok: true; readonly text: string } | { readonly ok: false };
+
+/**
+ * Redact a payload and decide whether it may be written. Pure, so the last
+ * line of defence is directly testable: pass an identity `redact` and the
+ * result must be a refusal, whatever the rest of the stack did.
+ */
+export function prepareRawPayload(body: unknown, redact: (text: string) => string): PreparedRawPayload {
+  const text = redact(JSON.stringify(body, null, 2) ?? "null");
+  return wouldRefusePayload(text) ? { ok: false } : { ok: true, text };
+}
+
 /** Thrown when a redacted payload still matches a known secret pattern. */
 export class RawPayloadRefusedError extends Error {
   constructor(traceId: string) {
@@ -109,17 +135,17 @@ export class ArtifactRawPayloadSink implements RawPayloadSink {
       request: redactValue(params.request, 12),
       response: redactValue(params.response, 12),
     };
-    const text = this.#policy.redact(JSON.stringify(body, null, 2));
-
     // Belt and braces: if a credential shape survived both redactors, the
     // bytes do not get written at all. A dropped payload is a recoverable
     // gap; a leaked one is not.
-    if (containsSecret(text)) {
+    const prepared = prepareRawPayload(body, (text) => this.#policy.redact(text));
+    if (!prepared.ok) {
       const error = new RawPayloadRefusedError(params.traceId);
       if (this.#onRefused === null) throw error;
       this.#onRefused(error);
       return null;
     }
+    const { text } = prepared;
 
     const ref = this.#artifacts.write(
       RAW_LOG_ATTEMPT_DIR,
