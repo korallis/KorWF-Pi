@@ -124,6 +124,25 @@ criterion scored 0.83–0.93 and `blocker` came back `nothing_missing`.
 
 A low aggregate score is a prompt to **ask a sharper question**, not proof of a defect.
 
+**`quality` is still an aggregate, and it shows.** `mergeReview()` decomposes `complete`
+per criterion but asks `quality` once over the whole diff, so it inherits exactly the
+artefact above. Observed twice on documentation-heavy PRs:
+
+| PR | complete_min | in_scope | touches_enforcement | quality | outcome |
+|---|---|---|---|---|---|
+| #118 (#19) | 0.80 | 0.55 | 0.06 | 1.05 | merged |
+| #126 (#17) | 0.78 | 0.87 | 0.04 | **0.71 / 0.73** | merged after investigation |
+
+On #126 every decomposed signal passed and only the single aggregate failed, reproducibly
+(0.73, then 0.71 on re-ask). A bounded re-ask — *are these five ADRs within an issue
+titled "Record architecture decisions and threat boundaries"?* — returned **0.93**.
+
+**Procedure when only `quality` fails:** do not lower the threshold and do not loop a
+worker. Verify each acceptance criterion directly, then ask one bounded question about the
+specific doubt (scope creep? unrequested files? a criterion not really met?). Merge only if
+the bounded question clears it, and record both scores on the PR for calibration. If this
+recurs, decompose `quality` per deliverable the way `complete` already is.
+
 ## 3. The evidence gate
 
 `evidenceGap()` gates on deterministic checks first. Overclaim is **corroborating, not
