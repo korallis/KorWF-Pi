@@ -41,7 +41,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Minimal-state construction, outbound limits, default-deny path/data filtering.
 - [x] Revision-aware caching and invalidation.
 - [x] Usage accounting; atomic budget reservations; known/estimated/unknown cost.
-- [ ] Decision traces; retention; raw-payload logging opt-in.
+- [x] Decision traces; retention; raw-payload logging opt-in. (#31)
 - [ ] Isolated-session load test; no-key load test; lifecycle cleanup test.
 
 ## 3. Context, planning, phases, durable tasks (Stage 3)

@@ -272,11 +272,21 @@ describe("AC: askAll issues calls concurrently up to the cap", () => {
 
   it("results keep the order of the items, not of completion", async () => {
     const order: string[] = [];
+    let resolveB!: () => void;
+    const bCompleted = new Promise<void>((resolve) => { resolveB = resolve; });
     const transport = new MockJevTransport({
       responder: async (request) => {
         const text = (request.state as { text: string }).text;
-        // The second state resolves first.
-        await new Promise((resolve) => setTimeout(resolve, text === "b" ? 0 : 5));
+        // "b" must complete strictly before "a" for this test to mean anything.
+        // A 0ms-vs-5ms timer race does not guarantee that on a loaded CI runner —
+        // it failed there with ['a','b'] while passing locally. Gate "a" on a
+        // promise that only "b" resolves, so the completion order is deterministic.
+        if (text === "b") {
+          order.push(text);
+          resolveB();
+          return respondAll(() => noulTrue)(request);
+        }
+        await bCompleted;
         order.push(text);
         return respondAll(() => noulTrue)(request);
       },

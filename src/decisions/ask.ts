@@ -37,6 +37,8 @@ import {
   type QuestionDefinition,
 } from "./question.ts";
 import { FALLBACK_USAGE, UNPRICED_JEV_USAGE, type DecisionDraft, type DecisionRecorder, type DecisionSubject } from "./record.ts";
+import { summariseRequest, type TraceOutcome, type TraceRecorder } from "../telemetry/trace.ts";
+import type { BreakerState } from "../jev/resilience.ts";
 
 /** Default cap on in-flight Jev requests from one `askAll` (PLAN §6 batching). */
 export const DEFAULT_CONCURRENCY = 4;
@@ -88,6 +90,14 @@ export interface AskContext {
   readonly outbound?: OutboundPolicy;
   /** Called with the filter report for each request, for the decision trace. */
   readonly onOutbound?: (report: ReturnType<typeof outboundReportOf>) => void;
+  /**
+   * Decision traces (issue #31, PLAN §3.I). When present, every answered
+   * question also writes one trace beside its Decision row: the five
+   * versions, latency, retries, breaker state and a sanitised summary of
+   * what went outbound. Omitted, nothing is traced and behaviour is
+   * unchanged — a trace is observability, never a decision input.
+   */
+  readonly tracer?: TraceRecorder;
 }
 
 /** One question plus the input it is asked about. */
@@ -211,6 +221,28 @@ export function resolveAnswer<TState, TResult>(
   };
 }
 
+/**
+ * What `askBatch` observed about the transport call, for the trace. Never
+ * consulted when deciding anything — a trace records, it does not steer.
+ */
+interface TraceInfo {
+  readonly request: ReturnType<typeof summariseRequest> | null;
+  readonly retries: number;
+  readonly breakerState: BreakerState;
+  readonly errorCode: string | null;
+  /** Offered to the opt-in raw-payload sink; dropped when it is off. */
+  readonly raw?: { readonly request: unknown; readonly response: unknown };
+}
+
+/** Map what actually happened onto the recorded trace outcome. */
+function traceOutcomeOf(resolved: Resolved<unknown>, reused: boolean): TraceOutcome {
+  if (reused) return "cached";
+  if (resolved.source === "jev") return "jev";
+  if (resolved.reason === "disabled") return "disabled";
+  if (resolved.reason === "transport_error" || resolved.reason === "cancelled") return "error";
+  return "fallback";
+}
+
 function toResult<TResult>(
   question: QuestionDefinition<unknown, unknown>,
   resolved: Resolved<TResult>,
@@ -219,6 +251,8 @@ function toResult<TResult>(
   recorder: DecisionRecorder | undefined,
   subject: AskItem<unknown, unknown>["subject"],
   reused: boolean,
+  tracer?: TraceRecorder,
+  traceInfo?: TraceInfo,
 ): DecisionResult<TResult> {
   let decisionId: string | null = null;
   if (recorder !== undefined) {
@@ -236,6 +270,34 @@ function toResult<TResult>(
       ...(subject !== undefined ? { subject } : {}),
     };
     decisionId = recorder.record(draft).id;
+  }
+  if (tracer !== undefined) {
+    tracer.record({
+      decisionId,
+      question: {
+        id: question.id,
+        version: question.version,
+        key: question.key,
+        contentHash: question.contentHash,
+      },
+      outcome: traceOutcomeOf(resolved, reused),
+      detail: {
+        distribution: resolved.distribution,
+        confidence: resolved.confidence,
+        policyRule: resolved.rule,
+        action: resolved.action,
+        fallbackReason: resolved.reason,
+        stateHash,
+        reused,
+      },
+      request: traceInfo?.request ?? null,
+      latencyMs,
+      retries: traceInfo?.retries ?? 0,
+      breakerState: traceInfo?.breakerState ?? "closed",
+      errorCode: traceInfo?.errorCode ?? null,
+      jevModelVersion: resolved.jevModelVersion,
+      ...(traceInfo?.raw === undefined ? {} : { raw: traceInfo.raw }),
+    });
   }
   return {
     key: question.key,
@@ -309,6 +371,30 @@ async function askBatch(ctx: AskContext, state: unknown, items: readonly AnyItem
         decisionId: prior.id,
         reused: true,
       });
+      // A replayed answer is still a traced event: it records that nothing
+      // went outbound and which recorded Decision was reused (PLAN §3.I).
+      ctx.tracer?.record({
+        decisionId: prior.id,
+        question: {
+          id: item.question.id,
+          version: item.question.version,
+          key: item.question.key,
+          contentHash: item.question.contentHash,
+        },
+        outcome: "cached",
+        detail: {
+          distribution: prior.rawDistribution,
+          confidence: prior.confidence,
+          policyRule: prior.policyRule,
+          action: prior.action,
+          fallbackReason: null,
+          stateHash: hash,
+          reused: true,
+        },
+        request: null,
+        latencyMs: prior.latencyMs,
+        jevModelVersion: prior.jevModelVersion,
+      });
     }
   }
 
@@ -333,29 +419,73 @@ async function askBatch(ctx: AskContext, state: unknown, items: readonly AnyItem
   // `FilteredRequest`, and this is the one place that mints one (issue #28).
   const policy = ctx.outbound ?? defaultOutboundPolicy();
   const filtered = policy.filterRequest(pendingRequest, "jev.decision");
-  ctx.onOutbound?.(outboundReportOf(filtered));
+  const report = outboundReportOf(filtered);
+  ctx.onOutbound?.(report);
 
   const outcome = await ctx.transport.evaluate(filtered, options);
   const latencyMs = outcome.kind === "disabled" ? null : nowMs() - started;
+
+  // Summarised from the #28 report, which carries counts, paths and reasons
+  // but never removed content. `null` in disabled mode: nothing was sent.
+  const summary =
+    report === undefined || outcome.kind === "disabled"
+      ? null
+      : summariseRequest({ report, request: filtered, state: filtered.state });
+  const breakerState: BreakerState = outcome.kind === "disabled" ? "open" : "closed";
 
   if (outcome.kind !== "ok") {
     const reason = reasonForTransport(
       outcome.kind,
       outcome.kind === "error" ? outcome.error.code : null,
     );
+    const traceInfo: TraceInfo = {
+      request: summary,
+      retries: outcome.kind === "error" ? Math.max(0, outcome.attempts - 1) : 0,
+      breakerState,
+      errorCode: outcome.kind === "error" ? outcome.error.code : null,
+    };
     for (const { item, index } of pending) {
       const resolved = resolveAnswer(item.question, item.input, null, reason, null);
-      results[index] = toResult(item.question, resolved, stateHashes[index] ?? "", latencyMs, ctx.recorder, item.subject, false);
+      results[index] = toResult(
+        item.question,
+        resolved,
+        stateHashes[index] ?? "",
+        latencyMs,
+        ctx.recorder,
+        item.subject,
+        false,
+        ctx.tracer,
+        traceInfo,
+      );
     }
     return results;
   }
 
   const validated = validateResponse(filtered, outcome.response, { pinnedModel: ctx.model });
   const jevModel = typeof outcome.response.model === "string" ? outcome.response.model : ctx.model;
+  const okTrace: TraceInfo = {
+    request: summary,
+    retries: Math.max(0, outcome.attempts - 1),
+    breakerState,
+    errorCode: null,
+    // Offered, not written: `TraceRecorder` only forwards these to a raw
+    // payload sink, and that sink exists only under `privacy.rawLogging`.
+    raw: { request: filtered, response: outcome.response },
+  };
   for (const { item, index } of pending) {
     const answer = validated.answers[wireKeyFor(index, item)] ?? null;
     const resolved = resolveAnswer(item.question, item.input, answer, null, jevModel);
-    results[index] = toResult(item.question, resolved, stateHashes[index] ?? "", latencyMs, ctx.recorder, item.subject, false);
+    results[index] = toResult(
+      item.question,
+      resolved,
+      stateHashes[index] ?? "",
+      latencyMs,
+      ctx.recorder,
+      item.subject,
+      false,
+      ctx.tracer,
+      okTrace,
+    );
   }
   return results;
 }
