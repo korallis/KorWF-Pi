@@ -900,6 +900,171 @@
           "description": "Show which data classes go to TypeSafe and to model providers before the first outbound request."
         }
       }
+    },
+    "MidTaskPolicy": {
+      "type": "string",
+      "enum": [
+        "handoff",
+        "restart"
+      ],
+      "description": "On a cap mid-task: hand off with an explicit handoff packet and intact worktree, or restart the task (PLAN §3.D)."
+    },
+    "Fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "description": "Caps and fallback (PLAN §3.D). Applies when a model is capped (quota, rate limit, budget) or unavailable.",
+      "properties": {
+        "midTaskPolicy": {
+          "type": "object",
+          "default": {
+            "default": "handoff"
+          },
+          "description": "Task kind → mid-task policy. `default` is required and covers unlisted kinds.",
+          "propertyNames": {
+            "$ref": "#/$defs/TaskKind"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/MidTaskPolicy"
+          },
+          "required": [
+            "default"
+          ]
+        },
+        "dwell": {
+          "type": "string",
+          "enum": [
+            "remainder_of_task",
+            "remainder_of_phase",
+            "minutes"
+          ],
+          "default": "remainder_of_task",
+          "description": "Anti-oscillation: minimum time on the fallback model before the primary is retried."
+        },
+        "dwellMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30,
+          "description": "Only used when `dwell` = `minutes`."
+        },
+        "preferWaitIfResetWithinMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "If the primary cap is estimated to clear within N minutes, wait instead of switching to a more expensive substitute. 0 = never wait."
+        },
+        "retryPrimaryAtTaskBoundary": {
+          "type": "boolean",
+          "const": true,
+          "default": true,
+          "description": "Retry the primary at the next task boundary once the cap is estimated cleared; never re-probe every task. Fixed true."
+        },
+        "staticOrder": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelRef"
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Ordered model refs used when Jev is unavailable or answers none/unknown. Must be a subset of the effective allowlist (validator rule V1). `[]` = Pi registry order filtered by allowlist."
+        },
+        "allCappedBehaviour": {
+          "type": "string",
+          "const": "pause_phase",
+          "default": "pause_phase",
+          "description": "All candidates capped → pause the phase, surface state, resume when a cap clears. Not a failure. Fixed."
+        },
+        "overridePins": {
+          "type": "boolean",
+          "const": false,
+          "default": false,
+          "description": "Pinned models are never overridden by fallback without asking. Fixed false."
+        }
+      }
+    },
+    "Jev": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "description": "TypeSafe/Jev transport (docs/adr/0003-jev-transport.md). With no key the product runs in optional mode: deterministic workflow only.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Master switch. Off by default; with no key it is treated as off even when true."
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://",
+          "default": "https://api.typesafe.ai",
+          "description": "API origin. HTTPS only. Configurable for users who proxy."
+        },
+        "keySource": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "How the API key is resolved. Never the key itself.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "env",
+                "pi_secrets",
+                "none"
+              ],
+              "default": "env"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Z][A-Z0-9_]*$",
+              "default": "TYPESAFE_API_KEY",
+              "description": "Env var name (kind=env) or secret name (kind=pi_secrets)."
+            }
+          }
+        },
+        "model": {
+          "type": "string",
+          "pattern": "^jev-\\d+\\.\\d+\\.\\d+$",
+          "default": "jev-1.13.0",
+          "description": "Pinned Jev version. Never `jev-latest`."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "default": 10000,
+          "description": "Per-decision deadline including retries."
+        },
+        "maxRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 2
+        },
+        "pricePerMillionInputTokensUsd": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.042,
+          "description": "Used for known-cost accounting."
+        },
+        "cache": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "ttlSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 86400
+            }
+          }
+        }
+      }
     }
   }
 }
