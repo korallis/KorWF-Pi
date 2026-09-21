@@ -1,6 +1,6 @@
 # ADR-0003: Jev transport — raw `fetch` behind our own interface, not the JS SDK
 
-**Status:** Proposed (Stage 1, issue #9). To be confirmed when #17 implements the adapter.
+**Status:** Proposed (Stage 1, issue #9). To be confirmed when the Stage 2 adapter issue implements it. Optional-mode semantics (rule 3) are fixed by [ADR 0007](0007-jev-optional-design.md) (#17).
 **Date:** 2026-09-21
 **Governing design:** PLAN §6 (Jev decision design), §7 "Jev transport", §3.G/§3.D (caps,
 rate limits), §3.J (Jev optional at runtime).
