@@ -226,4 +226,30 @@ message.
 | `cache.enabled` | boolean | `true` | Cache keys are complete and versioned (PLAN §6), so caching is safe and saves spend. |
 | `cache.ttlSeconds` | integer ≥ 0 | `86400` | One day; revision-sensitive evidence is never served from cache regardless. |
 
+## 9. `notifications`
+
+PLAN §2.6 notification hooks. Only the in-Pi channel is on by default; nothing leaves the
+machine unless a channel is configured.
+
+| Key | Type | Default | Why the default is safe |
+|---|---|---|---|
+| `events` | `NotificationEvent[]`, unique | `approval_queued, phase_stopped, budget_exhausted, all_models_capped, workflow_completed, workflow_failed` | Every event that needs the user is on; `model_fallback` is off because it is routine and already visible in status. |
+| `channels.ui.enabled` | boolean | `true` | Pi's own `notify`/`setStatus`; no-op in print/RPC mode (`ctx.hasUI === false`). |
+| `channels.desktop.enabled` | boolean | `false` | OS notifier availability varies by platform (`docs/platform-support.md`); opt-in. |
+| `channels.command.enabled` / `argv` | boolean / `string[]` | `false` / `[]` | Runs a user executable with a JSON event on stdin. Off; when on it is treated as `run_shell` for approvals. |
+| `channels.webhook.enabled` / `url` | boolean / `https://…` or `null` | `false` / `null` | HTTPS POST of the redacted event. Off, no URL. |
+| `quietHours.enabled` / `start` / `end` | boolean / `HH:MM` | `false` / `22:00` / `07:00` | Off; when on, non-stop events are batched until `end`. `stop` events are never suppressed. |
+
+## 10. `storage`
+
+See `src/storage/paths.ts`. State lives under one namespaced directory; nothing is written
+into the source tree outside it.
+
+| Key | Type | Default | Why the default is safe |
+|---|---|---|---|
+| `path` | string or `null` | `null` | `null` = `<project>/.korwf`. Relative overrides resolve against the project root. No absolute default, so no machine path is shipped. |
+| `allowOutsideProject` | boolean | `false` | An absolute `path` outside the project root is rejected (V8) unless the user says so explicitly. |
+| `artifactRetentionDays` | integer ≥ 1 | `30` | Evidence artifacts are kept long enough to replay a workflow, then deleted. |
+| `lockTimeoutMs` | integer ≥ 0 | `5000` | A second instance on the same project fails fast instead of corrupting SQLite. |
+
 <!-- sections appended below -->
