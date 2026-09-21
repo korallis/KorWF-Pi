@@ -91,6 +91,42 @@ gating? — and hard-blocks on that instead (`security_code_still_gated` **0.88*
 loosening of policy ⇒ **act**. Otherwise escalate. When genuinely unclear, ask Jev and
 log the probe; do not default to escalation *or* to action.
 
+### 1.1a Never escalate because a probability is ambiguous
+
+The owner escalation budget is for questions **only the owner can action**. Waking him
+because an aggregate landed near a threshold spends that budget on nothing and trains him
+to ignore the signal (Jev: ambiguity-driven escalation degrades the signal, **0.76**).
+
+Made concrete twice in one session. `mergeReview()` blocked on `touches_enforcement >= 0.5`
+alone, and escalated:
+
+| PR | touches | reality | owner could action? |
+|---|---|---|---|
+| #127 (#125) | **0.50** — exactly the threshold | added per-route quota tracking; the only allowlist/credential matches in added lines were two doc comments | no |
+| #128 (#15) | 0.65 | added an approval-class taxonomy | no |
+
+"Touches enforcement" answers *is this enforcement code?* — which is **not** the question
+that determines authority. The question is *does this **weaken** a control?*
+
+**The rule now, and why it is not a weakening:**
+
+| touches | weakens | tests | outcome |
+|---|---|---|---|
+| ≥ 0.5 | ≥ 0.5 | any | **escalate** — owner only, never loops |
+| ≥ 0.5 | < 0.5 | pass | **merge**, with an audit note on the PR and attempt |
+| ≥ 0.5 | < 0.5 | absent or failing | **block** — add tests; `testsExit === null` is not evidence |
+| < 0.5 | — | — | normal path |
+
+The evidence requirement is not optional politeness. Jev: a single `weakens_policy`
+question **can miss** a subtle weakening — a bug in enforcement code, or a behaviour change
+dressed as a refactor — at **0.95**; and such a diff **should** carry independent
+verification before an autonomous merge at **0.88**. Enforcement-adjacent code therefore
+merges only against a passing test run at that revision. Asking Jev twice is not a
+substitute for executing the tests.
+
+PLAN §3.H still holds absolutely: the system never weakens its own permission, allowlist or
+spending policy. Narrowing *when we ask the owner* does not narrow *what is forbidden*.
+
 ### 1.2 `needs-human` labels are re-validated, not trusted forever
 
 Some labels were applied by the discredited "I gave up" policy and are self-perpetuating:

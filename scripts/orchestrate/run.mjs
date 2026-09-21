@@ -857,6 +857,9 @@ async function mergeReview(jev, n) {
   // product's own security/permission enforcement; `touches_enforcement` below judges that
   // from the diff and is treated as a hard block (Jev: security_code_still_gated=0.88).
   if (issue.labels.includes("needs-human")) hard.push("issue labelled needs-human — owner merge only");
+  // Recorded on the PR and the attempt, but never blocking: findings worth an audit trail
+  // that do not, on their own, justify stopping a merge or waking the owner.
+  const notes = [];
   const { stat, diff } = branchDiff(dir);
   const added = diff.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).join("\n");
   if (/\/home\/[a-z]+\//.test(added)) hard.push("diff adds an absolute home-directory path");
@@ -895,6 +898,21 @@ async function mergeReview(jev, n) {
         true: "It changes real enforcement behaviour, so a human must review it before merge",
         false: "It is documentation, specification, tests, or non-enforcement code",
       }),
+    // `touches_enforcement` answers "is this enforcement code?", which is NOT the same as
+    // "must the owner decide this?". #125 scored exactly 0.50 — the threshold — on a diff
+    // whose only allowlist/credential matches were two doc comments, and escalated a
+    // question the owner could not usefully action. Escalating an ambiguous aggregate is
+    // the behaviour `needs-human` exists to prevent (SKILL.md §1: `needs-human` means only
+    // the owner CAN resolve it). So ask the owner-authority question directly and require
+    // BOTH before blocking.
+    weakens_policy: noul(
+      "Does `diff` WEAKEN an existing security, permission, allowlist, spending or approval control — " +
+      "removing a check, widening what is permitted, lowering a threshold, bypassing a gate, or exposing " +
+      "a credential — as opposed to adding, tightening, documenting, testing, or merely reorganising one?",
+      {
+        true: "A control is removed, widened, lowered, bypassed, or a credential exposed",
+        false: "Nothing is weakened: it adds, tightens, documents, tests, or reorganises",
+      }),
     quality: score("How would a careful senior reviewer rate the quality of `diff` for merging into main?", [
       "Would request changes: errors, confusion, or sloppiness that must be fixed first",
       "Acceptable: minor nits only, fine to merge",
@@ -913,16 +931,37 @@ async function mergeReview(jev, n) {
     if (a.in_scope.noul < 0.5) soft.push(`Jev: p(in scope)=${a.in_scope.noul.toFixed(2)}`);
     if (a.rule_violation.noul >= 0.4) soft.push(`Jev: p(rule violation)=${a.rule_violation.noul.toFixed(2)}`);
     if (a.quality.score < 0.75) soft.push(`Jev: quality=${a.quality.score.toFixed(2)} (<0.75)`);
-    // Hard, not soft: a diff that changes enforcement is owner territory regardless of how
-    // clean everything else looks. This is the targeted replacement for the risk:high block.
-    if (a.touches_enforcement.noul >= CONFIG.policy.enforcementBlock)
-      hard.push(`diff changes security/permission enforcement code (Jev p=${a.touches_enforcement.noul.toFixed(2)}) — owner merge only`);
+    // Hard, not soft — but only when the owner can actually action it. Touching enforcement
+    // code is necessary, not sufficient: escalate when the diff touches enforcement AND
+    // weakens a control. Adding, tightening, documenting or reorganising a control is
+    // ordinary work the orchestrator verifies itself (SKILL.md §1.1: judge the act, not a
+    // proxy for it). A diff that weakens a control is owner territory no matter how clean
+    // everything else looks — PLAN §3.H: the system never weakens its own permission,
+    // allowlist or spending policy.
+    const touches = a.touches_enforcement.noul >= CONFIG.policy.enforcementBlock;
+    const weakens = a.weakens_policy.noul >= CONFIG.policy.enforcementBlock;
+    if (touches && weakens)
+      hard.push(`diff weakens a security/permission control (Jev touches=${a.touches_enforcement.noul.toFixed(2)} weakens=${a.weakens_policy.noul.toFixed(2)}) — owner merge only`);
+    else if (touches) {
+      // Not owner territory, but NOT waved through either. Jev: a single `weakens_policy`
+      // question can miss a subtle weakening — a bug in enforcement code, or a behaviour
+      // change dressed as a refactor (0.95) — and such a diff should carry independent
+      // verification before an autonomous merge (0.88). So demand evidence rather than
+      // advice: enforcement-adjacent code merges only when its own tests actually ran and
+      // passed. `testsExit === null` (no runnable suite) is NOT evidence and blocks here,
+      // even though it is tolerated for documentation-only changes.
+      if (checks.testsExit === 0) {
+        notes.push(`touches enforcement (p=${a.touches_enforcement.noul.toFixed(2)}) but does not weaken policy (p=${a.weakens_policy.noul.toFixed(2)}); verified by a passing test run at this revision`);
+      } else {
+        hard.push(`diff changes enforcement code (Jev p=${a.touches_enforcement.noul.toFixed(2)}) and has no passing test run to verify it (tests=${checks.testsExit ?? "none"}) — add tests or escalate`);
+      }
+    }
   }
-  const verdict = a ? { complete_min: a.__completeMin, scope_gap: a.scope_gap.noul, honest: a.honest.noul, in_scope: a.in_scope.noul, rule_violation: a.rule_violation.noul, touches_enforcement: a.touches_enforcement.noul, quality: a.quality.score } : null;
+  const verdict = a ? { complete_min: a.__completeMin, scope_gap: a.scope_gap.noul, honest: a.honest.noul, in_scope: a.in_scope.noul, rule_violation: a.rule_violation.noul, touches_enforcement: a.touches_enforcement.noul, weakens_policy: a.weakens_policy.noul, quality: a.quality.score } : null;
   const blockers = [...hard, ...soft];
-  const summary = `Merge review of ${pr.url} for #${n}\n\nHard checks: ${hard.length ? hard.join("; ") : "all pass"} (pushed=${checks.pushed}, verification exits=${checks.verification.map((v) => v.exit).join(",") || "n/a"}, tests=${checks.testsExit ?? "n/a"})\nJev merge review: ${verdict ? Object.entries(verdict).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(" ") : "unavailable"}\nVerdict: ${blockers.length ? "**NOT MERGED** — " + blockers.join("; ") : "**MERGE**"}`;
+  const summary = `Merge review of ${pr.url} for #${n}\n\nHard checks: ${hard.length ? hard.join("; ") : "all pass"} (pushed=${checks.pushed}, verification exits=${checks.verification.map((v) => v.exit).join(",") || "n/a"}, tests=${checks.testsExit ?? "n/a"})\nJev merge review: ${verdict ? Object.entries(verdict).map(([k, v]) => `${k}=${v.toFixed(2)}`).join(" ") : "unavailable"}\nVerdict: ${blockers.length ? "**NOT MERGED** — " + blockers.join("; ") : "**MERGE**"}${notes.length ? "\nNotes: " + notes.join("; ") : ""}`;
   log(summary);
-  attempt.mergeReview = { at: new Date().toISOString(), hard, soft, verdict };
+  attempt.mergeReview = { at: new Date().toISOString(), hard, soft, notes, verdict };
   if (DRY) { saveState(); return; }
   gh(["pr", "comment", String(pr.number), "-b", summary]);
   if (blockers.length) {
@@ -933,7 +972,10 @@ async function mergeReview(jev, n) {
     // because `merge-blocked` is not `awaiting-review`.
     attempt.outcome = "merge-blocked"; attempt.feedback = blockers.join("\n"); saveState();
     const all = state.attempts[n] ?? [];
-    const ownerOnly = hard.some((h) => /needs-human|enforcement/.test(h));
+    // Matches the two blockers no amount of reworking can clear, because they are about
+    // WHO may decide, not about the quality of the work: a `needs-human` label, and a diff
+    // that weakens a control. Keep in sync with the hard.push() messages above.
+    const ownerOnly = hard.some((h) => /needs-human|weakens a security/.test(h));
     if (ownerOnly) {
       log(`#${n}: merge blocked for the owner — not looping`);
       await escalateOrPark(jev, issue, blockers.join("\n"), all);
