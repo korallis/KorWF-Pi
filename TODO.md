@@ -38,7 +38,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Response validation for Choice/Score/Noul (unknown fields, bounds, malformed).
 - [x] Cancellation, deadlines, bounded retries, backoff, circuit breaking. (#26)
 - [x] Versioned question definitions and composition policy.
-- [ ] Minimal-state construction, outbound limits, default-deny path/data filtering.
+- [x] Minimal-state construction, outbound limits, default-deny path/data filtering.
 - [ ] Revision-aware caching and invalidation.
 - [x] Usage accounting; atomic budget reservations; known/estimated/unknown cost.
 - [ ] Decision traces; retention; raw-payload logging opt-in.
