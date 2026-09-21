@@ -207,10 +207,15 @@ export class HttpJevTransport implements JevTransport {
 
           if (res.ok) {
             const body = (await readJsonBody(res)) as SystemOneResponseRaw | null;
-            if (body === null || typeof body !== "object") {
+            if (
+              body === null ||
+              typeof body !== "object" ||
+              !("answers" in body) ||
+              typeof (body as { answers?: unknown }).answers !== "object"
+            ) {
               return {
                 kind: "error",
-                error: new JevTransportError("jev.malformed_response", "Jev response body was not an object", {
+                error: new JevTransportError("jev.malformed_response", "Jev response body was not valid JSON with an answers object", {
                   requestId: wireRequestId,
                   status: res.status,
                   retryable: false,
