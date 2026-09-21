@@ -1065,6 +1065,163 @@
           }
         }
       }
+    },
+    "NotificationEvent": {
+      "type": "string",
+      "enum": [
+        "approval_queued",
+        "phase_stopped",
+        "budget_exhausted",
+        "all_models_capped",
+        "workflow_completed",
+        "workflow_failed",
+        "model_fallback"
+      ]
+    },
+    "Notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "description": "Notification hooks (PLAN §2.6). Only the in-Pi channel is on by default; nothing leaves the machine unless configured.",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NotificationEvent"
+          },
+          "uniqueItems": true,
+          "default": [
+            "approval_queued",
+            "phase_stopped",
+            "budget_exhausted",
+            "all_models_capped",
+            "workflow_completed",
+            "workflow_failed"
+          ]
+        },
+        "channels": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "ui": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Pi UI notify/status (no-op when `ctx.hasUI` is false).",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                }
+              }
+            },
+            "desktop": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "OS desktop notification via the platform notifier, if present.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                }
+              }
+            },
+            "command": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Run a user-supplied executable with a JSON event on stdin. Off by default; counts as `run_shell` for approvals.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "argv": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              }
+            },
+            "webhook": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "POST the event JSON to an HTTPS URL. Off by default; payload is redacted with deny patterns.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^https://",
+                  "default": null
+                }
+              }
+            }
+          }
+        },
+        "quietHours": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "start": {
+              "type": "string",
+              "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+              "default": "22:00"
+            },
+            "end": {
+              "type": "string",
+              "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+              "default": "07:00"
+            }
+          }
+        }
+      }
+    },
+    "Storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "description": "On-disk state (src/storage/paths.ts). Namespaced under the project; never in the source tree outside this directory.",
+      "properties": {
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Override for the storage root. Relative to the project root; absolute allowed only with `allowOutsideProject`. `null` = `<project>/.korwf`."
+        },
+        "allowOutsideProject": {
+          "type": "boolean",
+          "default": false,
+          "description": "Permit an absolute `path` outside the project root."
+        },
+        "artifactRetentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30
+        },
+        "lockTimeoutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5000
+        }
+      }
     }
   }
 }
