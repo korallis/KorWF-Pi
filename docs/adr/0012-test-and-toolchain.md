@@ -66,14 +66,14 @@ which is configuration, not a new dependency.
    (`FakeClock` with `advance()`/`set()`, plus `systemClock` for production code).
    Both are unit-tested themselves (`test/helpers/*.test.ts`) so the fixtures are
    trustworthy before other suites depend on them.
-6. **CI: GitHub Actions**, `ubuntu-latest` and `macos-latest`, Node 20, running
+6. **CI: GitHub Actions**, `ubuntu-latest` and `macos-latest`, Node 22, running
    `npm ci`, `npm run lint`, `npm run typecheck`, `npm test`, and
    `bash scripts/check-secrets.sh` on every push and pull request. No Jev key or any
    other secret is required or read — the workflow has no `secrets:` block, satisfying
    "works with no Jev key" for CI itself.
 7. **Secret scan: `scripts/check-secrets.sh`**, dependency-free (`bash` + `git` +
    `grep` only), matching `apikey_`, `sk-<10+ alnum>`, `ghp_<10+ alnum>`, and
-   `JEV_API_KEY=` (word-bounded so it does not false-positive on doc references like
+   `JEV_API_KEY=` (word-bounded so it does not false-positive on doc references like <!-- check-secrets:allow -->
    `task-submit`). Supports scanning tracked files (default, used in CI), the git
    index (`--staged`, for local pre-commit use), or a commit range (`--range A..B`).
    A single-line `# check-secrets:allow` opt-out exists for documentation that
