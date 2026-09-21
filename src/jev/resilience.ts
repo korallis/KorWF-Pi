@@ -348,10 +348,26 @@ export interface ResilientJevOptions {
   readonly clearTimeout?: typeof clearTimeout;
   readonly random?: () => number;
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /**
+   * Host key for the circuit breaker (issue #26 "per host"). Defaults to the
+   * wrapped transport's `baseUrl` when it exposes one (e.g.
+   * `HttpJevTransport`), else `DEFAULT_BREAKER_HOST`.
+   */
+  readonly host?: string;
+  /**
+   * Share breaker state across several `wrapWithCircuitBreaker` calls (e.g.
+   * one registry for every Jev transport in the process, so `/korwf status`
+   * has one place to read all hosts from). When omitted, a private registry
+   * is created and seeded with only this call's host.
+   */
+  readonly registry?: CircuitBreakerRegistry;
 }
 
 export interface ResilientJevTransport extends JevTransport {
+  /** Status of the host this transport was wrapped for. */
   breakerStatus(): BreakerStatus;
+  /** Status of every host this wrapper (or a shared registry) has seen, for a future `/korwf status`. */
+  breakerStatusByHost(): Readonly<Record<string, BreakerStatus>>;
 }
 
 const RETRYABLE_CODES: ReadonlySet<string> = new Set([
@@ -395,12 +411,16 @@ export function wrapWithCircuitBreaker(
   transport: JevTransport,
   options: ResilientJevOptions,
 ): ResilientJevTransport {
-  const breaker = new CircuitBreaker({
-    failureThreshold: options.failureThreshold ?? 5,
-    resetTimeoutMs: options.resetTimeoutMs ?? 30_000,
-    halfOpenMaxCalls: options.halfOpenMaxCalls ?? 1,
-    ...(options.now === undefined ? {} : { now: options.now }),
-  });
+  const registry =
+    options.registry ??
+    new CircuitBreakerRegistry({
+      failureThreshold: options.failureThreshold ?? 5,
+      resetTimeoutMs: options.resetTimeoutMs ?? 30_000,
+      halfOpenMaxCalls: options.halfOpenMaxCalls ?? 1,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    });
+  const host = options.host ?? hostOf(transport);
+  const breaker = registry.get(host);
   const now = options.now ?? Date.now;
 
   async function run(request: SystemOneRequest, callOptions: JevEvaluateOptions, isPing: boolean): Promise<JevEvaluateResult> {
@@ -488,5 +508,19 @@ export function wrapWithCircuitBreaker(
     evaluate: (request, callOptions = {}) => run(request, callOptions, false),
     ping: (callOptions = {}) => run({ state: "", model: "", questions: {} }, callOptions ?? {}, true),
     breakerStatus: () => breaker.status(),
+    breakerStatusByHost: () => registry.snapshot(),
   };
+}
+
+/** Derives the breaker's host key from whatever the transport is willing to reveal about its endpoint. */
+function hostOf(transport: JevTransport): string {
+  const withBaseUrl = transport as { readonly baseUrl?: unknown };
+  if (typeof withBaseUrl.baseUrl === "string" && withBaseUrl.baseUrl.length > 0) {
+    try {
+      return new URL(withBaseUrl.baseUrl).host;
+    } catch {
+      return withBaseUrl.baseUrl;
+    }
+  }
+  return DEFAULT_BREAKER_HOST;
 }
