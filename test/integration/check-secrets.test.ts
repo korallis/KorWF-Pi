@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const SCRIPT = join(process.cwd(), "scripts/check-secrets.sh");
 
@@ -26,8 +26,9 @@ function scan(content: string): { code: number; output: string } {
     try {
       const output = execFileSync("bash", [SCRIPT, "--staged"], { cwd: dir, encoding: "utf8", stdio: "pipe" });
       return { code: 0, output };
-    } catch (e: any) {
-      return { code: e.status ?? 1, output: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+    } catch (e: unknown) {
+      const err = e as { status?: number; stdout?: string; stderr?: string };
+      return { code: err.status ?? 1, output: `${err.stdout ?? ""}${err.stderr ?? ""}` };
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -36,17 +37,17 @@ function scan(content: string): { code: number; output: string } {
 
 describe("scripts/check-secrets.sh", () => {
   it("AC: fails when a fake API key is committed", () => {
-    const { code, output } = scan("JEV_API_KEY=sk-FAKEFAKEFAKEFAKEFAKEFAKE\n");
+    const { code, output } = scan("JEV_API_KEY=sk-FAKEFAKEFAKEFAKEFAKEFAKE\n"); // check-secrets:allow
     expect(code).toBe(1);
     expect(output).toMatch(/possible committed secret|possible secret/);
   });
 
   it("detects each credential shape the pattern claims to cover", () => {
     for (const secret of [
-      "JEV_API_KEY=abc123",
-      'const k = "sk-AAAAAAAAAAAAAAAAAAAA";',
-      "token: ghp_BBBBBBBBBBBBBBBBBBBB",
-      "apikey_CCCCCCCCCCCC",
+      "JEV_API_KEY=abc123", // check-secrets:allow
+      'const k = "sk-AAAAAAAAAAAAAAAAAAAA";', // check-secrets:allow
+      "token: ghp_BBBBBBBBBBBBBBBBBBBB", // check-secrets:allow
+      "apikey_CCCCCCCCCCCC", // check-secrets:allow
     ]) {
       expect(scan(`${secret}\n`).code, secret).toBe(1);
     }
