@@ -25,7 +25,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Define unattended approval classes (auto / queue / stop) (PLAN §2.6).
 - [x] Select worker interface (subagent example vs SDK vs RPC).
 - [ ] Record architecture decisions and threat boundaries.
-- [ ] Write scenarios 2.8 as acceptance test outlines.
+- [x] Write scenarios 2.8 as acceptance test outlines.
 
 ## 2. Package and adapter foundation (Stage 2)
 
