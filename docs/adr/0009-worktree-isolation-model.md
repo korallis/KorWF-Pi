@@ -9,7 +9,7 @@
   §5 (fork/resume reconciles live repository state).
 - **Related:** ADR 0001 rows 3 (sandbox not bundled), 5 (checkpoints), 7 (dirty-repo
   guard), 11 (merge/resolve); ADR 0002 (`git/` is the only module that runs git);
-  ADR 0004 (worker cwd = worktree); ADR 0011 (store is outside every worktree);
+  ADR 0004 (worker cwd = worktree); ADR 0006 (store is outside every worktree);
   `docs/threat-model.md` B4, B6, R8, R9, R12.
 
 ## Context
@@ -40,7 +40,7 @@ Alternatives for the *writing* boundary:
 1. Worktrees live under the store, outside the user's checkout and outside each other:
    `<store>/worktrees/<attemptId>/` (`src/storage/paths.ts` resolves `<store>`;
    default `<project>/.korwf/`, so `.korwf/` must be git-ignored by the product on
-   first run and must never itself be inside a worktree — ADR 0011 rule 2 depends on
+   first run and must never itself be inside a worktree — ADR 0006 rule 2 depends on
    this).
 2. One worktree per **writing attempt** (implementer, integrator); read-only roles
    (scout, planner, verifier, reviewer) run in a worktree of the base revision too, so
