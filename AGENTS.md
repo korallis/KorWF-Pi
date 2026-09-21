@@ -11,7 +11,10 @@ them before orchestrating, delegating, or escalating:
 
 - **`.pi/skills/jev-orchestration/SKILL.md`** — read before running or changing anything
   in `scripts/orchestrate/`, before adding or removing a `needs-human` label, before
-  escalating to Lee, and before interpreting a Jev probability. Jev decides, code
+  escalating to Lee, and before interpreting a Jev probability. If you are *running the
+  build*, also read its **`ORCHESTRATOR-PLAYBOOK.md`**: you are the orchestrator, workers
+  are real Herdr agents you spawn and supervise, and every judgment (which issue, which
+  model, which thinking level) goes to Jev via `scripts/orchestrate/ask-jev.mjs`. Jev decides, code
   enforces: use Jev for judgment calls and problem-solving, not just for scoring finished
   work. **`needs-human` means only Lee can resolve it** (spend, credentials, publishing,
   irreversible acts, permissions, unsettled product decisions) — running out of attempts

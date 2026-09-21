@@ -841,4 +841,10 @@ async function main() {
   log(`Jev usage: ${JSON.stringify(jev.usage)}; worker tokens this session: ${state.sessionTokens}`);
 }
 
-main().catch((e) => { log(`fatal: ${e.stack}`); process.exit(1); });
+// Run the batch loop only when invoked directly. When imported (by ask-jev.mjs, which
+// lets an *agentic* orchestrator reuse these Jev batteries without running the loop),
+// nothing executes on import — no lock is taken and no worker is dispatched.
+const INVOKED_DIRECTLY = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (INVOKED_DIRECTLY) main().catch((e) => { log(`fatal: ${e.stack}`); process.exit(1); });
+
+export { profileAndSelect, readyIssues, loadDefs, fetchIssues, parseCriteria, parseVerification, availableModels, CONFIG, ISSUE_KEYS, state };

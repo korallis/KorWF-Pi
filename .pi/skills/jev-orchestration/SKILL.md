@@ -5,9 +5,16 @@ description: How this repository is built — autonomously, by agents, using Jev
 
 # Jev-driven orchestration
 
+**If you are running the build, read [ORCHESTRATOR-PLAYBOOK.md](ORCHESTRATOR-PLAYBOOK.md)
+now.** *You* are the orchestrator — a pi session that picks work, asks Jev, spawns real
+Herdr agents, supervises them, reviews and merges. `run.mjs` is a tool you may call for
+the mechanical parts; starting it is not the same as orchestrating, and its headless
+workers are invisible in the Agents panel. This file is the policy; the playbook is the
+loop.
+
 This repository is built by agents from its issue tracker. The orchestrator
-(`scripts/orchestrate/run.mjs`) selects work, dispatches workers, reviews their output
-and merges. **Jev decides; code enforces.** Anything requiring judgment — is this
+(`scripts/orchestrate/run.mjs`, or you in agentic mode) selects work, dispatches workers,
+reviews their output and merges. **Jev decides; code enforces.** Anything requiring judgment — is this
 complete, is this honest, is this in scope, does this need a human, which approach will
 work — is asked of Jev rather than hardcoded or guessed.
 
@@ -25,8 +32,14 @@ hardcoded heuristics for everything else. Use it to **decide what to do**:
 | Does this blocker genuinely need the owner? | `triage.mjs`, `escalateOrPark()` |
 | Which criterion is actually unmet? | `why-incomplete.mjs` |
 | Is a milestone ordering constraint real? | `milestone-order.mjs` |
-| Which model should take this issue? | `profileAndSelect()` in `run.mjs` |
+| Which model should take this issue? | `ask-jev.mjs select-model <n>` (agentic) / `profileAndSelect()` (batch) |
+| Which issue should I take next? | `ask-jev.mjs pick-issue` |
+| Any other judgment call | `ask-jev.mjs ask <n> "<question>"` |
 | Is the gate threshold right? | `probe-overclaim.mjs` |
+
+`ask-jev.mjs` imports run.mjs's batteries, so an agentic orchestrator and the batch loop
+make the *same* decision from the same evidence, and both log to
+`.orchestrate/decisions.jsonl`. All of them degrade deterministically with no Jev key.
 
 When unsure how to proceed, **write a small probe that asks Jev**, log the raw decision
 to `.orchestrate/`, and act on it — do not invent a threshold by hand.
