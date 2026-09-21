@@ -17,7 +17,6 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-// @ts-expect-error — plain ESM script without a .d.ts; the shapes are asserted below.
 import {
   checkNotices,
   parseHeader,
