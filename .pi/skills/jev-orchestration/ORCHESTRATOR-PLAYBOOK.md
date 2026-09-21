@@ -24,6 +24,27 @@ Two execution modes exist. Know which one you are in:
 
 Default to agentic mode. Use batch mode only for a long unattended queue, and say so.
 
+### 0.1 The mistake that keeps happening — check yourself here
+
+Typing `node scripts/orchestrate/run.mjs` is the muscle-memory error. It has been made
+repeatedly, *including right after writing this playbook*, because the command is short,
+familiar, and appears at the top of the orchestrate README. It is not orchestration; it is
+handing the job to batch mode and watching a log.
+
+**Before you start any run, answer these three out loud:**
+
+1. Did I ask Jev which issue and which model? (`ask-jev.mjs`) — not "the script will".
+2. Will a real pi agent appear in the Agents panel by name? If no, you are in batch mode.
+3. Did Lee ask for unattended batch? If no, do not use `run.mjs` to dispatch.
+
+**What Lee sees is the test.** If he opens the worker's pane and finds a `watch` loop
+printing `git log` instead of a pi session, you got this wrong — that is batch mode's fake
+"surface" pane, not an agent. This exact thing happened on #14: six batch attempts wrote
+nothing, and one real agent then finished the issue and opened PR #120.
+
+`run.mjs` still owns `--review` and `--merge`. Using it for those is correct; using it to
+*dispatch* when Lee is watching is not.
+
 ## 1. Every judgment goes to Jev
 
 "Full agentic" means **no hardcoded judgment**. Before you decide anything non-mechanical,
@@ -74,8 +95,22 @@ the issue and stop — do not dispatch a worker at an under-specified issue.
 ### 2.3 Spawn a real agent, one per issue, in its own worktree
 
 ```bash
+# new branch + worktree + nested Space
 $S/spawn-pi.sh issue-<n> <model> <thinking> --worktree issue-<n>-<slug> --task "issue #<n>"
+
+# worktree already exists (resuming, or batch mode left one behind)
+$S/spawn-pi.sh issue-<n> <model> <thinking> --open-worktree ../korwf-worktrees/issue-<n> --task "issue #<n>"
 ```
+
+**Verify it is a real agent before prompting** — this is the check that catches the
+batch-mode mistake:
+
+```bash
+herdr agent list | jq -c '.result.agents[]|{name,agent_status}'   # must list issue-<n>
+pgrep -af 'provider mac-mini'                                     # must show a real pi process
+```
+
+If `agent list` does not show your worker by name, you have not spawned an agent.
 
 - `--worktree` creates the branch, checkout and a Space that **nests under KorWF-Pi**
   (sidebar nesting is by git worktree identity). Lee can see and click it.
@@ -87,6 +122,22 @@ $S/spawn-pi.sh issue-<n> <model> <thinking> --worktree issue-<n>-<slug> --task "
 Use the contract in `korwf-worker-delegation` §3: issue number + "read the issue, AGENTS.md
 and PLAN.md", the branch it owns, acceptance criteria, the Verification commands to run and
 paste, the PR template with `Closes #<n>`, and "comment `Starting — <plan>` first".
+
+Two clauses that are not optional, both learned from #14:
+
+1. **The truncation guard** (§3.1) — paste it verbatim; it is why the agent succeeded
+   where six batch attempts wrote nothing:
+
+   > Create each file with a SHORT write, then extend it with successive small edit calls.
+   > Never emit more than a few hundred lines in one tool call. Commit after each file so
+   > progress survives a truncated turn. Keep your replies to one or two lines — narration
+   > spends the same budget the tool call needs.
+
+2. **If the branch already has commits, say so and tell it to inspect first**, or it will
+   redo or clobber finished work:
+
+   > A previous attempt already made N commits on this branch. INSPECT FIRST, do not redo
+   > finished work: `git log --oneline origin/main..HEAD` and `git status`.
 
 ```bash
 herdr agent prompt issue-<n> "$(cat <<'EOF'

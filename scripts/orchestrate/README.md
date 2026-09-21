@@ -23,13 +23,30 @@ Both are git-ignored.
 
 ## Run
 
+> **`run.mjs` is batch mode, and it is NOT the default way to build this repo.**
+> Its workers are headless subprocesses: invisible in Herdr's Agents panel, impossible to
+> steer, and unable to ask a question — so a worker that hits an ambiguity silently
+> guesses. Use it only for a long unattended queue, and say that is what you are doing.
+>
+> **Normally you orchestrate yourself**, spawning real pi agents:
+> **[`.pi/skills/jev-orchestration/ORCHESTRATOR-PLAYBOOK.md`](../../.pi/skills/jev-orchestration/ORCHESTRATOR-PLAYBOOK.md)**.
+> Issue #14 failed six batch attempts and was then completed by one real agent.
+
 ```sh
 set -a; . ~/Projects/.env; set +a        # JEV_API_KEY (never forwarded to workers)
+
+# Jev decisions, for either mode
+node scripts/orchestrate/ask-jev.mjs pick-issue     # which issue to take next
+node scripts/orchestrate/ask-jev.mjs select-model 14  # which model + thinking level
+
+# Review and merge, used by BOTH modes
+node scripts/orchestrate/run.mjs --review 7         # re-run the evidence gate on the last attempt (no new worker)
+node scripts/orchestrate/run.mjs --merge 7          # merge review: hard checks + Jev (complete, honest, in-scope, rule violation, quality); squash-merge if all pass
+
+# Batch mode (unattended only — headless workers, invisible in the Agents panel)
 node scripts/orchestrate/run.mjs --dry-run          # show Jev's selection for ready issues, no workers
 node scripts/orchestrate/run.mjs --once --issue 7   # one attempt on one issue
 node scripts/orchestrate/run.mjs --max 10           # loop until nothing is ready or 10 worker runs
-node scripts/orchestrate/run.mjs --review 7         # re-run the evidence gate on the last attempt (no new worker)
-node scripts/orchestrate/run.mjs --merge 7          # merge review: hard checks + Jev (complete, honest, in-scope, rule violation, quality); squash-merge if all pass
 ```
 
 Workers run in `../korwf-worktrees/issue-<n>` on branch `issue-<n>-<slug>`, open a PR, and

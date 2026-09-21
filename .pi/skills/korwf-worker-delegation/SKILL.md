@@ -57,6 +57,17 @@ Two different mechanisms, do not confuse them:
 | Visibility | `herdrSurface()` opens the worktree as a Space | the agent itself |
 | Use when | the orchestrator drives the loop | you are delegating by hand |
 
+**Batch mode is not the default.** If Lee is watching, or you are orchestrating
+interactively, spawn real agents with `spawn-pi.sh` (§2) and drive them yourself — see
+`.pi/skills/jev-orchestration/ORCHESTRATOR-PLAYBOOK.md`. `run.mjs` now refuses to dispatch
+without `--unattended` for exactly this reason; `--review`/`--merge`/`--dry-run` still work
+normally and are the right tools in both modes.
+
+The tell that you got it wrong: Lee opens the worker's pane and sees a `watch` loop
+printing `git log` rather than a pi session. That is batch mode's observability surface,
+not an agent. On #14 this cost six attempts and ~400k tokens; one real agent then completed
+the issue and opened PR #120.
+
 Before reporting an orchestrated run as dead, check it the way it actually works:
 
 ```bash

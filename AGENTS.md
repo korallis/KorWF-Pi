@@ -14,7 +14,10 @@ them before orchestrating, delegating, or escalating:
   escalating to Lee, and before interpreting a Jev probability. If you are *running the
   build*, also read its **`ORCHESTRATOR-PLAYBOOK.md`**: you are the orchestrator, workers
   are real Herdr agents you spawn and supervise, and every judgment (which issue, which
-  model, which thinking level) goes to Jev via `scripts/orchestrate/ask-jev.mjs`. Jev decides, code
+  model, which thinking level) goes to Jev via `scripts/orchestrate/ask-jev.mjs`.
+  **Do not reach for `node scripts/orchestrate/run.mjs` to dispatch work** — that is
+  unattended batch mode, its workers are headless and invisible in Herdr's Agents panel,
+  and it now refuses to run without `--unattended`. Use it only for `--review`/`--merge`. Jev decides, code
   enforces: use Jev for judgment calls and problem-solving, not just for scoring finished
   work. **`needs-human` means only Lee can resolve it** (spend, credentials, publishing,
   irreversible acts, permissions, unsettled product decisions) — running out of attempts

@@ -40,6 +40,38 @@ const MAX_RUNS = opt("--max") ? Number(opt("--max")) : CONFIG.budgets.maxWorkerR
 const RETRY_STUCK = flag("--retry-stuck");
 const MERGE = opt("--merge") ? Number(opt("--merge")) : null; // merge-review an awaiting-review issue's PR; merge if it passes
 const REVIEW = opt("--review") ? Number(opt("--review")) : null; // re-run gate on the last attempt of an issue without a new worker run
+const UNATTENDED = flag("--unattended");
+
+// Batch dispatch must be a deliberate choice, not muscle memory.
+//
+// This script's workers are headless subprocesses: invisible in Herdr's Agents panel,
+// unsteerable, and unable to ask a question, so one that meets an ambiguity guesses in
+// silence. The normal way to build this repo is for the orchestrating pi session to spawn
+// *real* pi agents (ORCHESTRATOR-PLAYBOOK.md). On #14 batch mode burnt six attempts and
+// ~400k tokens writing nothing; one real agent then finished the issue and opened PR #120.
+//
+// Typing `node run.mjs` out of habit is the actual failure mode — it has happened
+// repeatedly, including immediately after the playbook was written. So dispatching now
+// requires saying so. --review, --merge and --dry-run are unaffected: they run no workers.
+// Only applies to direct invocation: importers (ask-jev.mjs) reuse the Jev batteries and
+// dispatch nothing, so the guard must not fire on them.
+const DIRECT = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (DIRECT && !DRY && !MERGE && !REVIEW && !UNATTENDED) {
+  console.error(`
+run.mjs dispatches HEADLESS workers (batch mode). They never appear in Herdr's Agents
+panel, cannot be steered, and cannot ask a question.
+
+If Lee is watching, or you are orchestrating interactively, this is the wrong tool:
+  .pi/skills/jev-orchestration/ORCHESTRATOR-PLAYBOOK.md
+  node scripts/orchestrate/ask-jev.mjs select-model <n>
+  .pi/skills/korwf-worker-delegation/scripts/spawn-pi.sh issue-<n> <model> <thinking> \\
+      --worktree issue-<n>-<slug> --task "issue #<n>"
+
+If you really do want an unattended batch queue, pass --unattended.
+Review and merge do not need it: --review <n>, --merge <n>, --dry-run.
+`);
+  process.exit(2);
+}
 
 mkdirSync(STATE_DIR, { recursive: true });
 const log = (msg) => {
@@ -912,7 +944,6 @@ async function main() {
 // Run the batch loop only when invoked directly. When imported (by ask-jev.mjs, which
 // lets an *agentic* orchestrator reuse these Jev batteries without running the loop),
 // nothing executes on import — no lock is taken and no worker is dispatched.
-const INVOKED_DIRECTLY = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (INVOKED_DIRECTLY) main().catch((e) => { log(`fatal: ${e.stack}`); process.exit(1); });
+if (DIRECT) main().catch((e) => { log(`fatal: ${e.stack}`); process.exit(1); });
 
 export { profileAndSelect, readyIssues, loadDefs, fetchIssues, parseCriteria, parseVerification, availableModels, CONFIG, ISSUE_KEYS, state };
