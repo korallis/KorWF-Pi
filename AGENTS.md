@@ -4,6 +4,23 @@ This project is built by AI agents from the GitHub issue tracker. Read this file
 before doing anything. If your context has been compacted, **re-read this file and the
 issue you are working on** — every issue is written to be self-contained.
 
+## 0. Skills to load first
+
+Two project skills in `.pi/skills/` encode how this repository is actually built. Load
+them before orchestrating, delegating, or escalating:
+
+- **`.pi/skills/jev-orchestration/SKILL.md`** — read before running or changing anything
+  in `scripts/orchestrate/`, before adding or removing a `needs-human` label, before
+  escalating to Lee, and before interpreting a Jev probability. Jev decides, code
+  enforces: use Jev for judgment calls and problem-solving, not just for scoring finished
+  work. **`needs-human` means only Lee can resolve it** (spend, credentials, publishing,
+  irreversible acts, permissions, unsettled product decisions) — running out of attempts
+  is the orchestrator's own problem and gets `orchestrator-stuck` instead.
+- **`.pi/skills/herdr-pi-delegation/SKILL.md`** — read before any delegation, parallel
+  work, or worker. There are no sub-agents: a worker is a new pi session in a Herdr pane.
+  Close agents and their Spaces when finished, and clean up worktrees and branches
+  (local *and* remote) when work is done.
+
 ## 1. Source of truth
 
 - **[PLAN.md](PLAN.md)** is the design authority. If an issue and PLAN.md disagree, stop

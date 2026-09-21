@@ -1,12 +1,14 @@
 {
-  "$comment": "Bootstrap orchestrator config (development-time only; PLAN §11). Edit freely. Nothing here is shipped product code.",
+  "$comment": "Bootstrap orchestrator config (development-time only; PLAN \u00a711). Edit freely. Nothing here is shipped product code.",
   "repo": "korallis/KorWF-Pi",
   "jev": {
     "model": "jev-latest",
     "tokenBudget": 400000
   },
   "allowlist": {
-    "providers": ["mac-mini"],
+    "providers": [
+      "mac-mini"
+    ],
     "models": [
       "claude-fable-5-1",
       "claude-opus-5",
@@ -21,7 +23,13 @@
       "zai-glm-5.3"
     ]
   },
-  "staticFallbackOrder": ["claude-sonnet-5", "gpt-5.5", "claude-opus-5", "gpt-5.6-sol", "kimi-k3"],
+  "staticFallbackOrder": [
+    "claude-sonnet-5",
+    "gpt-5.5",
+    "claude-opus-5",
+    "gpt-5.6-sol",
+    "kimi-k3"
+  ],
   "cards": {
     "$comment": "Aptitude hints Jev ranks against. Registry facts from ~/.pi/agent/models.json; aptitude text is editable and advisory.",
     "claude-fable-5-1": "Claude family, 128K context, no image input. Aptitudes: careful long-form writing, specifications, ADRs, documentation with precise structure.",
@@ -51,6 +59,9 @@
     "merge": "jev-review",
     "gapThresholdPass": 0.7,
     "gapThresholdFail": 0.4,
-    "capCooldownMinutes": 15
+    "capCooldownMinutes": 15,
+    "overclaimBlock": 0.5,
+    "overclaimWaiveMinCriterion": 0.8,
+    "overclaimCeiling": 0.8
   }
 }
