@@ -154,14 +154,16 @@ export function acquireLock(path: string, options: AcquireLockOptions = {}): Loc
   };
 
   let waited = 0;
+  let tookOver = false;
   let previousHolder: LockfileContents | null = null;
   for (;;) {
     if (writeExclusive(path, contents)) {
-      return makeHandle(path, contents, previousHolder === null ? "created" : "took_over_stale", previousHolder);
+      return makeHandle(path, contents, tookOver ? "took_over_stale" : "created", previousHolder);
     }
     const holder = readHolderOrTreatAsStale(path);
     if (holder === null || !alive(holder.pid)) {
       // Stale (dead pid, or an unreadable lockfile left by a crash): take over.
+      tookOver = true;
       previousHolder = holder;
       rmSync(path, { force: true });
       continue;
