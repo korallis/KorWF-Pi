@@ -32,6 +32,8 @@ export {
   withDeadline,
   withRetry,
   CircuitBreaker,
+  CircuitBreakerRegistry,
+  DEFAULT_BREAKER_HOST,
   DeadlineExceededError,
   RetryAbortedError,
   wrapWithCircuitBreaker,
