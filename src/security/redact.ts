@@ -62,7 +62,12 @@ export const SECRET_PATTERNS: readonly { readonly name: string; readonly source:
   // `Authorization: Bearer <token>` in any casing, header dump or prose.
   { name: "bearer_token", source: String.raw`\bbearer\s+(?!\[redacted\])[A-Za-z0-9._~+/=-]{8,}`, flags: "gi" },
   // `Authorization: <anything>` where the scheme is not Bearer (Basic, custom).
-  { name: "authorization_header", source: String.raw`\bauthorization\b\s*[:=]\s*['"]?(?!\[redacted\])[^\s'",;}]{8,}`, flags: "gi" },
+  // The optional `<scheme> ` group means the scheme *and* its value are removed.
+  {
+    name: "authorization_header",
+    source: String.raw`\bauthorization\b\s*[:=]\s*['"]?(?!\[redacted\])(?:[A-Za-z][A-Za-z0-9_-]*\s+)?[^\s'",;}]{8,}`,
+    flags: "gi",
+  },
   // `x-api-key: …` style headers.
   { name: "api_key_header", source: String.raw`\bx-[a-z-]*(?:api-?key|auth|token)\b\s*[:=]\s*['"]?(?!\[redacted\])[^\s'",;}]{8,}`, flags: "gi" },
   // `apiKey = "…"` / `secret_key: …` / `password=…` assignments, incl. env-file form.
