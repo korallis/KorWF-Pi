@@ -161,12 +161,25 @@ herdr agent list | jq -c '.result.agents[] | {name, agent_status}'
   rather than killing it.
 - `done`/`idle` → collect the result file.
 
-### 2.6 Verify independently, then merge
+### 2.6 Record the attempt, verify independently, then merge
+
+`--review` and `--merge` read `state.attempts[n]` and require the last attempt to be
+`awaiting-review`. A batch run writes that record; **an agentic run must write it too**,
+or the gate cannot see the work:
 
 ```bash
+node scripts/orchestrate/ask-jev.mjs record-attempt <n> \
+  --model <model> --thinking <t> --branch <branch> \
+  --pr <url> --report-file /tmp/issue-<n>-result.md
+
 node scripts/orchestrate/run.mjs --review <n>    # evidence gate on the attempt
 node scripts/orchestrate/run.mjs --merge <n>     # merge review; squash-merges if clean
 ```
+
+If `--merge` logs *"GitHub has not computed mergeability yet"*, that is a GitHub-side
+delay, **not** a defect: the attempt stays `awaiting-review`, so just re-run `--merge <n>`
+in a few seconds. Do not loop a worker over it. (This blocked PR #120 once while every Jev
+score passed.)
 
 Re-run pasted verification commands literally for anything merge-critical
 (`SKILL.md` §4 — a worker once fabricated a transcript and the gate passed it). Prefer an

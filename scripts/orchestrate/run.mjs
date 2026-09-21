@@ -799,6 +799,24 @@ async function mergeReview(jev, n) {
       hard.push(`rebase onto main conflicts: ${String(e.stderr ?? e.message).slice(-300)}`);
     }
   }
+  // GitHub computes mergeability asynchronously and reports `UNKNOWN` until it finishes,
+  // usually within a few seconds of a push. That is "not known yet", not "not mergeable",
+  // so failing on it sends a perfectly good PR back to a worker for rework — which is what
+  // happened to #120: every Jev score passed and the only blocker was a transient UNKNOWN.
+  // Poll briefly for a definite answer before judging.
+  if (pr.mergeable === "UNKNOWN" || pr.mergeStateStatus === "UNKNOWN") {
+    for (let i = 0; i < 6; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      pr = prState();
+      if (pr.mergeable !== "UNKNOWN" && pr.mergeStateStatus !== "UNKNOWN") break;
+    }
+    if (pr.mergeable === "UNKNOWN" || pr.mergeStateStatus === "UNKNOWN") {
+      // Still indeterminate after ~30s: a GitHub-side delay, not a defect in the work.
+      // Retry the merge review later; do not loop a worker over it.
+      log(`#${n}: GitHub has not computed mergeability yet (${pr.mergeable}/${pr.mergeStateStatus}) — leaving awaiting-review, retry \`--merge ${n}\` shortly`);
+      return "retry-later";
+    }
+  }
   if (pr.mergeable !== "MERGEABLE" || pr.mergeStateStatus !== "CLEAN") hard.push(`PR state ${pr.mergeable}/${pr.mergeStateStatus}`);
   // `needs-human` is absolute: by definition only the owner can resolve it (Jev:
   // block_when_warranted=0.67, and stale labels are re-validated by revalidateNeedsHuman()

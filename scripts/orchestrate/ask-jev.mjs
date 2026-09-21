@@ -19,6 +19,7 @@
 // still answers, deterministically, and says so — PLAN §2.4: the system must work with
 // no Jev key.
 
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Jev, noul, score } from "./jev.mjs";
 import {
@@ -134,9 +135,48 @@ async function askFreeForm(n, question) {
   out({ question, p: a.answer.noul, reading: a.answer.noul >= 0.75 ? "yes (confident)" : a.answer.noul <= 0.25 ? "no (confident)" : "uncertain — ask a sharper, more bounded question (SKILL.md §2)" });
 }
 
-const cmds = { "pick-issue": () => pickIssue(), "select-model": () => selectModel(arg), "ask": () => askFreeForm(arg, process.argv.slice(4).filter((x) => x !== "--json").join(" ")) };
+// Agentic runs must leave the same audit trail as batch runs, or `--review` and `--merge`
+// cannot evaluate them: both look up `state.attempts[n]` and require the last attempt to
+// be `awaiting-review`. Without this, finishing an issue with a real Herdr agent meant
+// hand-editing state.json (done once for #120 — exactly the kind of manual step that
+// silently diverges). Model/thinking/rule come from `select-model` so the record is
+// identical in shape to one written by run.mjs.
+//
+//   ask-jev.mjs record-attempt <issue> --model M --thinking T --branch B --pr URL
+//                              [--rule TEXT] [--report-file PATH] [--outcome awaiting-review]
+function recordAttempt(n) {
+  const num = Number(n);
+  if (!num) { console.error("usage: ask-jev.mjs record-attempt <issue> --model M --thinking T --branch B --pr URL [--report-file PATH]"); process.exit(2); }
+  const argOf = (f, d) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : d; };
+  const model = argOf("--model"), thinking = argOf("--thinking", "high");
+  const branch = argOf("--branch"), pr = argOf("--pr", null);
+  const outcome = argOf("--outcome", "awaiting-review");
+  const reportFile = argOf("--report-file");
+  if (!model || !branch) { console.error("record-attempt requires --model and --branch"); process.exit(2); }
+
+  let report = argOf("--report", "");
+  if (reportFile) {
+    try { report = readFileSync(reportFile, "utf8"); }
+    catch (e) { console.error(`cannot read --report-file ${reportFile}: ${e.message}`); process.exit(2); }
+  }
+  const statePath = join(ROOT, ".orchestrate/state.json");
+  const s = JSON.parse(readFileSync(statePath, "utf8"));
+  const list = s.attempts[String(num)] ??= [];
+  const now = new Date().toISOString();
+  list.push({
+    issue: num, attempt: list.length + 1, model, requested: model,
+    rule: argOf("--rule", "agentic: jev-selected, herdr agent"),
+    thinking, mode: "agentic", branch, started: argOf("--started", now), ended: now,
+    outcome, pr, report,
+  });
+  writeFileSync(statePath, JSON.stringify(s, null, 2));
+  console.log(`recorded agentic attempt ${list.length} for #${num} (outcome=${outcome}${pr ? `, pr=${pr}` : ""})`);
+  console.log(`next: node scripts/orchestrate/run.mjs --review ${num} && node scripts/orchestrate/run.mjs --merge ${num}`);
+}
+
+const cmds = { "pick-issue": () => pickIssue(), "select-model": () => selectModel(arg), "record-attempt": () => recordAttempt(arg), "ask": () => askFreeForm(arg, process.argv.slice(4).filter((x) => x !== "--json").join(" ")) };
 if (!cmds[cmd]) {
-  console.error("usage: ask-jev.mjs pick-issue | select-model <issue> | ask <issue> \"<question>\"  [--json]");
+  console.error("usage: ask-jev.mjs pick-issue | select-model <issue> | record-attempt <issue> --model M --branch B [--pr URL] [--report-file PATH] | ask <issue> \"<question>\"  [--json]");
   process.exit(2);
 }
 await cmds[cmd]();
