@@ -316,3 +316,49 @@ Structural guarantees the implementation MUST provide (each is a bypass test in 
    `src/jev/`/`src/decisions/`; a worker cannot write one (records.md §4).
 5. **Audit before return.** The audit entry is written before the evaluation result is
    returned, so a crash after rejection still leaves the entry.
+
+## 8. Bypass scenarios (all ⇒ `rejected + audit entry`)
+
+Every row is a Stage 4 test (`test/spec/gates.spec.md` B1–B14). The expected outcome of
+**every** row is the same: the transition does not commit, the record is unchanged
+(`afterHash = beforeHash`), an `AuditEntry` with `actor = engine:gate:*` is written, and
+the rejection carries the listed reason code.
+
+| # | Bypass attempt | Gate term that rejects | Reason code |
+| --- | --- | --- | --- |
+| B1 | Worker sets `Task.status = done` directly (tool call, bash, SQLite, resume) | §7 guarantee 1 — no gate receipt | `status_write_forbidden` |
+| B2 | Jev returns fresh `no_gap` while one check is `fail` | C1 has no Jev term; C2 ⊤ does not imply C1 | `check_fail` |
+| B3 | Evidence recorded at a previous SHA (`e.revision ≠ SHA(T)`) | fresh evidence (§2) ⇒ check `missing` | `evidence_stale_revision` |
+| B4 | Evidence at the right SHA but `e.taskRevision ≠ T.rev` (check list edited after run) | fresh evidence (§2) | `evidence_stale_task_revision` |
+| B5 | Check registered after the fact with command `true` / `exit 0` / `echo ok` | trivial check (§2), C1 `¬trivial(c)` | `check_trivial` |
+| B6 | Registered command replaced at run time: evidence `commandIdentity ≠ c.command` | §4 `pass` requires identity match | `command_identity_mismatch` |
+| B7 | Review approval from the same attempt (or its handoff chain) that wrote the code | independent review (§2), C3 | `review_not_independent` |
+| B8 | Human approval for a high-risk task supplied by a `policy`/`engine` actor, or scoped to another task / an older plan revision | valid approval (§2), C3 | `approval_actor_not_user` / `approval_invalid:<reason>` |
+| B9 | Check marked `required = false` and left `fail`/`missing` | §4 rules — `required` is reporting only | `check_fail` / `check_missing` |
+| B10 | Jev disabled and no fallback row (“skipped”) | §5.2 — absence is not a state | `jev_decision_missing` |
+| B11 | Jev disabled, fallback row present, but a criterion has no passing check/evidence | `DET_COVERAGE` ⊥ | `fallback_coverage_gap` |
+| B12 | Check result `flaky` / `timeout` / `unavailable` presented as success | §4 — only `pass` satisfies C1 | `check_flaky` / `check_timeout` / `check_unavailable` |
+| B13 | Phase: Jev `no_gap` on the phase while a task is not `done` or an integrated check fails | P1 / P2 have no Jev term | `tasks_not_done` / `check_fail` |
+| B14 | Phase: task-level evidence at `SHA(T)` offered as integrated evidence at `SHA(P)`; or `SHA(P)` moved after evaluation | P2 freshness at `SHA(P)`; P0 | `evidence_stale_revision` / `merged_revision_changed` |
+
+Additional invariants the same tests assert:
+
+- A rejected evaluation MUST NOT leave partial state: no `Task.status` change, no
+  `Phase.gateStatus` change, no gate receipt.
+- Re-running the gate with unchanged input yields the same reason code (determinism §1).
+- A `Decision` row authored by anything other than `src/jev/`/`src/decisions/` is
+  rejected at write time (records.md §4) and therefore never reaches C2/P3.
+
+## 9. Decisions and open points
+
+- **D1** — Phase-level evidence uses `Evidence.taskId = null` + `requirementId` of a phase
+  criterion. If records.md later adds `phaseId`, replace `E(P)` accordingly; the gate is
+  unchanged.
+- **D2** — `jev_unavailable` (enabled but unreachable) falls back to `DET_COVERAGE` only
+  when config `jev.optional = true`; otherwise the task waits in `review`. Rationale: an
+  operator who turned Jev on expects its judgement; silently degrading would be a hidden
+  policy change. Configurable, never implicit.
+- **D3** — Human checks (`kind = human`) count under C1 and need a `human` reviewer row;
+  they do not double as the C3 approval, which is a separate `Approval` record.
+- **D4** — The trivial-check deny-list is deliberately small and structural; issue #15
+  (policy) may extend it. Extending it bumps `W.policyVersion`.
