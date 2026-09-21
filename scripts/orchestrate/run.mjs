@@ -863,7 +863,15 @@ async function mergeReview(jev, n) {
   const { stat, diff } = branchDiff(dir);
   const added = diff.split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++")).join("\n");
   if (/\/home\/[a-z]+\//.test(added)) hard.push("diff adds an absolute home-directory path");
-  if (/(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|JEV_API_KEY\s*=\s*\S)/.test(added)) hard.push("diff appears to add a credential");
+  // Honour the same opt-out marker the repo's own scanner uses, so a line may declare
+  // itself a pattern definition rather than a secret. Without it this check fires on any
+  // code or prose that *describes* credential formats — it blocked #20, whose whole job
+  // was to add `scripts/check-secrets.sh`, on that script's own PATTERN string. The marker
+  // is deliberately explicit: a real leaked key will not carry it.
+  const credentialLines = added.split("\n")
+    .filter((l) => !/check-secrets:allow/.test(l))
+    .filter((l) => /(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|JEV_API_KEY\s*=\s*\S)/.test(l));
+  if (credentialLines.length) hard.push(`diff appears to add a credential (${credentialLines.length} line(s); mark a pattern definition with 'check-secrets:allow' if it is not one)`);
   const checks = deterministicChecks(issue, dir, branch, parseVerification(issue.body));
   if (checks.testsExit) hard.push(`npm test exited ${checks.testsExit}`);
   for (const v of checks.verification) if (v.exit) hard.push(`verification '${v.cmd}' exited ${v.exit}`);
