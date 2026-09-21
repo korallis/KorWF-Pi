@@ -480,18 +480,18 @@
     },
     "ShippedDenyPatterns": {
       "type": "array",
-      "description": "Shipped minimum deny list of content regexes (ECMAScript syntax, applied per line). `privacy.denyPatterns` MUST contain every entry.",
+      "description": "Shipped minimum deny list of content regexes (ECMAScript syntax, compiled with flags `iu`, applied per line). `privacy.denyPatterns` MUST contain every entry.",
       "const": [
         "-----BEGIN [A-Z ]*PRIVATE KEY-----",
-        "(?i)\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}",
+        "\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}",
         "\\bsk-[A-Za-z0-9_-]{16,}\\b",
         "\\bAKIA[0-9A-Z]{16}\\b",
         "\\bgh[pousr]_[A-Za-z0-9]{20,}\\b",
         "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b",
         "\\bAIza[0-9A-Za-z_-]{35}\\b",
         "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
-        "(?i)\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}",
-        "(?i)\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
+        "\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}",
+        "\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
       ]
     },
     "Privacy": {
@@ -769,7 +769,7 @@
             },
             {
               "contains": {
-                "const": "(?i)\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}"
+                "const": "\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}"
               }
             },
             {
@@ -804,26 +804,26 @@
             },
             {
               "contains": {
-                "const": "(?i)\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}"
+                "const": "\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}"
               }
             },
             {
               "contains": {
-                "const": "(?i)\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
+                "const": "\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
               }
             }
           ],
           "default": [
             "-----BEGIN [A-Z ]*PRIVATE KEY-----",
-            "(?i)\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}",
+            "\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}",
             "\\bsk-[A-Za-z0-9_-]{16,}\\b",
             "\\bAKIA[0-9A-Z]{16}\\b",
             "\\bgh[pousr]_[A-Za-z0-9]{20,}\\b",
             "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b",
             "\\bAIza[0-9A-Za-z_-]{35}\\b",
             "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
-            "(?i)\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}",
-            "(?i)\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
+            "\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}",
+            "\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
           ]
         },
         "allowPaths": {
