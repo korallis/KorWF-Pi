@@ -30,7 +30,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 ## 2. Package and adapter foundation (Stage 2)
 
 - [x] Initialise Git; package manifest per `docs/packages.md`; modular layout; namespaced commands/tools/storage.
-- [ ] Formatting, type checking, unit and integration test scripts.
+- [x] Formatting, type checking, unit and integration test scripts.
 - [ ] Config loading, validation, safe defaults, first-use disclosure.
 - [ ] Credential resolution; secrets excluded from all logs and exports.
 - [ ] SQLite store, migrations, lockfile ownership, append-only audit, artifact directory.

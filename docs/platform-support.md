@@ -15,7 +15,7 @@ been verified and this file is updated. |
 
 ## Requirements
 
-- Node.js 20 or later (`engines.node` in `package.json`).
+- Node.js 22.6 or later (`engines.node` in `package.json`). Required by `node --experimental-strip-types`, which runs the `node:test` specification suites directly from TypeScript.
 - A Pi install compatible with `@earendil-works/pi-coding-agent` (peer dependency; see
   `package.json`).
 
