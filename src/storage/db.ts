@@ -29,6 +29,7 @@ import {
   AuditRepository,
   DecisionRepository,
   EvidenceRepository,
+  LedgerRepository,
   MemoryRepository,
   ModelAvailabilityRepository,
   ModelOutcomeRepository,
@@ -95,6 +96,8 @@ export class Store {
   readonly memories: MemoryRepository;
   readonly modelAvailability: ModelAvailabilityRepository;
   readonly modelOutcomes: ModelOutcomeRepository;
+  /** Append-only usage ledger; budget reservations are read and written here (#30). */
+  readonly ledger: LedgerRepository;
   readonly audit: AuditRepository;
 
   readonly #db: Database;
@@ -140,6 +143,7 @@ export class Store {
     this.memories = new MemoryRepository(ctx);
     this.modelAvailability = new ModelAvailabilityRepository(ctx);
     this.modelOutcomes = new ModelOutcomeRepository(ctx);
+    this.ledger = new LedgerRepository(ctx);
   }
 
   #context(audit: AuditSink | null): RepoContext {
@@ -261,7 +265,7 @@ export class Store {
     try {
       return this.write(() =>
         reconcileAbandonedAttempts(
-          { attempts: this.attempts, audit: this.audit },
+          { attempts: this.attempts, audit: this.audit, ledger: this.ledger },
           { ...options, now: options.now ?? (() => this.#now()) },
         ),
       );

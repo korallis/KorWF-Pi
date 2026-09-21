@@ -2,7 +2,8 @@
  * Round-trip tests for the store (issue #23).
  *
  * AC: "All ten record types round-trip." (Eleven with `audit_entry`, which
- * docs/records.md defines alongside the PLAN §5 ten.)
+ * docs/records.md defines alongside the PLAN §5 ten; twelve with
+ * `ledger_entry`, added by #30.)
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { openStore, type Store } from "../../../src/storage/db.ts";
@@ -13,6 +14,7 @@ import {
   makeAttempt,
   makeDecision,
   makeEvidence,
+  makeLedgerEntry,
   makeMemory,
   makeModelAvailability,
   makeModelOutcome,
@@ -119,6 +121,16 @@ describe("AC: all record types round-trip", () => {
     seed(store);
     const written = store.modelOutcomes.insert(makeModelOutcome());
     expect(store.modelOutcomes.require(written.id)).toEqual(written);
+  });
+
+  it("ledger_entry round-trips unchanged (#30)", () => {
+    const store = freshStore();
+    seed(store);
+    const written = store.ledger.insert(makeLedgerEntry());
+    expect(store.ledger.require(written.id)).toEqual(written);
+    // Unknown cost survives the round trip as null, not 0.
+    expect(store.ledger.require(written.id).usage.spendUsd).toBeNull();
+    expect(store.ledger.require(written.id).usage.costBasis).toBe("unknown");
   });
 
   it("audit_entry round-trips unchanged", () => {

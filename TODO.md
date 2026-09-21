@@ -40,7 +40,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Versioned question definitions and composition policy.
 - [ ] Minimal-state construction, outbound limits, default-deny path/data filtering.
 - [ ] Revision-aware caching and invalidation.
-- [ ] Usage accounting; atomic budget reservations; known/estimated/unknown cost.
+- [x] Usage accounting; atomic budget reservations; known/estimated/unknown cost.
 - [ ] Decision traces; retention; raw-payload logging opt-in.
 - [ ] Isolated-session load test; no-key load test; lifecycle cleanup test.
 

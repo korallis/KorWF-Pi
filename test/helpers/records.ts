@@ -2,8 +2,8 @@
  * Valid sample rows for every persistent record type (issue #23).
  *
  * The store round-trip tests (acceptance criterion "all ten record types
- * round-trip" — eleven with `audit_entry`) build a complete, foreign-key
- * consistent workflow from these factories. Every value is fabricated; no
+ * round-trip" — eleven with `audit_entry`, twelve with `ledger_entry` from
+ * #30) build a complete, foreign-key consistent workflow from these factories. Every value is fabricated; no
  * machine paths, no provider names, no credentials.
  */
 import type {
@@ -15,6 +15,8 @@ import type {
   DecisionId,
   Evidence,
   EvidenceId,
+  LedgerEntry,
+  LedgerEntryId,
   Memory,
   MemoryId,
   ModelAvailability,
@@ -22,6 +24,7 @@ import type {
   ModelOutcome,
   ModelOutcomeId,
   Phase,
+  ReservationId,
   PhaseId,
   Provenance,
   RouteId,
@@ -272,6 +275,32 @@ export function makeModelAvailability(overrides: Partial<ModelAvailability> = {}
     detectedAt: null,
     estimatedReset: null,
     lastProbe: null,
+    ...overrides,
+  };
+}
+
+export function makeLedgerEntry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
+  return {
+    id: "le-1" as LedgerEntryId,
+    createdAt: AT,
+    updatedAt: AT,
+    schemaVersion: RECORDS_SCHEMA_VERSION,
+    kind: "append_only",
+    scope: {
+      workflowId: "wf-1" as WorkflowId,
+      phaseId: "ph-1" as PhaseId,
+      taskId: "tk-1" as TaskId,
+      attemptId: "at-1" as AttemptId,
+    },
+    channel: "model",
+    entryKind: "reservation",
+    reservationId: "rsv-1" as ReservationId,
+    sessionId: "session-1",
+    // Default fixture is an unknown-cost call: the honest default (#30).
+    usage,
+    elapsedMs: 0,
+    label: null,
+    reason: null,
     ...overrides,
   };
 }

@@ -40,11 +40,15 @@ export type { ArtifactManifest, ArtifactManifestEntry } from "./artifacts.ts";
 
 export {
   ABANDONED_OUTCOME,
+  LEDGER_ABANDONED_REASON,
   assumeWorkersGone,
   reconcileAbandonedAttempts,
+  reconcileOpenReservations,
 } from "./reconcile.ts";
 export type {
+  AbandonedReservationRow,
   ReconcileOptions,
+  ReconcileReservationsOptions,
   ReconciledAttempt,
   ReconciliationReport,
   WorkerLiveness,
@@ -69,6 +73,7 @@ export {
   AuditRepository,
   DecisionRepository,
   EvidenceRepository,
+  LedgerRepository,
   MemoryRepository,
   ModelAvailabilityRepository,
   ModelOutcomeRepository,
@@ -76,5 +81,7 @@ export {
   TaskRepository,
   WorkflowRepository,
 } from "./repos/index.ts";
+
+export type { LedgerScopeColumn, LedgerTotals } from "./repos/index.ts";
 
 export type { RecordTypes, RecordTable, AnyRecord } from "./records.ts";

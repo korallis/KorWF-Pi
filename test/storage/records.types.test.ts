@@ -16,6 +16,7 @@ import {
   type Attempt,
   type Decision,
   type Evidence,
+  type LedgerEntry,
   type Memory,
   type ModelAvailability,
   type ModelOutcome,
@@ -134,7 +135,12 @@ type _NoEvidencePatch = Assert<Equal<UpdatePatch<Evidence>, never>>;
 type _NoModelOutcomePatch = Assert<Equal<UpdatePatch<ModelOutcome>, never>>;
 type _NoAuditPatch = Assert<Equal<UpdatePatch<AuditEntry>, never>>;
 type _TaskPatchExists = Assert<Equal<UpdatePatch<Task>, never> extends true ? false : true>;
-type _AppendOnlyTables = Assert<Equal<AppendOnlyTable, "decision" | "evidence" | "model_outcome" | "audit_entry">>;
+// `ledger_entry` (#30) joins the append-only set: accounting is a history of
+// facts, never a counter that can be edited after the fact.
+type _NoLedgerPatch = Assert<Equal<UpdatePatch<LedgerEntry>, never>>;
+type _AppendOnlyTables = Assert<
+  Equal<AppendOnlyTable, "decision" | "evidence" | "model_outcome" | "ledger_entry" | "audit_entry">
+>;
 
 // The constant tables together cover every RecordTable exactly once.
 type _Partition = Assert<

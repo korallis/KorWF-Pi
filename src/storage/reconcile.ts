@@ -15,8 +15,19 @@
  * probe reports every worker as gone, which is the safe reading for a store
  * that has just been opened by a new process.
  */
-import type { Attempt, AttemptOutcome, IsoTimestamp } from "./records.ts";
-import type { AttemptRepository, AuditRepository } from "./repos/index.ts";
+import type {
+  Attempt,
+  AttemptOutcome,
+  IsoTimestamp,
+  LedgerEntry,
+  LedgerEntryId,
+  ReservationId,
+  UsageChannel,
+  Usage,
+  WorkflowId,
+} from "./records.ts";
+import { RECORDS_SCHEMA_VERSION } from "./records.ts";
+import type { AttemptRepository, AuditRepository, LedgerRepository } from "./repos/index.ts";
 
 /** What a liveness probe concluded about one open attempt's worker. */
 export type WorkerLiveness =
@@ -40,6 +51,8 @@ export interface ReconcileOptions {
   readonly now?: () => IsoTimestamp;
   /** Actor recorded on the audit rows; defaults to `korwf:reconciler`. */
   readonly actor?: string;
+  /** Budget-reservation reconciliation (issue #30). */
+  readonly reservations?: ReconcileReservationsOptions;
 }
 
 export interface ReconciledAttempt {
@@ -56,11 +69,95 @@ export interface ReconciliationReport {
   readonly reattached: number;
   readonly abandoned: number;
   readonly attempts: readonly ReconciledAttempt[];
+  /** Budget reservations closed as abandoned (issue #30). */
+  readonly reservations: readonly AbandonedReservationRow[];
 }
 
 export interface ReconcileDeps {
   readonly attempts: AttemptRepository;
   readonly audit: AuditRepository;
+  /** Optional so callers that only reconcile attempts keep working. */
+  readonly ledger?: LedgerRepository;
+}
+
+/** A budget reservation whose session died before it settled (issue #30). */
+export interface AbandonedReservationRow {
+  readonly reservationId: ReservationId;
+  readonly sessionId: string;
+  readonly channel: UsageChannel;
+  readonly workflowId: WorkflowId;
+  /** The estimate, which stays charged: we cannot know what the call used. */
+  readonly estimate: Usage;
+}
+
+/** Reason written on an abandonment row. */
+export const LEDGER_ABANDONED_REASON = "reservation had no settlement when the store was reopened";
+
+export interface ReconcileReservationsOptions {
+  /**
+   * Reservations from this session are left alone — they belong to the
+   * caller's own in-flight calls. At startup nothing is in flight, so the
+   * default (`undefined`) closes every open reservation.
+   */
+  readonly keepSessionId?: string;
+  readonly now?: () => IsoTimestamp;
+  readonly newId?: () => string;
+}
+
+let reservationIdCounter = 0;
+function defaultAbandonmentId(): string {
+  reservationIdCounter += 1;
+  return `aban-${Date.now().toString(36)}-${process.pid.toString(36)}-${reservationIdCounter.toString(36)}`;
+}
+
+/**
+ * Close every open budget reservation with an `abandonment` row (issue #30).
+ *
+ * The estimate is retained rather than refunded: a reserved call may well
+ * have run and cost money before the process died, and silently returning the
+ * budget would let a crash loop spend past its cap. The row records that the
+ * amount is an unverified estimate, so reports stay honest.
+ *
+ * Idempotent — the abandonment row is itself the terminal row, so a second
+ * pass finds nothing.
+ */
+export function reconcileOpenReservations(
+  ledger: LedgerRepository,
+  options: ReconcileReservationsOptions = {},
+): readonly AbandonedReservationRow[] {
+  const now = options.now ?? (() => new Date().toISOString());
+  const newId = options.newId ?? defaultAbandonmentId;
+  const at = now();
+  const closed: AbandonedReservationRow[] = [];
+
+  for (const open of ledger.openReservations()) {
+    if (options.keepSessionId !== undefined && open.sessionId === options.keepSessionId) continue;
+    const row: LedgerEntry = {
+      id: newId() as LedgerEntryId,
+      createdAt: at,
+      updatedAt: at,
+      schemaVersion: RECORDS_SCHEMA_VERSION,
+      kind: "append_only",
+      scope: open.scope,
+      channel: open.channel,
+      entryKind: "abandonment",
+      reservationId: open.reservationId,
+      sessionId: open.sessionId,
+      usage: open.usage,
+      elapsedMs: open.elapsedMs,
+      label: open.label,
+      reason: LEDGER_ABANDONED_REASON,
+    };
+    ledger.insert(row);
+    closed.push({
+      reservationId: open.reservationId,
+      sessionId: open.sessionId,
+      channel: open.channel,
+      workflowId: open.scope.workflowId,
+      estimate: open.usage,
+    });
+  }
+  return closed;
 }
 
 /** Default probe: after a restart nothing is assumed to have survived. */
@@ -107,11 +204,17 @@ export function reconcileAbandonedAttempts(
     });
   }
 
+  const reservations =
+    deps.ledger === undefined
+      ? []
+      : reconcileOpenReservations(deps.ledger, { now: () => at, ...options.reservations });
+
   return {
     at,
     examined: results.length,
     reattached: results.filter((r) => r.disposition === "reattached").length,
     abandoned: results.filter((r) => r.disposition === "abandoned").length,
     attempts: results,
+    reservations,
   };
 }
