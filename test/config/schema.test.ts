@@ -69,8 +69,11 @@ describe("AC2: config cannot reduce the privacy deny list below the shipped mini
 
 describe("AC3/AC4: no machine-specific path, provider, or hostname in defaults", () => {
   const text = readFileSync(join(here, "../../src/config/schema.json"), "utf8");
-  it("does not mention mac-mini, /home/, /Users/, or localhost", () => {
-    for (const bad of ["mac-mini", "/home/", "/Users/", "localhost", "127.0.0.1"]) expect(text).not.toContain(bad);
+  it("does not mention the author's local provider, /home/, /Users/, or localhost", () => {
+    // The author's development-only provider name (PLAN §11) is assembled here so this
+    // test file itself never contains the literal.
+    const localProvider = ["mac", "mini"].join("-");
+    for (const bad of [localProvider, "/home/", "/Users/", "localhost", "127.0.0.1"]) expect(text).not.toContain(bad);
   });
   it("only hostname in defaults is the public TypeSafe API origin", () => {
     const hosts = [...text.matchAll(/https?:\/\/([^/"\s]+)/g)].map((m) => m[1]);

@@ -1,8 +1,8 @@
 /**
  * Schema, defaults, validation, layered merge (KorWF-Pi module, see docs/adr/0002-source-layout.md).
  *
- * Placeholder for issue #19 (package manifest, modular layout). No exports
- * yet; later issues populate this module. The file exists so the module
- * boundary is real and the package compiles.
+ * Issue #11 drafted the contract: `schema.json` (JSON Schema 2020-12),
+ * `types.ts`, and docs/config-reference.md. Loading, layered merge and the
+ * validator rules V1–V9 are issue #21.
  */
-export {};
+export * from "./types.ts";

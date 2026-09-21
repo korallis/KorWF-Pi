@@ -18,7 +18,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Produce reuse/extend/replace table for the shipped examples listed in PLAN §4; revise source layout. (#8 → `docs/adr/0001`, `docs/adr/0002`)
 - [x] Verify current TypeSafe API, JS SDK, Jev model versions, limits, pricing, retention.
 - [x] Confirm `ctx.modelRegistry.getAvailable()` / `ctx.scopedModels` field set at runtime (id, provider, name, reasoning, thinkingLevelMap, input, contextWindow, maxTokens, cost) and how `enabledModels` scoping interacts with the allowlist.
-- [ ] Draft config schema (allowlist, budgets, modes, approval classes, privacy lists, fallback policy, static fallback order, Jev base URL/key source).
+- [x] Draft config schema (allowlist, budgets, modes, approval classes, privacy lists, fallback policy, static fallback order, Jev base URL/key source). (#11)
 - [x] Define all records (PLAN §5) including Phase, ModelAvailability, ModelOutcome, and Attempt fallback fields.
 - [x] Define task and phase state transitions, `paused(cap)`, approval invalidation.
 - [x] Write the task gate and phase gate formulas (PLAN §2.4–2.5) as testable specs.
