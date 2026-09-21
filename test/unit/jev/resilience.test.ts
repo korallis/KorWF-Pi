@@ -52,6 +52,90 @@ function neverSettles<T>(): Promise<T> {
   });
 }
 
+describe("AC3: aborting mid-retry stops further attempts within one tick", () => {
+  it("stops retrying once the signal is aborted, without waiting out the backoff", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const promise = withRetry<string>(
+      async () => {
+        calls++;
+        throw new Error(`fail ${calls}`);
+      },
+      () => true,
+      { maxAttempts: 5, idempotent: true, signal: controller.signal, baseDelayMs: 1000 },
+    );
+    const assertion = expect(promise).rejects.toBeInstanceOf(RetryAbortedError);
+    // Let the first attempt run and start its backoff sleep.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(1);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    await assertion;
+    // No further attempt was made after the abort.
+    expect(calls).toBe(1);
+  });
+
+  it("an already-aborted signal prevents even the first attempt", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    let calls = 0;
+    const promise = withRetry<string>(
+      async () => {
+        calls++;
+        return "never";
+      },
+      () => true,
+      { maxAttempts: 3, idempotent: true, signal: controller.signal },
+    );
+    await expect(promise).rejects.toBeInstanceOf(RetryAbortedError);
+    expect(calls).toBe(0);
+  });
+
+  it("idempotent: false makes exactly one attempt regardless of maxAttempts", async () => {
+    let calls = 0;
+    const promise = withRetry<string>(
+      async () => {
+        calls++;
+        throw new Error("boom");
+      },
+      () => true,
+      { maxAttempts: 5, idempotent: false },
+    );
+    await expect(promise).rejects.toThrow("boom");
+    expect(calls).toBe(1);
+  });
+
+  it("retries up to maxAttempts then throws the last error", async () => {
+    let calls = 0;
+    const promise = withRetry<string>(
+      async () => {
+        calls++;
+        throw new Error(`fail ${calls}`);
+      },
+      () => true,
+      { maxAttempts: 3, idempotent: true, baseDelayMs: 10, random: () => 0 },
+    );
+    const assertion = expect(promise).rejects.toThrow("fail 3");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await assertion;
+    expect(calls).toBe(3);
+  });
+
+  it("succeeds without retrying once run resolves", async () => {
+    let calls = 0;
+    const result = await withRetry<string>(
+      async () => {
+        calls++;
+        return "ok";
+      },
+      () => true,
+      { maxAttempts: 5, idempotent: true },
+    );
+    expect(result).toBe("ok");
+    expect(calls).toBe(1);
+  });
+});
+
 describe("AC1: withDeadline abandons a hung run and returns a typed timeout", () => {
   it("resolves normally when run finishes before the deadline", async () => {
     const promise = withDeadline(async () => "done", { deadlineMs: 1000 });
