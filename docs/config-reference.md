@@ -110,4 +110,84 @@ or spend on workers, and it is the mode the calibration strategy needs first. A 
 records its mode on the `Workflow` row; changing config does not retroactively change a
 running workflow (gates § invariants).
 
+## 5. `approvals`
+
+PLAN §2.6: per approval class and mode, one of **`auto`** (pre-approved for the mode),
+**`queue`** (block this task, continue other ready tasks, notify), **`stop`** (stop the phase
+and wait for the user). This is unattended-operation policy; it never replaces the task
+gate's `Approval` record (`docs/gates.md` C3), which a `policy` actor cannot satisfy.
+
+| Key | Type | Default | Why the default is safe |
+|---|---|---|---|
+| `queueTimeoutMinutes` | integer ≥ 0 | `0` | `0` = a queued item waits indefinitely. A timeout can only mark the task *blocked*; nothing is ever auto-approved on timeout. |
+| `classes` | object | see below | Every class has an explicit per-mode decision. |
+
+### 5.1 `approvals.classes` defaults
+
+Columns are modes: shadow / advisory / supervised / bounded_autonomous.
+
+| Class | shadow | advisory | supervised | bounded_autonomous | Why |
+|---|---|---|---|---|---|
+| `read_repository` | auto | auto | auto | auto | Reading is what every mode needs; deny paths (§6) still apply. |
+| `edit_worktree` | stop | stop | queue | auto | Mutation is impossible in shadow/advisory by definition; supervised asks; autonomous edits its own worktree only. |
+| `run_checks` | stop | stop | auto | auto | Deterministic checks are the gate's evidence; they are read-mostly and bounded by budgets. |
+| `run_shell` | stop | stop | queue | queue | Arbitrary shell is not pre-approved in any mode; the user opts in per project. |
+| `install_dependencies` | stop | stop | queue | queue | Network + arbitrary code execution; queued even when autonomous. |
+| `local_commit` | stop | stop | queue | auto | A local commit on a task branch is reversible and never leaves the machine. |
+| `spawn_worker` | stop | stop | queue | auto | Workers spend budget; supervised asks, autonomous is bounded by `budgets.workflow.maxConcurrency`. |
+| `model_fallback` | auto | auto | queue | auto | Switching within the allowlist is visible and recorded on the Attempt; supervised asks because it may change cost. |
+| `complete_task` | stop | stop | queue | auto | In supervised mode the user confirms completion; in autonomous the task gate (C1–C5) is the guard. |
+| `destructive_cleanup` | **stop** | **stop** | **stop** | **stop** | High-risk (PLAN §7). *Fixed.* |
+| `remote_push` | **stop** | **stop** | **stop** | **stop** | High-risk. *Fixed.* |
+| `deployment` | **stop** | **stop** | **stop** | **stop** | High-risk. *Fixed.* |
+| `credential_access` | **stop** | **stop** | **stop** | **stop** | High-risk. *Fixed.* |
+| `publishing` | **stop** | **stop** | **stop** | **stop** | High-risk. *Fixed.* |
+
+High-risk rows use `$defs/HighRiskPolicy`, whose four properties are each `const: "stop"`.
+A config that sets any of them to `auto` or `queue` fails schema validation — the system
+never weakens its own permission policy (AGENTS.md §4). The configurable rows may be set
+to any decision; validator rule V4 additionally forbids `auto` for mutation classes in
+`shadow` and `advisory`, because those modes are defined as non-mutating.
+
+## 6. `privacy`
+
+PLAN §7 data policy: default-deny outbound for secrets and sensitive paths, minimal
+snippets, raw payload logging opt-in. "Outbound" means anything sent to TypeSafe, to a
+model provider, to a notification channel, or written to a log.
+
+| Key | Type | Default | Why the default is safe |
+|---|---|---|---|
+| `denyPaths` | `string[]` (globs), unique | shipped minimum (§6.1) | Files matching a deny glob are never read into outbound context or logs. The schema requires the list to **contain every shipped entry** (`allOf: [{contains: {const: …}}]`), so config can add globs but cannot remove or replace the minimum. |
+| `denyPatterns` | `string[]` (ECMAScript regex, flags `iu`, per line), unique | shipped minimum (§6.2) | A matching line is redacted before any outbound request or log write. Same superset constraint as `denyPaths`. |
+| `allowPaths` | `string[]` (globs), unique | `[]` | Explicit per-project carve-outs (e.g. `docs/fixtures/.env.example`). Empty by default; a carve-out may not be broader than the entry it relaxes (V7), and never applies to logging. |
+| `outbound.maxSnippetBytes` | integer ≥ 0 | `4096` | Bounds the largest single excerpt; passage selection must justify anything larger. |
+| `outbound.maxSnippetsPerRequest` | integer ≥ 0 | `16` | Bounds fan-out per request. |
+| `outbound.maxRequestBytes` | integer ≥ 0 | `262144` | Hard cap (256 KiB) on any outbound body, independent of snippet counts. |
+| `outbound.sendFilePaths` | boolean | `true` | Project-relative paths are needed for useful decisions; absolute paths are never sent regardless of this flag. |
+| `outbound.sendRepoIdentity` | boolean | `false` | Only a hash of the repo identity leaves the machine unless the user opts in. |
+| `rawLogging.enabled` | boolean | `false` | Raw request/response bodies are not written anywhere by default. |
+| `rawLogging.retentionDays` | integer 1–365 | `7` | Short retention once enabled; deletion is automatic. |
+| `rawLogging.redactBeforeWrite` | `const true` | `true` | Deny patterns always run before a raw log write. *Fixed.* |
+| `firstUseDisclosure` | boolean | `true` | Which data classes go to TypeSafe and to model providers is shown before the first outbound request. |
+
+### 6.1 Shipped minimum `denyPaths` (`$defs/ShippedDenyPaths`)
+
+| Group | Globs |
+|---|---|
+| Environment files | `**/.env`, `**/.env.*` |
+| Key material | `**/*.pem`, `**/*.key`, `**/*.p12`, `**/*.pfx`, `**/*.jks`, `**/*.keystore`, `**/id_rsa*`, `**/id_ed25519*`, `**/id_ecdsa*`, `**/.ssh/**`, `**/.gnupg/**` |
+| Credential stores | `**/.aws/**`, `**/.azure/**`, `**/.config/gcloud/**`, `**/.kube/config`, `**/.netrc`, `**/.npmrc`, `**/.pypirc`, `**/.docker/config.json`, `**/.git/config`, `**/.git/credentials`, `**/.git-credentials`, `**/credentials.json`, `**/service-account*.json`, `**/secrets.*`, `**/*.secret` |
+| Product state | `**/.korwf/**` |
+| Dependencies and build output | `**/node_modules/**`, `**/dist/**`, `**/build/**`, `**/out/**`, `**/target/**`, `**/.next/**`, `**/coverage/**` |
+| Logs and databases | `**/*.log`, `**/*.sqlite`, `**/*.sqlite3`, `**/*.db` |
+
+Globs are matched against project-relative paths with `**` semantics (dotfiles included).
+
+### 6.2 Shipped minimum `denyPatterns` (`$defs/ShippedDenyPatterns`)
+
+PEM private-key headers; `key/secret/token/password = value` assignments; common API key
+shapes (`sk-…`, AWS `AKIA…`, GitHub `gh?_…`, Slack `xox?-…`, Google `AIza…`); JWTs;
+`Bearer` tokens; and `scheme://user:pass@` URLs. The exact regexes are in the schema and
+are tested to compile with flags `iu`. Patterns redact the matching line, not the file.
+
 <!-- sections appended below -->
