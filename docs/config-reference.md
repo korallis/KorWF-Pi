@@ -252,4 +252,58 @@ into the source tree outside it.
 | `artifactRetentionDays` | integer ≥ 1 | `30` | Evidence artifacts are kept long enough to replay a workflow, then deleted. |
 | `lockTimeoutMs` | integer ≥ 0 | `5000` | A second instance on the same project fails fast instead of corrupting SQLite. |
 
-<!-- sections appended below -->
+## 11. Validation rules beyond types
+
+The schema enforces types, enums, ranges, `const` pins, the deny-list floor, and unknown-key
+rejection. The validator (issue #21) additionally enforces the rules below. Each has a stable
+id so error messages and tests can reference it. Any violation is a **load error**: the
+product refuses to start a workflow with an invalid config; it never falls back to a
+weaker interpretation.
+
+| Id | Rule | Why |
+|---|---|---|
+| V1 | `fallback.staticOrder` ⊆ effective allowlist (providers ∩ models, minus `overrides[*].disabled`). Every entry must also be a model Pi has configured; unknown refs are an error, not ignored. | Static order is the no-Jev path; it must not route outside the allowlist. |
+| V2 | All `Budget` numbers ≥ 0 (schema `minimum: 0`); `null` means no cap. | Negative caps are meaningless; `0` is a valid "nothing allowed" cap. |
+| V3 | Where both sides are non-null: `budgets.task.x ≤ budgets.phase.x ≤ budgets.workflow.x` for each cap kind `x`. | A child cap larger than its parent is unreachable and hides a mistake. |
+| V4 | `approvals.classes[c][m] ≠ "auto"` for any mutation class `c` (`edit_worktree`, `run_shell`, `install_dependencies`, `local_commit`, `spawn_worker`, `complete_task`) when `m ∈ {shadow, advisory}`. | Those modes are defined as non-mutating. |
+| V5 | `privacy.denyPaths` ⊇ shipped minimum and `privacy.denyPatterns` ⊇ shipped minimum. Enforced in-schema (`allOf` of `contains`/`const`) **and** re-checked by the validator after layered merge, so a higher-precedence file cannot drop entries by replacing the array. | The deny list can be extended, never reduced. |
+| V6 | Every `privacy.denyPatterns` entry compiles as an ECMAScript regex with flags `iu`. | A broken pattern must fail loudly, not silently match nothing. |
+| V7 | Each `privacy.allowPaths` entry must be a literal file path or a glob strictly narrower than a deny entry it intersects; `**`, bare directories and anything matching `**/.env` / key-material globs are rejected. `allowPaths` never applies to logging. | Carve-outs are for specific fixtures, not for re-opening a class. |
+| V8 | `storage.path`, if absolute and outside the project root, requires `allowOutsideProject: true`. | Keeps state next to the project unless explicitly moved. |
+| V9 | `models.allowlist.pins[*]` values and `models.overrides` keys must be in the effective allowlist. `jev.enabled: true` with an unresolvable key **downgrades to optional mode with a warning**, not an error. | Pins outside the allowlist would contradict it; a missing key must never prevent the deterministic workflow from running. |
+
+## 12. Worked examples
+
+**Empty config** — `{}` validates. Resolved highlights: `mode: shadow`, `jev.enabled: false`,
+`models.allowlist.{providers,models}: []` (everything Pi has configured),
+`fallback.staticOrder: []` (registry order), 40 deny globs, 10 deny patterns,
+`storage.path: null`.
+
+**Restrict to one provider and run supervised** (provider name is illustrative):
+
+```json
+{
+  "mode": "supervised",
+  "models": { "allowlist": { "providers": ["my-provider"] } },
+  "fallback": { "staticOrder": ["my-provider/model-a", "my-provider/model-b"] }
+}
+```
+
+**Enable Jev from a Pi secret and add a deny glob**:
+
+```json
+{
+  "jev": { "enabled": true, "keySource": { "kind": "pi_secrets", "name": "TYPESAFE_API_KEY" } },
+  "privacy": { "denyPaths": ["<…the shipped minimum…>", "docs/private/**"] }
+}
+```
+
+`denyPaths` must list the shipped minimum plus additions; the loader (issue #21) will
+expose the current minimum so users can paste it rather than retype it.
+
+**Rejected configs** (verified against the schema with ajv 2020 strict):
+`{"privacy":{"denyPaths":["**/.env"]}}` (floor), `{"privacy":{"denyPatterns":[]}}` (floor),
+`{"budgets":{"workflow":{"maxSpendUsd":-1}}}` (V2),
+`{"approvals":{"classes":{"remote_push":{…,"bounded_autonomous":"auto"}}}}` (high-risk const),
+`{"jev":{"baseUrl":"http://…"}}` (https only), `{"jev":{"model":"jev-latest"}}` (pin),
+`{"nope":1}` (unknown key).
