@@ -190,4 +190,40 @@ shapes (`sk-…`, AWS `AKIA…`, GitHub `gh?_…`, Slack `xox?-…`, Google `AIz
 `Bearer` tokens; and `scheme://user:pass@` URLs. The exact regexes are in the schema and
 are tested to compile with flags `iu`. Patterns redact the matching line, not the file.
 
+## 7. `fallback`
+
+PLAN §3.D caps and fallback. Applies when the selected model is capped
+(`ModelAvailability.capKind` ∈ `quota_exhausted | rate_limited | budget_cap | unavailable`).
+
+| Key | Type | Default | Why the default is safe |
+|---|---|---|---|
+| `midTaskPolicy` | `{ default: MidTaskPolicy, [TaskKind]?: MidTaskPolicy }` | `{ default: "handoff" }` | `handoff` keeps the worktree intact and passes an explicit handoff packet; `restart` discards partial work. Hand-off is the PLAN default and never loses evidence. `default` is always present (the schema supplies it). |
+| `dwell` | `remainder_of_task \| remainder_of_phase \| minutes` | `"remainder_of_task"` | Anti-oscillation minimum on the fallback model; PLAN default. |
+| `dwellMinutes` | integer ≥ 0 | `30` | Used only when `dwell = "minutes"`. |
+| `preferWaitIfResetWithinMinutes` | integer ≥ 0 | `0` | `0` = never wait; the workflow keeps moving on the next eligible model and the workflow budget bounds the extra cost. Users who prefer cheaper-but-slower set this. |
+| `retryPrimaryAtTaskBoundary` | `const true` | `true` | Retry the primary at the next task boundary once the cap is estimated cleared; never re-probe every task. *Fixed.* |
+| `staticOrder` | `ModelRef[]`, unique | `[]` | Used when Jev is unavailable or answers none/unknown. Empty = Pi registry order filtered by the allowlist, so a no-Jev configuration works without naming any model. Must be ⊆ the effective allowlist (V1). |
+| `allCappedBehaviour` | `const "pause_phase"` | `"pause_phase"` | All candidates capped → pause the phase, surface state, resume when a cap clears. Not a failure. *Fixed.* |
+| `overridePins` | `const false` | `false` | Pins are never overridden by fallback without asking. *Fixed.* |
+
+## 8. `jev`
+
+TypeSafe/Jev transport contract from `docs/adr/0003-jev-transport.md`. **With no key the
+product runs in optional mode**: planning, tasks, worktrees, gates and static routing all
+work; Jev-assisted decisions take their deterministic fallback and the user sees one clear
+message.
+
+| Key | Type | Default | Why the default is safe |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Nothing is sent to TypeSafe unless the user turns it on **and** a key resolves. `true` without a key behaves as `false` with a warning. |
+| `baseUrl` | string, `format: uri`, `^https://` | `"https://api.typesafe.ai"` | The public API origin (the only hostname in shipped defaults). HTTPS is required so a proxy override cannot downgrade transport. |
+| `keySource.kind` | `env \| pi_secrets \| none` | `"env"` | Names a mechanism, never a value. |
+| `keySource.name` | `^[A-Z][A-Z0-9_]*$` | `"TYPESAFE_API_KEY"` | Conventional variable name; the transport itself never reads `process.env` — only the secret resolver does. |
+| `model` | `^jev-\d+\.\d+\.\d+$` | `"jev-1.13.0"` | Pinned version (ADR-0003 rule 1). `jev-latest` fails validation so calibrated thresholds cannot drift silently. |
+| `timeoutMs` | integer ≥ 100 | `10000` | Per-decision deadline including retries; a stuck decision falls back rather than blocking the workflow. |
+| `maxRetries` | integer 0–5 | `2` | ADR-0003 rule 5. |
+| `pricePerMillionInputTokensUsd` | number ≥ 0 | `0.042` | Known-cost accounting (ADR-0003 rule 8). |
+| `cache.enabled` | boolean | `true` | Cache keys are complete and versioned (PLAN §6), so caching is safe and saves spend. |
+| `cache.ttlSeconds` | integer ≥ 0 | `86400` | One day; revision-sensitive evidence is never served from cache regardless. |
+
 <!-- sections appended below -->
