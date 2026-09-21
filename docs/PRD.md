@@ -147,13 +147,48 @@ a **harness** failure that does not consume the task's attempt budget and does n
 "you failed the criteria" back to the model. All three are implemented in the bootstrap
 orchestrator and validated; they belong in the product.
 
-### 3.4 Multi-account routing (**deferred extension, not core**)
+### 3.4 Per-route identity — **core, not deferred** (corrected 2026-09-21)
 
-For a user with two subscriptions to the same provider, account is a real scheduling
-dimension (Jev: **0.33** — optional, not core). Keep the door open, do not build it now:
-model cards and `ModelAvailability` should be keyed on an opaque `routeId` that defaults
-to the model id, so an account dimension can be added later without a migration. No
-account-aware scheduling, credential fan-out, or profile isolation in v1.
+**This section originally deferred multi-account support. That was wrong, and the error is
+instructive: it generalised from the author's setup to everyone's.**
+
+The author routes every subscription through one proxy, so each model appears exactly
+once and account never matters. A **downloaded user** has no such proxy. Pi's
+`models.json` provider keys are arbitrary user-chosen names, each with its own `baseUrl`
+and `apiKey`, so two subscriptions to one vendor are configured as two providers:
+
+```json
+{ "providers": {
+    "anthropic-work":     { "apiKey": "$WORK_KEY",     "models": [ { "id": "claude-sonnet-5" } ] },
+    "anthropic-personal": { "apiKey": "$PERSONAL_KEY", "models": [ { "id": "claude-sonnet-5" } ] } } }
+```
+
+One model id, **two independently rate-limited quotas**. Jev, asked bounded questions:
+
+- Keying caps on model id alone **mis-attributes a rate limit across those accounts** —
+  **0.86**.
+- `(provider id, model id)` is **not a stable identifier**, because provider keys are
+  renameable — **0.22**.
+- Whether history should survive a provider rename — **0.58**: a genuine trade-off, so
+  #125 asks the implementer to choose deliberately and document the failure mode.
+
+The failure is not merely a lost route. PLAN §3.D pauses the phase when it believes all
+candidates are capped, so one account's 429 could stall a workflow that had a healthy
+alternative sitting idle.
+
+**Therefore:** an opaque `routeId` derived from provider + model is **v1 scope** (#125),
+and cap detection (#62) and health/breakers (#123) are keyed on it. Model *cards* stay
+per model — aptitude does not vary by account — while *availability, health and outcomes*
+are per route.
+
+Still rejected, unchanged: per-account Pi profile directories, credential fan-out,
+monetary caps per subscription, and any requirement that users declare accounts. The
+provider list already in their Pi config is the only source of truth.
+
+**Method note.** The author's environment structurally cannot reproduce this bug, which
+is exactly the class of defect PLAN §2.4 exists to prevent. When assessing a feature,
+ask what it does for a user whose configuration does not resemble the author's — and
+write the test, because local confirmation is impossible.
 
 ### 3.5 Evaluation harness for routing (**partially covered**)
 
@@ -205,13 +240,17 @@ from distribution.
 
 No new milestones. The gaps in §3 map onto existing stages:
 
-| Gap | Milestone | Action |
-| --- | --- | --- |
-| §3.1 route health / circuit breaker | M5 (selection, fallback) | **New issue**, blocked by #68 |
-| §3.2 worker visibility | M5 | Already on #68 — add acceptance criterion |
-| §3.3 output-budget awareness | M3 (planning) + M5 (workers) | **New issue** for planner sizing; worker-contract half on #68 |
-| §3.4 `routeId` indirection | M2 (records) | **New issue**, small, schema-only |
-| §3.5 routing regret metrics | M8 | Amend #100 |
+| Gap | Milestone | Issue | State |
+| --- | --- | --- | --- |
+| §3.1 route health / circuit breaker | M5 | **#123** | blocked by #125 |
+| §3.2 worker visibility | M5 | #68 | amended |
+| §3.3 output-budget awareness | M3 + M5 | **#124** | agent-ready |
+| §3.4 per-route identity | M2 | **#125** | agent-ready — **core**, unblocks #123/#62 |
+| §3.5 routing regret metrics | M8 | #100 | amended |
+| §3.4 consequence: cap attribution | M5 | #62 | amended, blocked by #125 |
+
+`#125` is the critical path: `#62` and `#123` both depend on route identity existing
+before they can attribute caps and health correctly.
 
 Current state: **11 issues closed, 100 open**; M0 (6 approval gates) and M1 (2 remaining)
 are the near-term path. M1 has #15 and #17, both currently blocked by nothing that is
@@ -228,10 +267,11 @@ still open — see §7.
 
 ## 8. Open questions for the owner
 
-- **Multi-account (§3.4):** confirm deferral. Do you foresee a second subscription to the
-  same provider that the proxy would *not* merge into one endpoint?
-- **Health thresholds (§3.1):** breaker opens after N consecutive failures or an error
-  rate over a window? Proposed default: 3 consecutive, or >50% over the last 10 calls,
-  cooldown 15 min — to be calibrated, not asserted.
+- ~~**Multi-account (§3.4):** confirm deferral.~~ **Resolved 2026-09-21.** The owner has
+  no second subscription behind the proxy, but downloaded users will. Deferral withdrawn;
+  per-route identity is v1 scope (#125).
+- ~~**Health thresholds (§3.1):**~~ **Resolved.** Owner accepted the proposed defaults:
+  3 consecutive failures, or >50% over the last 10 calls, 15 min cooldown — explicitly a
+  calibration starting point, recorded as such in #123, not asserted as correct.
 - **Evaluation budget:** PLAN §9 and #101 need an approved spend before any live
   comparison run. Still outstanding (M0 #4).

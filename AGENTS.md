@@ -84,6 +84,14 @@ These apply to every issue regardless of what it says:
 - **Development-environment policy** (author-specific, PLAN §11): when running Pi models
   during development, use only the `mac-mini` provider through the product's own
   allowlist config. Never hardcode this in shipped code.
+- **Design for a user whose setup does not resemble the author's.** The author routes every
+  subscription through one proxy, so each model appears exactly once and per-account
+  concerns are invisible here. Downloaded users configure two subscriptions to one vendor
+  as two Pi providers exposing the same model id, backed by separate quotas — so keying
+  caps or health on model id alone mis-attributes a rate limit (Jev 0.86) and can pause a
+  phase that had a healthy route available (#125). When a behaviour depends on the shape of
+  the user's config, **write the test**: the author's environment structurally cannot
+  reproduce these defects, so "it works locally" is not evidence.
 
 ## 5. Definition of done
 
