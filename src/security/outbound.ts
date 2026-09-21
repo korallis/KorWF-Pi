@@ -321,8 +321,17 @@ export class OutboundPolicy {
     }
 
     const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
       const child = path === "" ? key : `${path}.${key}`;
+      // A getter that throws must not take the whole request down, and it
+      // must not be silently sent either: drop it and say so in the report.
+      let entry: unknown;
+      try {
+        entry = (value as Record<string, unknown>)[key];
+      } catch {
+        acc.removed.push({ kind: "field", what: child, reason: "unsupported", glob: null, rule: null, bytes: 0 });
+        continue;
+      }
       // A key whose *name* declares a path gets the deny list applied to its
       // value, so `{ file: "a/.env" }` cannot smuggle one in.
       if (typeof entry === "string" && isPathKey(key)) {

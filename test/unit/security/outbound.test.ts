@@ -112,3 +112,91 @@ describe("glob matching and path normalisation", () => {
     expect(matcher.denies("docs/public/readme.md")).toBe(false);
   });
 });
+
+describe("AC1: denied paths, node_modules and secrets never survive the filter", () => {
+  it("drops a .env snippet, a node_modules snippet and redacts a fake key", () => {
+    const policy = policyWith();
+    const filtered = policy.filter(
+      {
+        state: { task: "review", note: `use ${FAKE_KEY} for auth` },
+        snippets: [
+          { path: ".env", text: ENV_FILE },
+          { path: "node_modules/left-pad/index.js", text: "module.exports = () => {};" },
+          { path: "src/index.ts", text: "export const answer = 42;" },
+        ],
+      },
+      { purpose: "jev.decision" },
+    );
+
+    const wire = JSON.stringify(filtered);
+    expect(wire).not.toContain("DATABASE_URL");
+    expect(wire).not.toContain("hunter2hunter2");
+    expect(wire).not.toContain(FAKE_KEY);
+    expect(wire).toContain("export const answer = 42;");
+
+    expect(filtered.report.snippetsOffered).toBe(3);
+    expect(filtered.report.snippetsKept).toBe(1);
+    expect(filtered.report.removed.map((r) => r.what)).toEqual([".env", "node_modules/left-pad/index.js"]);
+    expect(filtered.report.removed.every((r) => r.reason === "denied")).toBe(true);
+    expect(filtered.report.removed.map((r) => r.glob)).toEqual(["**/.env", "**/node_modules/**"]);
+    expect(filtered.report.redactedStrings).toBeGreaterThan(0);
+    expect(filtered.report.clean).toBe(false);
+  });
+
+  it("redacts a registered literal secret that never had a credential shape", () => {
+    registerSecretValue("plain-but-secret-value");
+    const policy = policyWith();
+    const filtered = policy.filter({ state: { note: "token is plain-but-secret-value" } }, { purpose: "jev.decision" });
+    expect(JSON.stringify(filtered.state)).not.toContain("plain-but-secret-value");
+    expect(JSON.stringify(filtered.state)).toContain(REDACTED);
+  });
+
+  it("applies the deny list to a path carried in a state field, not just to snippets", () => {
+    const policy = policyWith();
+    const filtered = policy.filter(
+      { state: { file: "apps/api/.env.production", other: "src/app.ts" } },
+      { purpose: "jev.decision" },
+    );
+    expect(JSON.stringify(filtered.state)).not.toContain(".env.production");
+    expect(filtered.report.removed.some((r) => r.kind === "field" && r.reason === "denied")).toBe(true);
+  });
+
+  it("refuses bare denied paths and absolute paths", () => {
+    const policy = policyWith();
+    const filtered = policy.filter(
+      { paths: ["src/a.ts", ".ssh/id_ed25519", "/home/someone/project/src/b.ts"] },
+      { purpose: "jev.decision" },
+    );
+    expect(filtered.paths).toEqual(["src/a.ts"]);
+    expect(filtered.report.removed.map((r) => r.rule)).toEqual(["shipped", "absolute"]);
+  });
+
+  it("drops paths entirely when privacy.outbound.sendFilePaths is false", () => {
+    const policy = policyWith((base) => ({
+      ...base,
+      privacy: { ...base.privacy, outbound: { ...base.privacy.outbound, sendFilePaths: false } },
+    }));
+    const filtered = policy.filter(
+      { paths: ["src/a.ts"], snippets: [{ path: "src/a.ts", text: "ok" }] },
+      { purpose: "jev.decision" },
+    );
+    expect(filtered.paths).toEqual([]);
+    expect(filtered.snippets[0]?.path).toBe("");
+    expect(filtered.snippets[0]?.text).toBe("ok");
+  });
+
+  it("never throws on hostile input (cycles, getters that throw, BigInt)", () => {
+    const policy = policyWith();
+    const cyclic: Record<string, unknown> = { name: "root" };
+    cyclic["self"] = cyclic;
+    const hostile = {
+      cyclic,
+      big: BigInt(7),
+      fn: () => "nope",
+      get boom(): string {
+        throw new Error("getter exploded");
+      },
+    };
+    expect(() => policy.filter({ state: hostile }, { purpose: "jev.decision" })).not.toThrow();
+  });
+});
