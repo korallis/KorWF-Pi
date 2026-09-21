@@ -57,3 +57,6 @@ export { ask, askAll, askStaged, DEFAULT_CONCURRENCY, distributionOf, hashState,
 
 export type { Composed } from "./compose.ts";
 export { allTrue, anyTrue, conservative, majority, rankBy } from "./compose.ts";
+
+export type { CacheConfig, CacheKeyParts, DecisionCacheDeps } from "./cache.ts";
+export { cacheKeyOf, cacheLookup, cacheStore, invalidateQuestion, isApprovalQuestion } from "./cache.ts";

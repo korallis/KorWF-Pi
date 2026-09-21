@@ -90,6 +90,15 @@ export interface QuestionDefinition<TState, TResult> {
   /** Noul answers inside this open interval are treated as abstentions. */
   readonly abstainBand: AbstainBand | null;
   readonly boundaries: readonly BoundaryExample<TState, TResult>[];
+  /**
+   * Whether the answer can change as the repository changes without any
+   * other key component changing (PLAN §6 "never reuse stale... revision-
+   * sensitive evidence"; issue #29 Scope). `false` by default. A caching
+   * layer must fold the current repo revision into its key for any question
+   * where this is `true` — otherwise a cache hit could serve an answer
+   * computed against a repository state that no longer exists.
+   */
+  readonly revisionSensitive: boolean;
   /** Minimal relevant state for one evaluation (PLAN §6). */
   buildState(input: TState): JevState;
   /** The static question body sent to Jev. Never depends on state. */
@@ -175,6 +184,8 @@ interface CommonSpec<TState, TResult> {
   readonly id: string;
   readonly version: string;
   readonly prompt: string;
+  /** See `QuestionDefinition.revisionSensitive`. Defaults to `false`. */
+  readonly revisionSensitive?: boolean;
   /** Minimal relevant state for one evaluation (PLAN §6). */
   state: (input: TState) => JevState;
   fallback: (input: TState, reason: FallbackReason) => FallbackOutcome<TResult>;
@@ -258,6 +269,7 @@ export function defineNoul<TState, TResult>(spec: NoulSpec<TState, TResult>): Qu
     minConfidence: null,
     abstainBand,
     boundaries: spec.boundaries,
+    revisionSensitive: spec.revisionSensitive ?? false,
     buildState: (input) => spec.state(input),
     buildQuestion: () => body,
     interpret: (answer, input) => (answer.type === "noul" ? spec.decide((answer as NoulAnswer).noul, input) : null),
@@ -293,6 +305,7 @@ export function defineChoice<TState, TResult>(spec: ChoiceSpec<TState, TResult>)
     minConfidence,
     abstainBand: null,
     boundaries: spec.boundaries,
+    revisionSensitive: spec.revisionSensitive ?? false,
     buildState: (input) => spec.state(input),
     buildQuestion: () => body,
     interpret: (answer, input) => (answer.type === "choice" ? spec.decide(answer, input) : null),
@@ -328,6 +341,7 @@ export function defineScore<TState, TResult>(spec: ScoreSpec<TState, TResult>): 
     minConfidence,
     abstainBand: null,
     boundaries: spec.boundaries,
+    revisionSensitive: spec.revisionSensitive ?? false,
     buildState: (input) => spec.state(input),
     buildQuestion: () => body,
     interpret: (answer, input) => (answer.type === "score" ? spec.decide(answer, input) : null),
