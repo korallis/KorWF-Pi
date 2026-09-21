@@ -158,3 +158,69 @@ Class-specific fields:
 | `publishing` | `artifact`, `target` |
 | `credential_access` | `paths`, `secretKind` |
 | `modify_policy` | `paths`, `keysChanged` |
+
+## 6. How the class is determined in code
+
+**Deterministic rules first. Jev may only escalate, never de-escalate.**
+
+1. **Facts are computed, never claimed.** `classifyAct(facts: ActFacts)` takes only fields
+   produced by code: `src/git/` (tracked/untracked, ref ownership, remote, diff paths),
+   `src/security/` (deny paths, ownership boundaries, network allowlist, KorWF policy files),
+   `src/models/` (estimated cost delta), the planner records (`planOp`, `taskOp`). A worker's
+   description of its own action, tool-call arguments not yet executed, or a Jev answer are
+   **never** inputs to classification.
+2. **Most restrictive match wins.** Rules are ordered high-risk → never-auto → medium → low
+   and the first match is the class. An act that is both "inside ownership" and "touches a
+   deny path" is `credential_access`. Unmatched executions fall to `run_shell`; unmatched
+   writes fall to `write_outside_ownership`. Nothing is `auto` by omission.
+3. **Config gives the rule decision.** `resolveDisposition(class, mode, table)` reads the
+   merged `approvals.classes` table. High-risk classes resolve to `stop` even if the table were
+   somehow weakened (the schema `const` and V10 already reject such a config; this is defence
+   in depth). Never-auto classes resolve to at least `queue`.
+4. **Jev may raise, never lower.** A Jev question (e.g. "does this diff touch enforcement
+   code?", "is this migration really against an ephemeral store?") may supply a
+   `JevEscalation {questionId, proposed, probability}`. It is applied only when `proposed` is
+   *more* restrictive than the rule decision, and then it is recorded in the disposition and in
+   the notification's `jevEscalation`. A less restrictive proposal is discarded and recorded as
+   ignored. With no Jev key, Jev unavailable, or Jev timed out, the rule decision stands
+   unchanged — the workflow never waits on Jev to act less cautiously.
+5. **`Task.riskClass` and the class are independent guards.** A change to `Task.riskClass`
+   (records.md §5 open question for #15) does **not** bump the task revision and does **not**
+   by itself invalidate approvals. It changes which gate predicate applies next time the gate
+   runs (`riskClass = high ⇒ humanApproval`); an existing approval with `a.riskClass <
+   T.riskClass` simply fails the "valid approval" predicate in gates.md §2, so re-approval is
+   required by rule, not by revision. Raising `riskClass` never loosens anything; lowering it
+   never resurrects a rejected approval because gates evaluate the current record.
+
+Rule ids, as recorded in the notification's `determinedBy` field, are the class ids of the
+first-matching branch in `classifyAct`, so the trace reads e.g. `determinedBy:
+credential_access(touchesDenyPath)`.
+
+### Validator rules added to config-reference §11
+
+| Id | Rule | Why |
+|---|---|---|
+| V10 | `approvals.classes[c][m] = "stop"` for every high-risk class `c` and every mode `m`. Enforced in-schema (`HighRiskPolicy` `const`) **and** re-checked after layered merge by `validateApprovalClasses`. | PLAN §7: high-risk classes cannot be set to `auto` (or `queue`). The system never weakens its own permission policy. |
+| V11 | `approvals.classes[c][m] ≠ "auto"` for `c ∈ {scope_change, replan}`. Enforced in-schema (`NoAutoPolicy` `enum`) and re-checked. | PLAN §3.C: no silent scope expansion. |
+| V12 | Every class present in config has a decision for all four modes. | A partial row would otherwise silently take a default the user did not see. |
+
+V4 (mutation classes never `auto` in `shadow`/`advisory`) is unchanged and applies to the
+extended vocabulary; `MUTATION_CLASSES` in the code is its list.
+
+## 7. Interaction with invalidation events
+
+`expired`, `mode_changed`, `policy_version_changed` and `revoked` have phase effect
+"by approval class" (state-machine.md §5). That resolves as: the affected task goes `blocked`;
+the phase pauses (`paused_approval`) **iff** the action the invalidated approval permitted
+resolves to `stop` in the *current* mode and policy; otherwise the phase continues with its
+other ready tasks and the task is re-queued. `mode_changed` to a stricter mode therefore
+usually pauses; to a looser mode never auto-approves anything — a fresh approval is required
+in every case (records.md §6).
+
+## 8. Open items for later issues
+
+- #21 (config loader) wires `validateApprovalClasses` into the validator as V10–V12.
+- #49 (unattended `run`) implements the queue, the `phase-pause` transition and the
+  notification channels; this document fixes the payload contract it must honour.
+- The Jev questions that may escalate (`touches_enforcement`, `migration_target_shared`,
+  …) are versioned under `src/decisions/`; none may lower a disposition.
