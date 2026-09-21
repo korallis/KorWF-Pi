@@ -21,7 +21,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Draft config schema (allowlist, budgets, modes, approval classes, privacy lists, fallback policy, static fallback order, Jev base URL/key source).
 - [x] Define all records (PLAN §5) including Phase, ModelAvailability, ModelOutcome, and Attempt fallback fields.
 - [x] Define task and phase state transitions, `paused(cap)`, approval invalidation.
-- [ ] Write the task gate and phase gate formulas (PLAN §2.4–2.5) as testable specs.
+- [x] Write the task gate and phase gate formulas (PLAN §2.4–2.5) as testable specs.
 - [ ] Define unattended approval classes (auto / queue / stop) (PLAN §2.6).
 - [x] Select worker interface (subagent example vs SDK vs RPC).
 - [ ] Record architecture decisions and threat boundaries.
