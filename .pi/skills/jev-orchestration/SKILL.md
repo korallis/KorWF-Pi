@@ -211,6 +211,26 @@ attempt's feedback and a fresh worker iterates until Jev agrees
 changes who may decide: a `needs-human` label, and a diff Jev judges to change enforcement
 code. Those escalate immediately.
 
+## 3.2 A probe can only judge what you send it
+
+Jev answers from the state in the request and nothing else. Ask it about code you did not
+include and it answers from *absence of evidence* — which looks identical to a confident
+rejection. Measured on #23:
+
+| Question | issue body only | with `--diff` |
+|---|---|---|
+| "are audit values sha256 hashes, not raw contents?" (true) | **0.15** | **0.98** |
+| "is append-only enforced twice?" (true) | 0.23 | **0.95** |
+| *control:* "does this PR add a Python interpreter?" (false) | 0.05 | — |
+
+A true claim and an absurd one scored the same. This nearly rejected a correct 4,103-line
+PR. `ask-jev.mjs ask` now takes `--diff <branch>` and **refuses** code-shaped questions
+without it.
+
+**Before believing any low probability, ask what the model could see.** If the answer is
+"not the thing I asked about", the number means nothing — re-ask with the evidence attached
+or verify it yourself in the source.
+
 ## 4. Verify worker claims independently
 
 A worker once pasted a "verification transcript" that could not have produced its output
