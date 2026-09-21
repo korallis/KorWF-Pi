@@ -1,0 +1,25 @@
+# Secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+
+# Node
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+
+# Local state
+.korwf/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

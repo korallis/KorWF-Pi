@@ -1,0 +1,159 @@
+# KorWF-Pi — TODO
+
+Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); section references below point there. This file tracks work items only. Order reflects the build sequence (PLAN §8). Full scope is one deliverable.
+
+## 0. Approvals (PLAN §11)
+
+- [x] Create project folder, PLAN.md, TODO.md.
+- [ ] Authorization to implement.
+- [ ] TypeSafe key availability and secret mechanism agreed.
+- [ ] Pilot repository, sample tasks, data-sharing restrictions.
+- [ ] Live test budgets (spend/token/request/concurrency).
+- [ ] Pilot operating mode and approval classes.
+- [ ] Sandbox setup and dependency permissions.
+
+## 1. Discovery and contracts (PLAN §8 Stage 1)
+
+- [ ] Read relevant Pi docs and cross-references completely.
+- [ ] Produce reuse/extend/replace table for the shipped examples listed in PLAN §4; revise source layout.
+- [ ] Verify current TypeSafe API, JS SDK, Jev model versions, limits, pricing, retention.
+- [ ] Confirm `ctx.modelRegistry.getAvailable()` / `ctx.scopedModels` field set at runtime (id, provider, name, reasoning, thinkingLevelMap, input, contextWindow, maxTokens, cost) and how `enabledModels` scoping interacts with the allowlist.
+- [ ] Draft config schema (allowlist, budgets, modes, approval classes, privacy lists, fallback policy, static fallback order, Jev base URL/key source).
+- [ ] Define all records (PLAN §5) including Phase, ModelAvailability, ModelOutcome, and Attempt fallback fields.
+- [ ] Define task and phase state transitions, `paused(cap)`, approval invalidation.
+- [ ] Write the task gate and phase gate formulas (PLAN §2.4–2.5) as testable specs.
+- [ ] Define unattended approval classes (auto / queue / stop) (PLAN §2.6).
+- [ ] Select worker interface (subagent example vs SDK vs RPC).
+- [ ] Record architecture decisions and threat boundaries.
+- [ ] Write scenarios 2.8 as acceptance test outlines.
+
+## 2. Package and adapter foundation (Stage 2)
+
+- [ ] Initialise Git; package manifest per `docs/packages.md`; modular layout; namespaced commands/tools/storage.
+- [ ] Formatting, type checking, unit and integration test scripts.
+- [ ] Config loading, validation, safe defaults, first-use disclosure.
+- [ ] Credential resolution; secrets excluded from all logs and exports.
+- [ ] SQLite store, migrations, lockfile ownership, append-only audit, artifact directory.
+- [ ] Jev transport behind mockable interface; configurable base URL; optional mode when no key.
+- [ ] Response validation for Choice/Score/Noul (unknown fields, bounds, malformed).
+- [ ] Cancellation, deadlines, bounded retries, backoff, circuit breaking.
+- [ ] Versioned question definitions and composition policy.
+- [ ] Minimal-state construction, outbound limits, default-deny path/data filtering.
+- [ ] Revision-aware caching and invalidation.
+- [ ] Usage accounting; atomic budget reservations; known/estimated/unknown cost.
+- [ ] Decision traces; retention; raw-payload logging opt-in.
+- [ ] Isolated-session load test; no-key load test; lifecycle cleanup test.
+
+## 3. Context, planning, phases, durable tasks (Stage 3)
+
+- [ ] `plan` command; intake for existing-repo and greenfield; clarification questions.
+- [ ] Free-text intake classification with unknown/clarify outcomes; deterministic fast paths.
+- [ ] Candidate retrieval; bounded context-evaluation tool; relevance/staleness/contradiction evaluators; provenance; shortlist expansion; pinned context.
+- [ ] Optional skill/tool discovery and ranking; mandatory skill triggers preserved.
+- [ ] Structured plan generation: architecture, phases, tasks, dependencies, ownership, acceptance criteria, per-task checks (PLAN §2.3).
+- [ ] Greenfield bootstrap: repo init, scaffolding phase, test infrastructure tasks first.
+- [ ] Atomicity/coverage/readiness evaluators; "no checks → not ready" rule.
+- [ ] Dependency validation and cycle detection.
+- [ ] Task and phase transitions, blockers, revision tracking, reapproval, scope-change handling.
+- [ ] Session resume/reload/fork/tree reconciliation with live repo state.
+- [ ] `tasks` and `phases` boards; plan/TODO export.
+- [ ] Prompt-injection and misleading-description tests.
+
+## 4. Verification, review, recovery (Stage 4)
+
+- [ ] Check registration per task/project; evidence capture at exact revision and environment.
+- [ ] Task gate implementation (PLAN §2.4); worker claims and Jev scores cannot set `done`.
+- [ ] Completion-claim, evidence-gap, and test-exercises-requirement evaluators.
+- [ ] Independent review contexts; findings, severity, disposition, recheck.
+- [ ] Human-approval gates for high-risk classes.
+- [ ] Evidence invalidation after relevant changes.
+- [ ] Flaky/missing/unavailable checks represented explicitly.
+- [ ] Failure taxonomy incl. quota/rate-limit; stall and drift detection.
+- [ ] Bounded recovery policies; side-effect reconciliation before retry.
+- [ ] Checkpoints and rollback proposals preserving user changes.
+- [ ] Tests: false completion claims, unrelated passing tests, persistent failure, exhausted budgets, cancellation during recovery.
+
+## 5. Model catalog, Jev selection, fallback, single-worker execution (Stage 5)
+
+- [ ] Catalog from Pi registry filtered by allowlist; no credentials exposed.
+- [ ] Model cards, four layers (PLAN §D): registry metadata → bundled aptitude hints → user overrides → outcome refinement with uncertainty.
+- [ ] Bundled aptitude-hints file: id-pattern matching, versioned, "unrated" default for unknown models, update process documented.
+- [ ] Task-profile evaluator independent of model names.
+- [ ] Jev selection question against cards; code enforces allowlist/budget/policy after selection.
+- [ ] User pins and explicit overrides.
+- [ ] Cap detection (429, quota, budget) → ModelAvailability with estimated reset.
+- [ ] Fallback: Jev ranks substitutes for the task profile; "none adequate" → pause.
+- [ ] Mid-task handoff packet with intact worktree; restart alternative per task-kind policy.
+- [ ] Recovery to primary at next task boundary; no per-task re-probe.
+- [ ] Anti-oscillation dwell; all-capped → phase pause and auto-resume.
+- [ ] Expensive-substitute policy (prefer-wait threshold, budget check).
+- [ ] Static fallback order when Jev unavailable.
+- [ ] Attempt records requested/used model and reason; `status` and `models` surface switches and caps.
+- [ ] Opt-in main-session routing at safe boundaries only.
+- [ ] Worker roles, contracts, launch with explicit model/profile/tools/cwd; resource inheritance control.
+- [ ] Read-only roles enforced across all mutation routes; sandbox boundaries where supported.
+- [ ] Dirty-tree preservation and repository identity check.
+- [ ] Progress, artifacts, usage capture; global/per-worker limits; pause/resume/cancel; process-tree termination.
+- [ ] Crash-interrupted attempt reconciliation.
+- [ ] Single-worker end-to-end run in a disposable repo; simulated-cap test with visible fallback (scenario 4).
+
+## 6. Parallel orchestration, integration, unattended operation (Stage 6)
+
+- [ ] `run <phase-id | all>`; cost estimate before start.
+- [ ] Dependency-aware scheduling; ready-task selection; duplicate-dispatch prevention.
+- [ ] Worktrees for writing workers; ownership overlap checks; semantic-coupling signal; serial default when uncertain.
+- [ ] Coordinator lockfile; stale-owner recovery.
+- [ ] Single-owner integration queue; base-revision validation; merge-conflict workflow.
+- [ ] Integrated verification; phase gate (PLAN §2.5); phase report.
+- [ ] Unattended approval policy: auto / queue-and-continue / stop; notifications.
+- [ ] Per-phase and per-workflow budget hard stops; resumable state on any stop.
+- [ ] Recoverable worktrees/artifacts after failure; cleanup policy.
+- [ ] Tests: simultaneous completion, conflicting edits, scheduler crash, partial cancellation, unattended run to phase completion (scenario 1).
+
+## 7. Memory, compaction, handoffs, adaptive improvements (Stage 7)
+
+- [ ] Memory classification; source-linked summaries; freshness/supersession.
+- [ ] Deterministic pins for mandatory instructions and commitments.
+- [ ] Compaction integration preserving evidence and tool-message validity.
+- [ ] Handoff packets for workers, fallback, and resumed sessions.
+- [ ] ModelOutcome collection; card refinement; routing improvement from held-out comparison.
+- [ ] Question/routing version drift monitoring and rollback.
+- [ ] Proposed instruction/skill diffs for review; opt-in auto-apply for approved low-risk class only; versioned, reversible. (Last.)
+- [ ] Guard against autonomous weakening of permissions, allowlist, or spending policy.
+
+## 8. UI and operating modes
+
+- [ ] Namespace conflict check; all `/korwf` commands from PLAN §4.
+- [ ] Shadow, advisory, supervised, bounded-autonomous modes; approval requirements documented independently of mode names.
+- [ ] Safe `off` behaviour.
+- [ ] Compact status: workers, models, fallbacks, blockers, evidence, budget, running cost.
+- [ ] `why` decision inspection without secrets.
+- [ ] Non-interactive operation never hangs on prompts.
+- [ ] Ordinary Pi behaviour preserved when assistance is unavailable.
+
+## 9. Evaluation (PLAN §9)
+
+- [ ] Measure normal-Pi baseline on real work; then set numeric thresholds.
+- [ ] Representative task set and held-out split; sanitised fixtures; replay tooling.
+- [ ] Run no-Jev and Jev configurations; per-question-family ablations.
+- [ ] Calibrate evaluators from shadow/advisory logs; abstention coverage and error rates.
+- [ ] Adversarial suite: missing info, contradictions, injection, secrets, misleading descriptions.
+- [ ] Fallback correctness and wrong-routing measurement.
+- [ ] Capped live Jev and model-comparison runs within approved budgets.
+
+## 10. Hardening and release (Stage 8)
+
+- [ ] Scenarios 2.8 end to end.
+- [ ] Pause/resume/reload/restart/fork/tree transitions; cancellation at every async boundary.
+- [ ] Outages, malformed responses, disk failures, migrations, scheduler races.
+- [ ] No credential leakage in output, logs, artifacts, exports.
+- [ ] No gate bypass via bash/custom tools/worker launch paths.
+- [ ] User changes survive failures and rollback.
+- [ ] README, configuration reference, architecture guide, limitations, privacy/cost disclosure.
+- [ ] Install/upgrade/disable/rollback/uninstall on a clean Pi; platform support statement.
+- [ ] Publish evaluation results and limitations.
+- [ ] Explicit installation and operating-mode approval; install and verify existing Pi workflows.
+
+## Definition of complete
+
+PLAN §10 release criteria are satisfied. A feature is complete only when its permissions, failure behaviour, observability, and acceptance criteria are met — not when a code path exists. Scope changes are explicit and approved, never silently deferred.
