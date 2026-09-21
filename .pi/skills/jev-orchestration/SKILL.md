@@ -117,7 +117,9 @@ it. An **independent audit by a different model** caught it.
 ## 5. Delegation and cleanup
 
 Workers are real pi sessions in Herdr panes — there are no sub-agents. See the
-`herdr-pi-delegation` skill; use its `scripts/spawn-pi.sh` and `scripts/stop-pi.sh`.
+`korwf-worker-delegation` skill (`.pi/skills/`) for this repo's rules and the
+`herdr-pi-delegation` skill for generic Herdr mechanics; use
+`.pi/skills/korwf-worker-delegation/scripts/spawn-pi.sh` and `stop-pi.sh`.
 Nest a worker under this repo with `--open-worktree <path>` (sidebar nesting is by git
 worktree identity, never by cwd or label).
 
