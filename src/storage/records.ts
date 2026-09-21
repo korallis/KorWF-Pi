@@ -140,7 +140,13 @@ export type TaskStatus =
   | "needs_changes"
   | "paused_cap";
 
-/** Phase gate status (PLAN §2.5). */
+/**
+ * Phase gate status (PLAN §2.5). Transitions are defined in
+ * `src/workflow/transitions.ts` / `docs/state-machine.md` (issue #13):
+ * `integrating`/`verifying`/`review` are the gating states, `passed` is the
+ * terminal success state, `paused_cap` is PLAN §3.D "all candidates capped"
+ * (also budget caps), and `paused_approval` is PLAN §2.6 "stop the phase".
+ */
 export type PhaseGateStatus =
   | "pending"
   | "running"
@@ -150,6 +156,7 @@ export type PhaseGateStatus =
   | "passed"
   | "failed"
   | "paused_cap"
+  | "paused_approval"
   | "cancelled";
 
 /** Budget caps. `null` means "no cap of this kind". */
@@ -523,12 +530,18 @@ export type ApprovalScope =
   | { readonly kind: "plan" }
   | { readonly kind: "workflow" };
 
-/** Why an approval stopped being usable. Once set it is never cleared. */
+/**
+ * Why an approval stopped being usable. Once set it is never cleared.
+ * Each reason is an enumerated event in `APPROVAL_INVALIDATION_EVENTS`
+ * (`src/workflow/transitions.ts`, issue #13) with its task/phase state effect.
+ */
 export interface ApprovalInvalidation {
   readonly reason:
     | "task_revision_changed"
     | "plan_revision_changed"
     | "expired"
+    | "mode_changed"
+    | "policy_version_changed"
     | "consumed"
     | "revoked"
     | "session_reconciled";

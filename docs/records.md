@@ -315,6 +315,12 @@ an approval after insert, and it only goes `null → non-null`; an approval can 
 reactivated. A new approval must be granted against the new revision by an actor — never
 inferred from a Jev score (PLAN §3.A).
 
+The transition contract in [state-machine.md](state-machine.md) (#13) additionally
+requires `mode_changed` and `policy_version_changed`: on either workflow field change,
+the engine atomically invalidates affected approvals and applies the documented
+blocked/paused state effects. The helper above sees the stored invalidation; it does
+not detect mode/policy changes itself. The new grant must follow the current policy.
+
 Other invalidation reasons: `consumed` (single-use action performed), `revoked` (actor
 withdrew it), `session_reconciled` (fork/resume found the repo or plan state no longer
 matches — PLAN §5 "never resurrects obsolete approvals").
@@ -405,6 +411,7 @@ fork/resume the coordinator:
 ## 11. Decisions left open for later issues
 
 - #23 decides JSON-column vs normalised tables and how nested FKs are enforced.
-- #13 defines the transition table; this file only fixes the `TaskStatus` and
-  `PhaseGateStatus` vocabularies.
+- #13's [transition contract](state-machine.md) defines the lifecycle and maps canonical
+  phase `gating`/`done`/`paused` to storage substages. `paused_approval` is an additive
+  non-cap pause status; detailed pause reasons and saved substages belong to #23's store.
 - #15 decides whether a `riskClass` change requires re-approval; the types allow either.
