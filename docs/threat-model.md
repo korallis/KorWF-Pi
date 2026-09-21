@@ -258,3 +258,42 @@ forged).* Actors: T3, T7, T5.
 | Two orchestrators or a worker writing the store | One writer process holds the lockfile; workers report over RPC and never open the database (ADR 0006); `lockTimeoutMs` fails a second instance fast | `storage/lockfile`; ADR 0006 | R13 (a worker with `bash` can open the SQLite file directly — same class as R7; the audit table and append-only triggers make tampering detectable, not impossible) |
 | Evidence/decision tampering | `decision`, `evidence`, `model_outcome`, `audit_entry` are append-only at the type level (`UpdatePatch<T> = never`) and by `RAISE(ABORT)` triggers in the migration (`docs/records.md` §4); corrections are new rows with `supersedesId` | `storage/` migrations (#23); compile-time tests | R13 |
 | Evidence from a worker's own claim | `Evidence.reviewer.kind = deterministic` rows are written by the engine from the check's exit code and command identity, not by the worker; independent review (C3) rejects the same attempt chain (B7 in `docs/gates.md`) | `verification/`; `docs/gates.md` §2 | — |
+
+## 6. Residual risks
+
+Residual = what remains after every mitigation in §5. Each has an owner (module or
+issue) and a stated response. None is silently accepted; the user-facing limitations
+section of the README (Stage 8, PLAN §J) must list R6–R11.
+
+| Id | Residual risk | Why it remains | Response |
+|---|---|---|---|
+| R1 | A model can be steered by observations (repo text, tool output) even though they are never instructions | Language models do not reliably distinguish data from directives | B2–B4 bound the *consequences*: steering can only produce actions that policy already allows. Independent review contexts (PLAN §3.F) and Jev's advisory injection signal raise the detection rate. |
+| R2 | A trusted-but-malicious project can loosen *configurable* approval rows | Project trust is Pi's user decision; KorWF respects it | Floors and `const` rows cannot be loosened; `/korwf status` shows the effective policy; disclosure on first use. Follow-up: warn when a project layer loosens any row relative to the user layer. |
+| R3 | An approved check or install runs arbitrary repo code as the user | That is what a check is | Runs in a worker's worktree; `run_shell`/`install_dependencies` are never `auto`; no shipped sandbox (R9). |
+| R4 | A compromised Jev (or proxy) can cause spurious reviews, abstentions, or bad model rankings | Jev answers are trusted for *ranking* within the allowlist | Never escalation: allowlist, budgets and gates are code-enforced after selection (ADR 0008); deterministic fallback (ADR 0007) bounds outage; response validation and model pin bound malformed answers. |
+| R5 | The user can loosen configurable rows or add `allowPaths` carve-outs | User authority is the design | Validator restricts carve-outs to narrower-than-deny (V7) and never for logging; every effective loosening is visible. |
+| R6 | **Extensions compiled into the Pi binary survive `--no-extensions`** (ADR 0004: the local build's `llama` inline extension) | Outside KorWF's control; discovered, not fixable, from a package | Guards 2 and 3 of ADR 0004 (depth marker; role `--tools`) do not depend on `--no-extensions`; the orchestration extension itself is never compiled in. Stage 2 `workers/` test: enumerate loaded extensions in a spawned worker (`get_state`) and fail if any registers a tool not in the role list. |
+| R7 | The read-only `bash` classifier is a regex allow/deny list and is bypassable (subshells, interpreters, `find -exec`, redirection) | A `tool_call` hook is a policy gate, not a sandbox (Pi `docs/security.md`; PLAN §4) | Documented as *policy*; the residual is closed only by a user-installed sandbox (ADR 0001 row 3), whose presence `security/` detects and reports in `/korwf status`. Mutation-route tests cover every route KorWF itself controls. |
+| R8 | Absolute paths in `bash` escape the worktree cwd boundary | cwd is not a jail | Same response as R7; `protected-paths` covers `write`/`edit`; a sandbox covers `bash`. |
+| R9 | No shipped sandbox ⇒ no network or filesystem isolation for arbitrary commands | PLAN §3.E "separately defined sandbox"; dependency and platform prerequisites rejected in ADR 0001 row 3 | Recommend the `sandbox/` example (user-level install); `PI_OFFLINE=1` for roles that need no network; revisit if PLAN §11 approves a sandbox dependency. |
+| R10 | **A worker SIGKILL orphans its detached child commands** (ADR 0004 probe check 5: Pi's bash tool spawns `detached: true`; SIGKILL skips Pi's `killTrackedDetachedChildren`) | Kernel semantics; SIGKILL cannot run a handler | Three-tier cancellation: cooperative `abort` → SIGTERM (Pi reaps) → SIGKILL **with a pre-snapshotted descendant list that the supervisor kills itself**; pids and snapshots persisted so a restarted orchestrator can reap. "Do not simplify tier 3 to `proc.kill('SIGKILL')`" (ADR 0004). Residual: a command that forks *after* the snapshot and before the kill; bounded by the 3 s grace window. |
+| R11 | Deny patterns are heuristic; an unusual secret format can pass redaction | Regexes cannot recognise every credential shape | Defence in depth: deny *paths* remove the common containers entirely; size caps limit exposure; `jev.enabled: false` by default; user-extensible patterns (floor, not ceiling). |
+| R12 | Uncommitted work inside a KorWF-owned worktree is not protected the way the user's checkout is | Worktrees are the product's scratch space (ADR 0009) | Documented; `/korwf cancel` preserves worktrees until the user removes them; checkpoints (row 5) before integration. |
+| R13 | A worker with `bash` could write the SQLite file directly, bypassing the single-writer rule | Same class as R7 | Append-only triggers make tampering an error or a detectable anomaly; the audit table records engine-side writes; worktrees do not contain `.korwf/` (it is under the project root, outside every worktree). Follow-up: store hash chain in `audit_entry` (Stage 4). |
+
+## 7. What this model does not cover
+
+- **Correctness of generated code.** Jev is "not a final correctness oracle" (PLAN §1);
+  the gates (`docs/gates.md`) require deterministic checks and independent review, but a
+  passing suite is evidence, not proof.
+- **The model provider's handling of data** once sent (T6). The user chose the provider
+  in Pi; KorWF's contribution is to send less (B5) and to add no provider.
+- **Pi's own trust model and extension loading.** Covered by Pi `docs/security.md`; KorWF
+  relies on `ctx.isProjectTrusted()` and does not re-implement it.
+- **The build-time agent policy** for this repository (AGENTS.md §4, ADR 0005). PLAN §7's
+  scope note separates the two; do not import rows from here into AGENTS.md or vice versa.
+
+## Change log
+
+- 2026-09-21 — initial version (#17). Carries in ADR 0004's two residual risks (R6, R10)
+  and ADR 0001 row 2/3 residuals (R7–R9).
