@@ -1,8 +1,35 @@
 /**
  * Decision traces, accounting, metrics (KorWF-Pi module, see docs/adr/0002-source-layout.md).
  *
- * Placeholder for issue #19 (package manifest, modular layout). No exports
- * yet; later issues populate this module. The file exists so the module
- * boundary is real and the package compiles.
+ * Issue #30 added usage accounting and atomic budget reservations
+ * (`ledger.ts`). Traces and metrics arrive in later issues.
  */
-export {};
+export {
+  Ledger,
+  openLedger,
+  reconcileAbandonedReservations,
+  BudgetExceededError,
+  BudgetExceeded,
+  UsageIntegrityError,
+  classifyCost,
+  hasUsablePrice,
+  unknownUsage,
+  noUsage,
+  assertHonestUsage,
+  UNKNOWN_COST,
+  SCOPE_ORDER,
+  LEDGER_ABANDONED_REASON,
+} from "./ledger.ts";
+export type {
+  AbandonedReservation,
+  CapStatus,
+  ChargeScope,
+  LedgerOptions,
+  LedgerReconcileOptions,
+  LedgerReconciliationReport,
+  LedgerStatus,
+  PriceMetadata,
+  Reservation,
+  ScopeStatus,
+  TokenCounts,
+} from "./ledger.ts";
