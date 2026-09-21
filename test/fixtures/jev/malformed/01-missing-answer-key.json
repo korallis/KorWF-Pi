@@ -1,0 +1,15 @@
+{
+  "description": "answers is missing the only requested question key",
+  "questionKey": "q1",
+  "expectedCode": "missing_answer",
+  "request": {
+    "state": "state",
+    "model": "jev-1.13.0",
+    "questions": { "q1": { "type": "noul", "instructions": "is it true" } }
+  },
+  "raw": {
+    "model": "jev-1.13.0",
+    "answers": {},
+    "usage": { "input_tokens": 1, "output_tokens": 1 }
+  }
+}

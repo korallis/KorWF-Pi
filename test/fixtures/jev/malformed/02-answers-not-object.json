@@ -1,0 +1,15 @@
+{
+  "description": "answers is a string, not an object",
+  "questionKey": "q1",
+  "expectedCode": "malformed_response",
+  "request": {
+    "state": "state",
+    "model": "jev-1.13.0",
+    "questions": { "q1": { "type": "noul", "instructions": "is it true" } }
+  },
+  "raw": {
+    "model": "jev-1.13.0",
+    "answers": "not-an-object",
+    "usage": { "input_tokens": 1, "output_tokens": 1 }
+  }
+}

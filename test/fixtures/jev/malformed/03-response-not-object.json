@@ -1,0 +1,11 @@
+{
+  "description": "the entire response body is a bare string",
+  "questionKey": "q1",
+  "expectedCode": "malformed_response",
+  "request": {
+    "state": "state",
+    "model": "jev-1.13.0",
+    "questions": { "q1": { "type": "noul", "instructions": "is it true" } }
+  },
+  "raw": "totally malformed body"
+}

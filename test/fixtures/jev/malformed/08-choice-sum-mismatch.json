@@ -1,0 +1,22 @@
+{
+  "description": "choice probabilities do not sum to ~1",
+  "questionKey": "q1",
+  "expectedCode": "sum_mismatch",
+  "request": {
+    "state": "state",
+    "model": "jev-1.13.0",
+    "questions": { "q1": { "type": "choice", "instructions": "pick one", "criteria": { "a": null, "b": null } } }
+  },
+  "raw": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "q1": {
+        "type": "choice",
+        "choice": "a",
+        "probabilities": { "a": 0.2, "b": 0.2 },
+        "confidence": 0.9
+      }
+    },
+    "usage": { "input_tokens": 1, "output_tokens": 1 }
+  }
+}

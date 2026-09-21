@@ -1,0 +1,15 @@
+{
+  "description": "noul value is a string instead of a number",
+  "questionKey": "q1",
+  "expectedCode": "malformed_response",
+  "request": {
+    "state": "state",
+    "model": "jev-1.13.0",
+    "questions": { "q1": { "type": "noul", "instructions": "is it true" } }
+  },
+  "raw": {
+    "model": "jev-1.13.0",
+    "answers": { "q1": { "type": "noul", "noul": "0.5" } },
+    "usage": { "input_tokens": 1, "output_tokens": 1 }
+  }
+}

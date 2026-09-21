@@ -1,0 +1,13 @@
+{
+  "description": "model answered with an alias-resolved version different from the pin",
+  "request": {
+    "state": "state",
+    "model": "jev-1.13.0",
+    "questions": { "n": { "type": "noul", "instructions": "is it true" } }
+  },
+  "raw": {
+    "model": "jev-1.14.0",
+    "answers": { "n": { "type": "noul", "noul": 0.42 } },
+    "usage": { "input_tokens": 10, "output_tokens": 1 }
+  }
+}
