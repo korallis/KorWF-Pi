@@ -36,6 +36,8 @@ export {
 export type { Migration, AppliedMigration, MigrateResult } from "./migrations.ts";
 
 export { ArtifactStore, artifactRelativePath, MANIFEST_NAME, sha256 } from "./artifacts.ts";
+export { DecisionCacheStore } from "./decision-cache.ts";
+export type { DecisionCacheRow } from "./decision-cache.ts";
 export type { ArtifactManifest, ArtifactManifestEntry } from "./artifacts.ts";
 
 export {

@@ -19,6 +19,7 @@ import { acquireLock, DEFAULT_LOCK_TIMEOUT_MS, type AcquireLockOptions, type Loc
 import { currentSchemaVersion, latestSchemaVersion, migrate, type MigrateResult } from "./migrations.ts";
 import { resolveArtifactDir, resolveDatabasePath, resolveLockfilePath } from "./paths.ts";
 import { ArtifactStore } from "./artifacts.ts";
+import { DecisionCacheStore } from "./decision-cache.ts";
 import { reconcileAbandonedAttempts, type ReconcileOptions, type ReconciliationReport } from "./reconcile.ts";
 import type { AuditEntry, AuditEntryId, IsoTimestamp, RecordTable, WorkflowId } from "./records.ts";
 import { RECORDS_SCHEMA_VERSION } from "./records.ts";
@@ -99,6 +100,8 @@ export class Store {
   /** Append-only usage ledger; budget reservations are read and written here (#30). */
   readonly ledger: LedgerRepository;
   readonly audit: AuditRepository;
+  /** Revision-aware decision cache (#29); not a record table, see decision-cache.ts. */
+  readonly decisionCache: DecisionCacheStore;
 
   readonly #db: Database;
   readonly #lock: LockHandle | null;
@@ -144,6 +147,7 @@ export class Store {
     this.modelAvailability = new ModelAvailabilityRepository(ctx);
     this.modelOutcomes = new ModelOutcomeRepository(ctx);
     this.ledger = new LedgerRepository(ctx);
+    this.decisionCache = new DecisionCacheStore(this.#db);
   }
 
   #context(audit: AuditSink | null): RepoContext {
