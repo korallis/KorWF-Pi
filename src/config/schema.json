@@ -16,31 +16,40 @@
       "description": "Schema version of this file. Bumped on breaking changes; the loader migrates or refuses."
     },
     "models": {
-      "$ref": "#/$defs/Models"
+      "$ref": "#/$defs/Models",
+      "default": {}
     },
     "budgets": {
-      "$ref": "#/$defs/Budgets"
+      "$ref": "#/$defs/Budgets",
+      "default": {}
     },
     "mode": {
-      "$ref": "#/$defs/Mode"
+      "$ref": "#/$defs/Mode",
+      "default": "shadow"
     },
     "approvals": {
-      "$ref": "#/$defs/Approvals"
+      "$ref": "#/$defs/Approvals",
+      "default": {}
     },
     "privacy": {
-      "$ref": "#/$defs/Privacy"
+      "$ref": "#/$defs/Privacy",
+      "default": {}
     },
     "fallback": {
-      "$ref": "#/$defs/Fallback"
+      "$ref": "#/$defs/Fallback",
+      "default": {}
     },
     "jev": {
-      "$ref": "#/$defs/Jev"
+      "$ref": "#/$defs/Jev",
+      "default": {}
     },
     "notifications": {
-      "$ref": "#/$defs/Notifications"
+      "$ref": "#/$defs/Notifications",
+      "default": {}
     },
     "storage": {
-      "$ref": "#/$defs/Storage"
+      "$ref": "#/$defs/Storage",
+      "default": {}
     }
   },
   "$defs": {
@@ -60,7 +69,6 @@
     "Models": {
       "type": "object",
       "additionalProperties": false,
-      "default": {},
       "properties": {
         "allowlist": {
           "type": "object",
@@ -171,7 +179,6 @@
     "Budgets": {
       "type": "object",
       "additionalProperties": false,
-      "default": {},
       "description": "Hard-stop caps (PLAN §2.6). Exceeding any cap stops the scope and surfaces a resumable state. Task <= phase <= workflow is enforced by the validator when both are non-null.",
       "properties": {
         "workflow": {
@@ -230,7 +237,6 @@
         "supervised",
         "bounded_autonomous"
       ],
-      "default": "shadow",
       "description": "Operating mode (docs/records.md `WorkflowMode`). Shadow: observe and record only, no mutation. Advisory: propose, never act. Supervised: act only on explicit approval. Bounded autonomous: act within budgets and approval classes."
     },
     "ApprovalDecision": {
@@ -288,7 +294,6 @@
     "Approvals": {
       "type": "object",
       "additionalProperties": false,
-      "default": {},
       "properties": {
         "queueTimeoutMinutes": {
           "type": "integer",
@@ -497,7 +502,6 @@
     "Privacy": {
       "type": "object",
       "additionalProperties": false,
-      "default": {},
       "description": "Data policy (PLAN §7). Default-deny outbound for secrets and sensitive paths; minimal snippets; raw logging opt-in.",
       "properties": {
         "denyPaths": {
@@ -912,7 +916,6 @@
     "Fallback": {
       "type": "object",
       "additionalProperties": false,
-      "default": {},
       "description": "Caps and fallback (PLAN §3.D). Applies when a model is capped (quota, rate limit, budget) or unavailable.",
       "properties": {
         "midTaskPolicy": {
@@ -927,9 +930,12 @@
           "additionalProperties": {
             "$ref": "#/$defs/MidTaskPolicy"
           },
-          "required": [
-            "default"
-          ]
+          "properties": {
+            "default": {
+              "$ref": "#/$defs/MidTaskPolicy",
+              "default": "handoff"
+            }
+          }
         },
         "dwell": {
           "type": "string",
@@ -985,7 +991,6 @@
     "Jev": {
       "type": "object",
       "additionalProperties": false,
-      "default": {},
       "description": "TypeSafe/Jev transport (docs/adr/0003-jev-transport.md). With no key the product runs in optional mode: deterministic workflow only.",
       "properties": {
         "enabled": {
@@ -1081,7 +1086,6 @@
     "Notifications": {
       "type": "object",
       "additionalProperties": false,
-      "default": {},
       "description": "Notification hooks (PLAN §2.6). Only the in-Pi channel is on by default; nothing leaves the machine unless configured.",
       "properties": {
         "events": {
@@ -1195,7 +1199,6 @@
     "Storage": {
       "type": "object",
       "additionalProperties": false,
-      "default": {},
       "description": "On-disk state (src/storage/paths.ts). Namespaced under the project; never in the source tree outside this directory.",
       "properties": {
         "path": {
