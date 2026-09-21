@@ -6,22 +6,42 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "configVersion": {
       "type": "integer",
       "const": 1,
       "default": 1,
       "description": "Schema version of this file. Bumped on breaking changes; the loader migrates or refuses."
     },
-    "models": { "$ref": "#/$defs/Models" },
-    "budgets": { "$ref": "#/$defs/Budgets" },
-    "mode": { "$ref": "#/$defs/Mode" },
-    "approvals": { "$ref": "#/$defs/Approvals" },
-    "privacy": { "$ref": "#/$defs/Privacy" },
-    "fallback": { "$ref": "#/$defs/Fallback" },
-    "jev": { "$ref": "#/$defs/Jev" },
-    "notifications": { "$ref": "#/$defs/Notifications" },
-    "storage": { "$ref": "#/$defs/Storage" }
+    "models": {
+      "$ref": "#/$defs/Models"
+    },
+    "budgets": {
+      "$ref": "#/$defs/Budgets"
+    },
+    "mode": {
+      "$ref": "#/$defs/Mode"
+    },
+    "approvals": {
+      "$ref": "#/$defs/Approvals"
+    },
+    "privacy": {
+      "$ref": "#/$defs/Privacy"
+    },
+    "fallback": {
+      "$ref": "#/$defs/Fallback"
+    },
+    "jev": {
+      "$ref": "#/$defs/Jev"
+    },
+    "notifications": {
+      "$ref": "#/$defs/Notifications"
+    },
+    "storage": {
+      "$ref": "#/$defs/Storage"
+    }
   },
   "$defs": {
     "ModelRef": {
@@ -30,7 +50,10 @@
       "description": "Fully qualified `<provider>/<modelId>` as shown by Pi's model registry."
     },
     "NonNegativeOrNull": {
-      "type": ["number", "null"],
+      "type": [
+        "number",
+        "null"
+      ],
       "minimum": 0,
       "description": "`null` means no cap of this kind."
     },
@@ -47,14 +70,19 @@
           "properties": {
             "providers": {
               "type": "array",
-              "items": { "type": "string", "minLength": 1 },
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
               "uniqueItems": true,
               "default": [],
               "description": "Provider ids eligible for selection. `[]` = every provider Pi has configured."
             },
             "models": {
               "type": "array",
-              "items": { "$ref": "#/$defs/ModelRef" },
+              "items": {
+                "$ref": "#/$defs/ModelRef"
+              },
               "uniqueItems": true,
               "default": [],
               "description": "Fully qualified model refs eligible for selection. `[]` = every model of an eligible provider."
@@ -63,8 +91,12 @@
               "type": "object",
               "default": {},
               "description": "Task kind → model ref. A pinned model is never overridden by fallback without asking (PLAN §3.D).",
-              "propertyNames": { "$ref": "#/$defs/TaskKind" },
-              "additionalProperties": { "$ref": "#/$defs/ModelRef" }
+              "propertyNames": {
+                "$ref": "#/$defs/TaskKind"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/ModelRef"
+              }
             }
           }
         },
@@ -72,14 +104,29 @@
           "type": "object",
           "default": {},
           "description": "Per-model card overrides (PLAN §3.D layer 3). Keys are model refs.",
-          "propertyNames": { "$ref": "#/$defs/ModelRef" },
+          "propertyNames": {
+            "$ref": "#/$defs/ModelRef"
+          },
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "notes": { "type": "string", "maxLength": 2000 },
-              "aptitudes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
-              "disabled": { "type": "boolean", "default": false }
+              "notes": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "aptitudes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              },
+              "disabled": {
+                "type": "boolean",
+                "default": false
+              }
             }
           }
         }
@@ -87,7 +134,16 @@
     },
     "TaskKind": {
       "type": "string",
-      "enum": ["default", "plan", "implement", "test", "review", "docs", "refactor", "research"],
+      "enum": [
+        "default",
+        "plan",
+        "implement",
+        "test",
+        "review",
+        "docs",
+        "refactor",
+        "research"
+      ],
       "description": "Task kinds used for pins and fallback policy. `default` applies where no specific kind is set."
     },
     "BudgetCaps": {
@@ -95,11 +151,21 @@
       "additionalProperties": false,
       "description": "Matches the `Budget` record in docs/records.md. `null` = no cap of this kind. All numeric caps are >= 0.",
       "properties": {
-        "maxSpendUsd": { "$ref": "#/$defs/NonNegativeOrNull" },
-        "maxTokens": { "$ref": "#/$defs/NonNegativeOrNull" },
-        "maxRequests": { "$ref": "#/$defs/NonNegativeOrNull" },
-        "maxConcurrency": { "$ref": "#/$defs/NonNegativeOrNull" },
-        "maxElapsedMs": { "$ref": "#/$defs/NonNegativeOrNull" }
+        "maxSpendUsd": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        },
+        "maxTokens": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        },
+        "maxRequests": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        },
+        "maxConcurrency": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        },
+        "maxElapsedMs": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        }
       }
     },
     "Budgets": {
@@ -110,19 +176,43 @@
       "properties": {
         "workflow": {
           "$ref": "#/$defs/BudgetCaps",
-          "default": { "maxSpendUsd": 10, "maxTokens": null, "maxRequests": null, "maxConcurrency": 2, "maxElapsedMs": null }
+          "default": {
+            "maxSpendUsd": 10,
+            "maxTokens": null,
+            "maxRequests": null,
+            "maxConcurrency": 2,
+            "maxElapsedMs": null
+          }
         },
         "phase": {
           "$ref": "#/$defs/BudgetCaps",
-          "default": { "maxSpendUsd": null, "maxTokens": null, "maxRequests": null, "maxConcurrency": null, "maxElapsedMs": null }
+          "default": {
+            "maxSpendUsd": null,
+            "maxTokens": null,
+            "maxRequests": null,
+            "maxConcurrency": null,
+            "maxElapsedMs": null
+          }
         },
         "task": {
           "$ref": "#/$defs/BudgetCaps",
-          "default": { "maxSpendUsd": null, "maxTokens": null, "maxRequests": 200, "maxConcurrency": 1, "maxElapsedMs": 3600000 }
+          "default": {
+            "maxSpendUsd": null,
+            "maxTokens": null,
+            "maxRequests": 200,
+            "maxConcurrency": 1,
+            "maxElapsedMs": 3600000
+          }
         },
         "jev": {
           "$ref": "#/$defs/BudgetCaps",
-          "default": { "maxSpendUsd": 1, "maxTokens": null, "maxRequests": null, "maxConcurrency": 4, "maxElapsedMs": null },
+          "default": {
+            "maxSpendUsd": 1,
+            "maxTokens": null,
+            "maxRequests": null,
+            "maxConcurrency": 4,
+            "maxElapsedMs": null
+          },
           "description": "Per-workflow cap on Jev (TypeSafe) spend, separate from model spend. Irrelevant when Jev is disabled."
         },
         "costEstimateBeforeRun": {
@@ -134,24 +224,46 @@
     },
     "Mode": {
       "type": "string",
-      "enum": ["shadow", "advisory", "supervised", "bounded_autonomous"],
+      "enum": [
+        "shadow",
+        "advisory",
+        "supervised",
+        "bounded_autonomous"
+      ],
       "default": "shadow",
       "description": "Operating mode (docs/records.md `WorkflowMode`). Shadow: observe and record only, no mutation. Advisory: propose, never act. Supervised: act only on explicit approval. Bounded autonomous: act within budgets and approval classes."
     },
     "ApprovalDecision": {
       "type": "string",
-      "enum": ["auto", "queue", "stop"],
+      "enum": [
+        "auto",
+        "queue",
+        "stop"
+      ],
       "description": "PLAN §2.6: auto = pre-approved for the mode; queue = block this task, continue others, notify; stop = stop the phase and wait for the user."
     },
     "ApprovalPolicyPerMode": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["shadow", "advisory", "supervised", "bounded_autonomous"],
+      "required": [
+        "shadow",
+        "advisory",
+        "supervised",
+        "bounded_autonomous"
+      ],
       "properties": {
-        "shadow": { "$ref": "#/$defs/ApprovalDecision" },
-        "advisory": { "$ref": "#/$defs/ApprovalDecision" },
-        "supervised": { "$ref": "#/$defs/ApprovalDecision" },
-        "bounded_autonomous": { "$ref": "#/$defs/ApprovalDecision" }
+        "shadow": {
+          "$ref": "#/$defs/ApprovalDecision"
+        },
+        "advisory": {
+          "$ref": "#/$defs/ApprovalDecision"
+        },
+        "supervised": {
+          "$ref": "#/$defs/ApprovalDecision"
+        },
+        "bounded_autonomous": {
+          "$ref": "#/$defs/ApprovalDecision"
+        }
       }
     },
     "HighRiskPolicy": {
@@ -159,10 +271,18 @@
       "additionalProperties": false,
       "description": "High-risk classes (PLAN §7) are `stop` in every mode; the schema forbids any other value so config cannot weaken it.",
       "properties": {
-        "shadow": { "const": "stop" },
-        "advisory": { "const": "stop" },
-        "supervised": { "const": "stop" },
-        "bounded_autonomous": { "const": "stop" }
+        "shadow": {
+          "const": "stop"
+        },
+        "advisory": {
+          "const": "stop"
+        },
+        "supervised": {
+          "const": "stop"
+        },
+        "bounded_autonomous": {
+          "const": "stop"
+        }
       }
     },
     "Approvals": {
@@ -182,21 +302,602 @@
           "default": {},
           "description": "Action class → decision per mode. Low/medium-risk classes are configurable; high-risk classes are fixed to `stop`.",
           "properties": {
-            "read_repository": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "auto", "advisory": "auto", "supervised": "auto", "bounded_autonomous": "auto" } },
-            "edit_worktree": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "auto" } },
-            "run_checks": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "auto", "bounded_autonomous": "auto" } },
-            "run_shell": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "queue" } },
-            "install_dependencies": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "queue" } },
-            "local_commit": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "auto" } },
-            "spawn_worker": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "auto" } },
-            "model_fallback": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "auto", "advisory": "auto", "supervised": "queue", "bounded_autonomous": "auto" } },
-            "complete_task": { "$ref": "#/$defs/ApprovalPolicyPerMode", "default": { "shadow": "stop", "advisory": "stop", "supervised": "queue", "bounded_autonomous": "auto" } },
-            "destructive_cleanup": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } },
-            "remote_push": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } },
-            "deployment": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } },
-            "credential_access": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } },
-            "publishing": { "$ref": "#/$defs/HighRiskPolicy", "default": { "shadow": "stop", "advisory": "stop", "supervised": "stop", "bounded_autonomous": "stop" } }
+            "read_repository": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "auto",
+                "advisory": "auto",
+                "supervised": "auto",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "edit_worktree": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "run_checks": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "auto",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "run_shell": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
+            "install_dependencies": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
+            "local_commit": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "spawn_worker": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "model_fallback": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "auto",
+                "advisory": "auto",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "complete_task": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "destructive_cleanup": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
+            "remote_push": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
+            "deployment": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
+            "credential_access": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
+            "publishing": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            }
           }
+        }
+      }
+    },
+    "ShippedDenyPaths": {
+      "type": "array",
+      "description": "Shipped minimum deny list of path globs (PLAN §7). `privacy.denyPaths` MUST contain every entry; the `allOf`/`contains` constraints below enforce it in-schema.",
+      "const": [
+        "**/.env",
+        "**/.env.*",
+        "**/*.pem",
+        "**/*.key",
+        "**/*.p12",
+        "**/*.pfx",
+        "**/*.jks",
+        "**/id_rsa*",
+        "**/id_ed25519*",
+        "**/id_ecdsa*",
+        "**/.ssh/**",
+        "**/.gnupg/**",
+        "**/.aws/**",
+        "**/.azure/**",
+        "**/.config/gcloud/**",
+        "**/.kube/config",
+        "**/.netrc",
+        "**/.npmrc",
+        "**/.pypirc",
+        "**/.docker/config.json",
+        "**/.git/config",
+        "**/.git/credentials",
+        "**/.git-credentials",
+        "**/credentials.json",
+        "**/service-account*.json",
+        "**/secrets.*",
+        "**/*.secret",
+        "**/*.keystore",
+        "**/.korwf/**",
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/out/**",
+        "**/target/**",
+        "**/.next/**",
+        "**/coverage/**",
+        "**/*.log",
+        "**/*.sqlite",
+        "**/*.sqlite3",
+        "**/*.db"
+      ]
+    },
+    "ShippedDenyPatterns": {
+      "type": "array",
+      "description": "Shipped minimum deny list of content regexes (ECMAScript syntax, applied per line). `privacy.denyPatterns` MUST contain every entry.",
+      "const": [
+        "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+        "(?i)\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}",
+        "\\bsk-[A-Za-z0-9_-]{16,}\\b",
+        "\\bAKIA[0-9A-Z]{16}\\b",
+        "\\bgh[pousr]_[A-Za-z0-9]{20,}\\b",
+        "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b",
+        "\\bAIza[0-9A-Za-z_-]{35}\\b",
+        "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
+        "(?i)\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}",
+        "(?i)\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
+      ]
+    },
+    "Privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "description": "Data policy (PLAN §7). Default-deny outbound for secrets and sensitive paths; minimal snippets; raw logging opt-in.",
+      "properties": {
+        "denyPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Path globs never read into outbound context or logs. Must be a superset of `$defs/ShippedDenyPaths`; entries can be added, never removed.",
+          "allOf": [
+            {
+              "contains": {
+                "const": "**/.env"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.env.*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.pem"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.key"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.p12"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.pfx"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.jks"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/id_rsa*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/id_ed25519*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/id_ecdsa*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.ssh/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.gnupg/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.aws/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.azure/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.config/gcloud/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.kube/config"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.netrc"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.npmrc"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.pypirc"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.docker/config.json"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.git/config"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.git/credentials"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.git-credentials"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/credentials.json"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/service-account*.json"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/secrets.*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.secret"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.keystore"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.korwf/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/node_modules/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/dist/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/build/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/out/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/target/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.next/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/coverage/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.log"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.sqlite"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.sqlite3"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.db"
+              }
+            }
+          ],
+          "default": [
+            "**/.env",
+            "**/.env.*",
+            "**/*.pem",
+            "**/*.key",
+            "**/*.p12",
+            "**/*.pfx",
+            "**/*.jks",
+            "**/id_rsa*",
+            "**/id_ed25519*",
+            "**/id_ecdsa*",
+            "**/.ssh/**",
+            "**/.gnupg/**",
+            "**/.aws/**",
+            "**/.azure/**",
+            "**/.config/gcloud/**",
+            "**/.kube/config",
+            "**/.netrc",
+            "**/.npmrc",
+            "**/.pypirc",
+            "**/.docker/config.json",
+            "**/.git/config",
+            "**/.git/credentials",
+            "**/.git-credentials",
+            "**/credentials.json",
+            "**/service-account*.json",
+            "**/secrets.*",
+            "**/*.secret",
+            "**/*.keystore",
+            "**/.korwf/**",
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/out/**",
+            "**/target/**",
+            "**/.next/**",
+            "**/coverage/**",
+            "**/*.log",
+            "**/*.sqlite",
+            "**/*.sqlite3",
+            "**/*.db"
+          ]
+        },
+        "denyPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Content regexes; a matching line is redacted before any outbound request or log write. Must be a superset of `$defs/ShippedDenyPatterns`.",
+          "allOf": [
+            {
+              "contains": {
+                "const": "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+              }
+            },
+            {
+              "contains": {
+                "const": "(?i)\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bsk-[A-Za-z0-9_-]{16,}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bAKIA[0-9A-Z]{16}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bgh[pousr]_[A-Za-z0-9]{20,}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bAIza[0-9A-Za-z_-]{35}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "(?i)\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}"
+              }
+            },
+            {
+              "contains": {
+                "const": "(?i)\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
+              }
+            }
+          ],
+          "default": [
+            "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+            "(?i)\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}",
+            "\\bsk-[A-Za-z0-9_-]{16,}\\b",
+            "\\bAKIA[0-9A-Z]{16}\\b",
+            "\\bgh[pousr]_[A-Za-z0-9]{20,}\\b",
+            "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b",
+            "\\bAIza[0-9A-Za-z_-]{35}\\b",
+            "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
+            "(?i)\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}",
+            "(?i)\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
+          ]
+        },
+        "allowPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Explicit per-project carve-outs (e.g. `docs/fixtures/.env.example`). A carve-out must not be broader than the deny entry it relaxes; validator rule V7."
+        },
+        "outbound": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "maxSnippetBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 4096,
+              "description": "Largest single file excerpt sent to Jev or a model provider."
+            },
+            "maxSnippetsPerRequest": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 16
+            },
+            "maxRequestBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 262144,
+              "description": "Hard cap on outbound request body size (256 KiB)."
+            },
+            "sendFilePaths": {
+              "type": "boolean",
+              "default": true,
+              "description": "Send project-relative paths with snippets. Absolute paths are never sent."
+            },
+            "sendRepoIdentity": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include remote URL / repo name in Jev context. Off: only a hash."
+            }
+          }
+        },
+        "rawLogging": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "Opt-in raw request/response payload logging (PLAN §7). Off by default.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "retentionDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 7
+            },
+            "redactBeforeWrite": {
+              "type": "boolean",
+              "const": true,
+              "default": true,
+              "description": "Deny patterns are applied before writing raw logs. Fixed true."
+            }
+          }
+        },
+        "firstUseDisclosure": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show which data classes go to TypeSafe and to model providers before the first outbound request."
         }
       }
     }
