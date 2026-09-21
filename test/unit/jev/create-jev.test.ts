@@ -3,7 +3,7 @@
  * throws, no live network request is ever attempted.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { createJev, DisabledJevTransport, HttpJevTransport, filterForTest } from "../../../src/jev/index.ts";
+import { createJev, DisabledJevTransport, filterForTest } from "../../../src/jev/index.ts";
 import { defaultConfig } from "../../../src/config/index.ts";
 import { clearRegisteredSecrets } from "../../../src/security/redact.ts";
 import type { KorwfConfig } from "../../../src/config/types.ts";

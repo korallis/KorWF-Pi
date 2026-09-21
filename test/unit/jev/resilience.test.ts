@@ -17,7 +17,7 @@ import {
   RetryAbortedError,
   wrapWithCircuitBreaker,
 } from "../../../src/jev/resilience.ts";
-import { MockJevTransport } from "../../../src/jev/mock.ts";
+import { MockJevTransport, filterForTest } from "../../../src/jev/mock.ts";
 import { JevTransportError, type JevEvaluateResult, type SystemOneRequest } from "../../../src/jev/transport.ts";
 
 beforeEach(() => {
@@ -28,11 +28,19 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const REQUEST: SystemOneRequest = {
+const RAW_REQUEST: SystemOneRequest = {
   state: "s",
   model: "jev-1.13.0",
   questions: { q: { type: "noul", instructions: "?" } },
 };
+
+/**
+ * The wrapper inherits the transport's outbound guarantee (issue #28): only a
+ * `FilteredRequest` can be evaluated, wrapped or not. `filterForTest` runs the
+ * real shipped outbound policy, so these tests exercise the same request shape
+ * production sends.
+ */
+const REQUEST = filterForTest(RAW_REQUEST);
 
 function ok(): JevEvaluateResult {
   return { kind: "ok", response: { model: "jev-1.13.0", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }, requestId: "r", attempts: 1, elapsedMs: 0 };
