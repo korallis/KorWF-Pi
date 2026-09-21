@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://korwf.dev/schema/config/v1.json",
+  "title": "KorWF-Pi configuration",
+  "description": "All user-facing policy for KorWF-Pi (PLAN §3.J). Every field has a default; an empty object `{}` is a valid, working, no-Jev configuration. Cross-field rules that JSON Schema cannot express are listed in docs/config-reference.md §Validation rules and enforced by src/config validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "configVersion": {
+      "type": "integer",
+      "const": 1,
+      "default": 1,
+      "description": "Schema version of this file. Bumped on breaking changes; the loader migrates or refuses."
+    },
+    "models": { "$ref": "#/$defs/Models" },
+    "budgets": { "$ref": "#/$defs/Budgets" },
+    "mode": { "$ref": "#/$defs/Mode" },
+    "approvals": { "$ref": "#/$defs/Approvals" },
+    "privacy": { "$ref": "#/$defs/Privacy" },
+    "fallback": { "$ref": "#/$defs/Fallback" },
+    "jev": { "$ref": "#/$defs/Jev" },
+    "notifications": { "$ref": "#/$defs/Notifications" },
+    "storage": { "$ref": "#/$defs/Storage" }
+  },
+  "$defs": {
+    "ModelRef": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[^\\s/][^\\s]*$",
+      "description": "Fully qualified `<provider>/<modelId>` as shown by Pi's model registry."
+    },
+    "NonNegativeOrNull": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "description": "`null` means no cap of this kind."
+    },
+    "Models": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "allowlist": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "Optional filter over the models Pi already has configured (PLAN §3.D). Empty lists mean 'all configured'. The system never uses a provider or model outside this list.",
+          "properties": {
+            "providers": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "uniqueItems": true,
+              "default": [],
+              "description": "Provider ids eligible for selection. `[]` = every provider Pi has configured."
+            },
+            "models": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/ModelRef" },
+              "uniqueItems": true,
+              "default": [],
+              "description": "Fully qualified model refs eligible for selection. `[]` = every model of an eligible provider."
+            },
+            "pins": {
+              "type": "object",
+              "default": {},
+              "description": "Task kind → model ref. A pinned model is never overridden by fallback without asking (PLAN §3.D).",
+              "propertyNames": { "$ref": "#/$defs/TaskKind" },
+              "additionalProperties": { "$ref": "#/$defs/ModelRef" }
+            }
+          }
+        },
+        "overrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-model card overrides (PLAN §3.D layer 3). Keys are model refs.",
+          "propertyNames": { "$ref": "#/$defs/ModelRef" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "notes": { "type": "string", "maxLength": 2000 },
+              "aptitudes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+              "disabled": { "type": "boolean", "default": false }
+            }
+          }
+        }
+      }
+    },
+    "TaskKind": {
+      "type": "string",
+      "enum": ["default", "plan", "implement", "test", "review", "docs", "refactor", "research"],
+      "description": "Task kinds used for pins and fallback policy. `default` applies where no specific kind is set."
+    }
+  }
+}
