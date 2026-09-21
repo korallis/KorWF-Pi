@@ -271,6 +271,20 @@ How "no update path" is expressed in the type design:
 The SQLite migration (#23) must create no `UPDATE`/`DELETE` statements for these tables and
 may add triggers that `RAISE(ABORT)` on them.
 
+**Implemented in #23.** Both lines of defence exist:
+
+- `src/storage/repos/index.ts` gives the four append-only tables an `AppendOnlyRepository`,
+  a class that has no `update` or `delete` method at all. Nothing needs to be passed a
+  `never`: the method is absent.
+- `migrations/0001-initial.sql` adds `BEFORE UPDATE` and `BEFORE DELETE` triggers that
+  `RAISE(ABORT, '<table> is append-only')`, so a statement from *any* connection is
+  rejected — including a repair script or a future daemon.
+
+The store-side halves of the mutable rules are implemented in the same place:
+`TaskRepository` enforces the §5.1 revision rule, `AttemptRepository` freezes a row once
+`outcome` is non-null, and `ApprovalRepository` accepts a patch to `invalidation` only,
+and only from `null`. Each is covered by `test/unit/storage/record-rules.test.ts`.
+
 ## 5. Identity and revision rules
 
 ### 5.1 Task revision
@@ -404,7 +418,19 @@ Declared in `FOREIGN_KEYS`. Rules:
 
 Columns written as `a.b` are keys inside a JSON column; the SQLite migration either
 promotes them to real columns with FK constraints or enforces them in application code.
-That choice belongs to #23.
+
+**Resolved by #23:** they are promoted to real columns and enforced by SQLite.
+`src/storage/migrations/0001-initial.sql` gives every table its envelope columns, the
+columns that are joined/filtered/foreign-keyed on, and one canonical-JSON `payload`
+column holding the record. So `decision.subject.taskId` is the column
+`decision.subjectTaskId`, `approval.scope.taskId` is `approval.scopeTaskId`,
+`memory.source.decisionId` is `memory.sourceDecisionId`, and so on, each with the
+`ON DELETE` rule listed above. `PRAGMA foreign_keys = ON` is set on every connection.
+
+One consequence worth stating: because every mutable write also inserts an `audit_entry`
+row, and `audit_entry.workflowId` is `restrict`, a workflow that has ever been written
+cannot be deleted. That is the intended reading of "append-only children are never
+deleted, so their parents are never deleted either".
 
 ## 10. Fork / resume
 
@@ -420,7 +446,11 @@ fork/resume the coordinator:
 
 ## 11. Decisions left open for later issues
 
-- #23 decides JSON-column vs normalised tables and how nested FKs are enforced.
+- ~~#23 decides JSON-column vs normalised tables and how nested FKs are enforced.~~
+  **Decided in #23** (see §9 above and
+  [ADR 0006](adr/0006-sqlite-single-writer.md) "Driver"): hybrid — indexed/FK columns are
+  real, the record body is a canonical-JSON `payload`, nested FKs are promoted to real
+  columns. Driver: Node's built-in `node:sqlite` (`engines.node >= 22.13`).
 - #13's [transition contract](state-machine.md) defines the lifecycle and maps canonical
   phase `gating`/`done`/`paused` to storage substages. `paused_approval` is an additive
   non-cap pause status; detailed pause reasons and saved substages belong to #23's store.
