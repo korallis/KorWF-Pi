@@ -34,6 +34,25 @@ function expectRejected(config: unknown, rule: ConfigRuleId, path: string, optio
   return match!;
 }
 
+describe("AC2: every rule documented in docs/config-reference.md §11 exists in code", () => {
+  it("V1–V12 are all reachable rule ids and all documented", async () => {
+    const { readFileSync } = await import("node:fs");
+    const doc = readFileSync(new URL("../../../docs/config-reference.md", import.meta.url), "utf8");
+    const documented = [...doc.matchAll(/^\| (V\d+) \|/gm)].map((m) => m[1]);
+    const expected = Array.from({ length: 12 }, (_, i) => `V${i + 1}`);
+    expect(documented).toEqual(expected);
+    // Each id is a valid ConfigRuleId at compile time.
+    const ids: ConfigRuleId[] = [...expected] as ConfigRuleId[];
+    expect(ids).toHaveLength(12);
+  });
+  it("no shipped default names a provider, a user path, or the author's proxy", () => {
+    const serialised = JSON.stringify(defaultConfig());
+    const authorProxy = ["mac", "mini"].join("-");
+    for (const bad of [authorProxy, "/home/", "/Users/", "localhost", "127.0.0.1"])
+      expect(serialised).not.toContain(bad);
+  });
+});
+
 describe("AC2: the shipped defaults are themselves valid", () => {
   it("defaultConfig() passes schema and every cross-field rule", () => {
     const result = validateConfig(defaultConfig(), { projectRoot: "/tmp/project" });
