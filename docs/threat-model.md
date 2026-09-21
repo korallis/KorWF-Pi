@@ -82,3 +82,93 @@ Two rules from PLAN §1 shape everything below:
 
 Not modelled as actors: the user (owns everything), Pi (trusted runtime; extensions run
 as the user — Pi `docs/security.md`), the OS.
+
+## 4. Data-flow diagram
+
+What leaves the machine, to whom, and what never does. Every edge that crosses the
+machine boundary is labelled with the config key that governs it and its **shipped
+default** (`src/config/schema.json`; prose in `docs/config-reference.md` §6, §8, §9).
+The diagram is normative: an edge not drawn here is a defect.
+
+```text
+                       ┌─────────────────────── user's machine ───────────────────────┐
+                       │                                                               │
+  untrusted inputs     │   ┌──────────────┐    tool_call gate     ┌──────────────────┐ │
+  ─────────────────    │   │ user's Pi    │◄──────────────────────│ security/        │ │
+  repo files (T1) ────►│   │ session +    │   (block/allow, no    │ execution-policy │ │
+  tool stdout (T2) ───►│   │ korwf ext.   │    prompting in RPC)  │ data-boundaries  │ │
+                       │   └──┬─────┬─────┘                       └────────┬─────────┘ │
+                       │      │     │ spawn (ADR 0004)                     │ pure fns  │
+                       │      │     ▼                                      │           │
+                       │      │  ┌──────────────┐  own worktree (ADR 0009) │           │
+                       │      │  │ worker Pi    │◄─────────────────────────┘           │
+                       │      │  │ --mode rpc   │  --no-extensions, role --tools       │
+                       │      │  └──────┬───────┘                                      │
+                       │      │         │ records, evidence, decisions                 │
+                       │      ▼         ▼                                              │
+                       │   ┌──────────────────────────────┐   ┌─────────────────────┐  │
+                       │   │ <project>/.korwf/ (ADR 0006) │   │ git worktrees       │  │
+                       │   │ korwf.sqlite · artifacts ·   │   │ (change isolation   │  │
+                       │   │ lockfile · NO raw payloads   │   │  only, ADR 0009)    │  │
+                       │   │ unless privacy.rawLogging.   │   └─────────────────────┘  │
+                       │   │ enabled=true (default false) │                            │
+                       │   └──────────────────────────────┘                            │
+                       │                                                               │
+                       │   outbound filter (security/data-boundaries), applied to      │
+                       │   EVERY edge below, in this order:                            │
+                       │     1. privacy.denyPaths  → file never read into context     │
+                       │     2. privacy.denyPatterns → matching line redacted         │
+                       │     3. absolute paths stripped (always); project-relative     │
+                       │        paths only if privacy.outbound.sendFilePaths (true)    │
+                       │     4. repo identity → hash unless sendRepoIdentity (false)   │
+                       │     5. size caps: maxSnippetBytes 4096 · maxSnippetsPerRequest│
+                       │        16 · maxRequestBytes 262144                            │
+                       │     6. privacy.firstUseDisclosure (true) shown before edge 1  │
+                       └───────┬───────────────────────────┬───────────────────────────┘
+                               │                           │
+        edge 1 ────────────────┘                           └──────────────── edge 2
+        TypeSafe /v1/systemone                              model providers
+        jev.enabled=false (default: NOTHING SENT)           Pi's own configured endpoints
+        jev.baseUrl https:// only (default api.typesafe.ai)  (allowlist: models.allowlist,
+        key from jev.keySource (env|pi_secrets|none),        default = all of Pi's;
+        never in body, never logged (ADR 0003 r.3, r.7)      KorWF adds none)
+        body: question text + minimal state snippets         body: whatever Pi sends for
+        (PLAN §6 "minimal relevant state")                   the worker's turn, after the
+        never: secrets, deny-path content, absolute          same filter 1–5; never deny-
+        paths, raw diffs beyond caps, the key                path content or secrets
+
+        edge 3 (off by default): notifications.channels.webhook (enabled=false, url=null),
+        .command (enabled=false), .desktop (enabled=false) — redacted event JSON only.
+```
+
+### 4.1 Never leaves the machine
+
+| Data | Reason it stays | Enforced by |
+|---|---|---|
+| Files matching `privacy.denyPaths` (40 shipped globs: `.env*`, key material, credential stores, `node_modules`, build output — `config-reference.md` §6.1) | Never read into outbound context or logs; the list is a floor (schema `allOf/contains`, validator V5) | `security/data-boundaries`; schema; V5 |
+| Lines matching `privacy.denyPatterns` (10 shipped: PEM headers, `key/secret/token/password =`, known API-key shapes) | Redacted before any outbound request or log write; `rawLogging.redactBeforeWrite` is `const true` | `security/data-boundaries`; schema `const`; V6 |
+| The TypeSafe key and any provider key | Read only by the secret resolver; sent only as an `Authorization` header; never in a body, trace, cache key, or log | ADR 0003 rules 3, 4, 7; `jev/` |
+| Absolute filesystem paths | Stripped regardless of `sendFilePaths` | `security/data-boundaries` |
+| Repository identity (remote URL, path) | Only a hash unless `sendRepoIdentity: true` | `security/data-boundaries` |
+| Raw request/response bodies | Not written anywhere unless `rawLogging.enabled` (default `false`); then redacted, then deleted after `retentionDays` (default 7) | `telemetry/`; schema |
+| The KorWF store (`korwf.sqlite`, artifacts, audit log) | Local only; `storage.path` has no absolute default and `allowOutsideProject` is `false` | ADR 0006; V8 |
+| Worktrees and the user's checkout | Git operations are local; `remote_push` is a fixed `stop` in every mode | `git/`; schema `HighRiskPolicy` |
+| Decision traces, usage, cost | Local records (`Decision`, `Attempt.usage`); "sanitised responses" for replay are local files | `telemetry/`, `evaluation/` |
+
+### 4.2 Leaves the machine only when
+
+| Edge | Precondition (all must hold) | Default state |
+|---|---|---|
+| 1 · TypeSafe | `jev.enabled: true` **and** a key resolves via `jev.keySource` **and** `firstUseDisclosure` has been shown (or explicitly disabled) **and** the body passed filters 1–5 | **Closed** (`jev.enabled: false`) |
+| 2 · Model provider | The model is in the effective allowlist (§2.1, V1) **and** the role's turn passed filters 1–5 **and** the approval class for the action was `auto` or approved | **Open only to what Pi already has configured**; KorWF never introduces a provider (the `mac-mini` author setup is a local uncommitted config, PLAN §11) |
+| 3 · Notification channels | The channel is enabled in config; `command` is treated as `run_shell` for approvals; `webhook` must be `https://` | **Closed** (all three off) |
+
+### 4.3 Consistency check against the schema
+
+The table above was derived from `src/config/schema.json` `$defs` and `default` values at
+the commit that introduced this document. Any change to `privacy.*`, `jev.enabled`,
+`jev.baseUrl`, `notifications.channels.*`, or `storage.*` defaults **must** update §4 in
+the same PR; the Stage 2 config tests (#21) should assert the defaults this section
+quotes (`jev.enabled=false`, `rawLogging.enabled=false`, `sendRepoIdentity=false`,
+`sendFilePaths=true`, `maxRequestBytes=262144`, all notification channels off,
+`storage.allowOutsideProject=false`) so the diagram cannot silently drift.
