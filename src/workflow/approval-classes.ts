@@ -275,3 +275,82 @@ export function validateApprovalClasses(
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Disposition: config → decision; Jev may escalate, never de-escalate.
+// ---------------------------------------------------------------------------
+
+export const isMoreRestrictive = (a: ApprovalDecision, b: ApprovalDecision): boolean =>
+  DECISION_ORDER.indexOf(a) > DECISION_ORDER.indexOf(b);
+
+export interface JevEscalation {
+  /** Jev question id (src/decisions) that produced the signal, for the trace. */
+  readonly questionId: string;
+  /** Decision Jev proposes. Only honoured when more restrictive than the rule result. */
+  readonly proposed: ApprovalDecision;
+  readonly probability: number;
+}
+
+export interface Disposition {
+  readonly classId: ApprovalClassId;
+  readonly mode: WorkflowMode;
+  /** Result of the deterministic rules alone. */
+  readonly ruleDecision: ApprovalDecision;
+  /** Final decision; `≥ ruleDecision` in DECISION_ORDER, always. */
+  readonly decision: ApprovalDecision;
+  /** `null` when no Jev signal was offered or it was ignored (not more restrictive). */
+  readonly jevEscalation: JevEscalation | null;
+}
+
+/**
+ * Resolve the disposition for a classified act.
+ * - The table (after config merge) gives `ruleDecision`; high-risk classes are
+ *   `stop` regardless of what `table` says (defence in depth: the schema and
+ *   V10 already reject such a table).
+ * - A Jev signal can raise the decision (auto → queue → stop) and is recorded;
+ *   a signal proposing something less restrictive is discarded and recorded as
+ *   ignored (`jevEscalation: null`). No Jev key ⇒ pass `null` ⇒ rules alone.
+ */
+export function resolveDisposition(
+  classId: ApprovalClassId,
+  mode: WorkflowMode,
+  table: ApprovalClassTable = DEFAULT_APPROVAL_CLASSES,
+  jev: JevEscalation | null = null,
+): Disposition {
+  const def = APPROVAL_CLASS_TABLE.find((c) => c.id === classId);
+  if (def === undefined) throw new Error(`unknown approval class ${String(classId)}`);
+  let ruleDecision: ApprovalDecision = def.tier === "high_risk" ? "stop" : table[classId][mode];
+  if (def.tier === "no_auto" && ruleDecision === "auto") ruleDecision = "queue";
+  const escalate = jev !== null && isMoreRestrictive(jev.proposed, ruleDecision);
+  return { classId, mode, ruleDecision, decision: escalate ? jev.proposed : ruleDecision, jevEscalation: escalate ? jev : null };
+}
+
+/**
+ * Deterministic classification input. Every field is computed by code
+ * (`src/git/` for diffs and refs, `src/security/` for paths and network,
+ * `src/models/` for cost) — never by a worker's claim or a Jev answer.
+ */
+export interface ActFacts {
+  readonly kind: "read" | "write" | "delete" | "exec" | "git" | "network" | "model" | "plan" | "task";
+  readonly paths?: readonly string[];
+  readonly insideWorktree?: boolean;
+  readonly insideOwnership?: boolean;
+  readonly gitTracked?: boolean;
+  readonly touchesDenyPath?: boolean;
+  readonly touchesKorwfPolicy?: boolean;
+  readonly touchesProjectConfig?: boolean;
+  readonly touchesDependencyManifest?: boolean;
+  readonly isRegisteredCheck?: boolean;
+  readonly isMigration?: boolean;
+  readonly targetIsEphemeral?: boolean;
+  readonly isInstallOfDeclared?: boolean;
+  readonly gitOp?: "commit" | "push" | "force_push" | "rewrite" | "delete_ref" | "tag";
+  readonly refOwnedByWorkflow?: boolean;
+  readonly remoteIsConfigured?: boolean;
+  readonly hostAllowlisted?: boolean;
+  readonly costDeltaUsd?: number;
+  readonly planOp?: "scope_change" | "replan";
+  readonly taskOp?: "spawn_worker" | "complete_task" | "spend_over_estimate";
+  readonly isDeploy?: boolean;
+  readonly isPublish?: boolean;
+}
