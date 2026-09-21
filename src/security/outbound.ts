@@ -29,7 +29,9 @@
  * into a bypass; instead every unusual shape (cycles, getters that throw,
  * BigInt, functions) becomes something inert and is counted in the report.
  */
+import { defaultConfig } from "../config/load.ts";
 import type { KorwfConfig, OutboundLimits } from "../config/types.ts";
+import type { SystemOneRequest } from "../jev/transport.ts";
 import { DenyMatcher, type DenyVerdict } from "./deny-list.ts";
 import { REDACTED, redactString } from "./redact.ts";
 
@@ -467,6 +469,46 @@ export class OutboundPolicy {
 
     return finalise(state, snippets, paths, acc, options.purpose, sentBytes, offered.length);
   }
+
+  /**
+   * Filter a whole Jev request. The state is filtered exactly as in
+   * `filter()`; the question bodies are redacted but never dropped, because
+   * they are *our* prompt text, not repository content — losing a question
+   * would silently change the meaning of the answer, while a secret that
+   * somehow reached a prompt must still be removed.
+   */
+  filterRequest(request: SystemOneRequest, purpose: OutboundPurpose = "jev.decision"): FilteredRequest {
+    const filtered = this.filter({ state: request.state }, { purpose });
+    const acc: Accumulator = {
+      removed: [...filtered.report.removed],
+      truncated: [...filtered.report.truncated],
+      redactedStrings: filtered.report.redactedStrings,
+    };
+    const questions = this.#filterState(request.questions, acc, "questions", 0, new WeakSet<object>()) as
+      | SystemOneRequest["questions"]
+      | undefined;
+
+    const out = {
+      state: (filtered.state ?? "") as SystemOneRequest["state"],
+      model: request.model,
+      questions: questions ?? {},
+    };
+    const sentBytes = byteLength(JSON.stringify(out) ?? "");
+    const report: OutboundReport = Object.freeze({
+      purpose,
+      removed: Object.freeze([...acc.removed]),
+      truncated: Object.freeze([...acc.truncated]),
+      redactedStrings: acc.redactedStrings,
+      sentBytes,
+      droppedBytes: filtered.report.droppedBytes,
+      snippetsKept: 0,
+      snippetsOffered: 0,
+      clean: acc.removed.length === 0 && acc.truncated.length === 0 && acc.redactedStrings === 0,
+    });
+    const frozen = Object.freeze(out);
+    requestReports.set(frozen, report);
+    return frozen as unknown as FilteredRequest;
+  }
 }
 
 /** Exactly what goes on the wire, for measuring. */
@@ -499,6 +541,37 @@ function finalise(
   });
   // The brand exists only in the type system; at runtime this is plain data.
   return Object.freeze({ state, snippets: Object.freeze([...snippets]), paths: Object.freeze([...paths]), report }) as unknown as FilteredPayload;
+}
+
+// ---------------------------------------------------------------------------
+// filtered requests: the type the transport accepts
+// ---------------------------------------------------------------------------
+
+/**
+ * A `SystemOneRequest` that has been through `OutboundPolicy.filterRequest`.
+ *
+ * `JevTransport.evaluate` accepts nothing else, so an unfiltered request is a
+ * compile error rather than a leak. The brand is erased at runtime: the object
+ * has exactly `state`, `model` and `questions`, so what is serialised onto the
+ * wire is unchanged (the report lives beside it, in a `WeakMap`, and is read
+ * with `outboundReportOf`).
+ */
+export type FilteredRequest = SystemOneRequest & { readonly [filteredBrand]: true };
+
+const requestReports = new WeakMap<object, OutboundReport>();
+
+/** The report for a filtered request, or `undefined` if it was not recorded. */
+export function outboundReportOf(request: FilteredRequest): OutboundReport | undefined {
+  return requestReports.get(request as unknown as object);
+}
+
+/**
+ * A policy built from the shipped defaults. Used where no project config is
+ * in scope (probes, `ping`, tests); it is the *strictest* configuration,
+ * since config can only add deny entries, never remove them.
+ */
+export function defaultOutboundPolicy(): OutboundPolicy {
+  return new OutboundPolicy(defaultConfig());
 }
 
 /** Key names whose string value is a path and must face the deny list. */
