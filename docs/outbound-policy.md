@@ -18,6 +18,13 @@ const filtered = policy.filter({ state, snippets, paths }, { purpose: "jev.decis
 // filtered.report says exactly what was removed, truncated and redacted.
 ```
 
+The guarantee holds through wrappers. `wrapWithCircuitBreaker`
+(`src/jev/resilience.ts`, #26) returns a `JevTransport`, so its `evaluate`
+takes a `FilteredRequest` too: adding retries and a breaker around a transport
+cannot become a way to hand it unfiltered state. The wrapper constructs no
+request of its own — `ping()` delegates to the inner transport, which owns its
+filtered probe body.
+
 `src/decisions/ask.ts` applies the policy on every request. A caller that
 passes no policy gets `defaultOutboundPolicy()` — the shipped defaults, which
 are the *strictest* configuration, because project config can only add deny
