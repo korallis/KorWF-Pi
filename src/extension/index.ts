@@ -17,8 +17,10 @@ import { configMessage, disclosureMessage, loadForProject } from "./commands/con
 import { createFileDisclosureStore, ensureDisclosureAccepted } from "./disclosure.ts";
 import { getPackageVersion } from "./commands/version.ts";
 import { RouteAvailabilityTable } from "../models/availability.ts";
+import { guardHandler, redactedUi } from "./redacted-ui.ts";
+import { jevStatusMessage } from "./commands/jev-status.ts";
 
-const SUBCOMMANDS = ["version", "models", "status", "config", "disclosure"] as const;
+const SUBCOMMANDS = ["version", "models", "status", "config", "disclosure", "jev"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 function isSubcommand(value: string): value is Subcommand {
@@ -37,47 +39,58 @@ export default function korwfExtension(pi: ExtensionAPI): void {
       return items.length > 0 ? items : null;
     },
     handler: async (args, ctx) => {
+      // Everything this handler says to the user goes through the redactor
+      // (#22): a raw `ctx.ui` is never notified below this line, and
+      // `guardHandler` redacts anything thrown before Pi sees it.
+      const ui = redactedUi(ctx.ui);
       const [sub] = args.trim().split(/\s+/);
 
       if (!sub || !isSubcommand(sub)) {
-        ctx.ui.notify(`Unknown subcommand. Use: ${SUBCOMMANDS.join(", ")}`, "warning");
+        ui.notify(`Unknown subcommand. Use: ${SUBCOMMANDS.join(", ")}`, "warning");
         return;
       }
 
-      switch (sub) {
-        case "version": {
-          ctx.ui.notify(versionMessage(), "info");
-          return;
-        }
-        case "models": {
-          const models = ctx.modelRegistry.getAvailable();
-          ctx.ui.notify(modelsMessage({ models, availability, now: new Date().toISOString() }), "info");
-          return;
-        }
-        case "status": {
-          const models = ctx.modelRegistry.getAvailable();
-          ctx.ui.notify(statusMessage({ models, availability, now: new Date().toISOString() }), "info");
-          return;
-        }
-        case "config": {
-          const result = loadForProject(ctx.cwd);
-          ctx.ui.notify(configMessage(result), result.ok ? "info" : "error");
-          return;
-        }
-        case "disclosure": {
-          const result = loadForProject(ctx.cwd);
-          if (!result.ok) {
-            ctx.ui.notify(configMessage(result), "error");
+      await guardHandler(ctx.ui, `/korwf ${sub}`, async (): Promise<void> => {
+        switch (sub) {
+          case "version": {
+            ui.notify(versionMessage(), "info");
             return;
           }
-          const store = createFileDisclosureStore(result.config);
-          ctx.ui.notify(disclosureMessage(result.config, ctx.cwd, store), "info");
-          await ensureDisclosureAccepted(result.config, ctx.cwd, store, ctx.ui, {
-            packageVersion: getPackageVersion(),
-          });
-          return;
+          case "models": {
+            const models = ctx.modelRegistry.getAvailable();
+            ui.notify(modelsMessage({ models, availability, now: new Date().toISOString() }), "info");
+            return;
+          }
+          case "status": {
+            const models = ctx.modelRegistry.getAvailable();
+            ui.notify(statusMessage({ models, availability, now: new Date().toISOString() }), "info");
+            return;
+          }
+          case "config": {
+            const result = loadForProject(ctx.cwd);
+            ui.notify(configMessage(result), result.ok ? "info" : "error");
+            return;
+          }
+          case "jev": {
+            // Credential status: source, length and fingerprint — never a key.
+            ui.notify(jevStatusMessage(loadForProject(ctx.cwd)), "info");
+            return;
+          }
+          case "disclosure": {
+            const result = loadForProject(ctx.cwd);
+            if (!result.ok) {
+              ui.notify(configMessage(result), "error");
+              return;
+            }
+            const store = createFileDisclosureStore(result.config);
+            ui.notify(disclosureMessage(result.config, ctx.cwd, store), "info");
+            await ensureDisclosureAccepted(result.config, ctx.cwd, store, ctx.ui, {
+              packageVersion: getPackageVersion(),
+            });
+            return;
+          }
         }
-      }
+      });
     },
   });
 }
