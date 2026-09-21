@@ -63,8 +63,13 @@ These apply to every issue regardless of what it says:
 - **The system must work with no Jev key.** Every Jev-assisted decision needs a
   deterministic fallback.
 - **The system never weakens its own permission, allowlist, or spending policy.**
-- **High-risk actions** (destructive cleanup, deployment, credential access, publishing,
-  remote pushes) require explicit approval regardless of mode.
+- **High-risk actions** require explicit approval regardless of mode: destructive
+  cleanup, deployment, credential access, publishing or releasing (tags, registries,
+  anything consumers receive), force-pushing or rewriting shared history, and changes to
+  permission, allowlist or spending policy. Ordinary pushes of the agent's own work to
+  this repository are **not** in this list — escalate only what the owner alone can
+  resolve (`.pi/skills/jev-orchestration/SKILL.md` §1; rationale in
+  [docs/adr/0005-agent-autonomy-and-approval-scope.md](docs/adr/0005-agent-autonomy-and-approval-scope.md)).
 - **Mocked tests never authorise live requests.** Live Jev or model calls need an explicit
   budget approved by the user on the issue.
 - **Development-environment policy** (author-specific, PLAN §11): when running Pi models
