@@ -34,7 +34,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Config loading, validation, safe defaults, first-use disclosure. (#21)
 - [x] Credential resolution; secrets excluded from all logs and exports. (#22)
 - [x] SQLite store, migrations, lockfile ownership, append-only audit, artifact directory.
-- [ ] Jev transport behind mockable interface; configurable base URL; optional mode when no key.
+- [x] Jev transport behind mockable interface; configurable base URL; optional mode when no key.
 - [ ] Response validation for Choice/Score/Noul (unknown fields, bounds, malformed).
 - [ ] Cancellation, deadlines, bounded retries, backoff, circuit breaking.
 - [ ] Versioned question definitions and composition policy.
