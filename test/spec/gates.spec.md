@@ -175,3 +175,108 @@ same input gives the same result.
 - **Given** two attempts with role `integrator`, or none
 - **When** evaluated
 - **Then** rejected `integration_owner_invalid`; audit entry.
+
+## 4. Bypass scenarios (docs/gates.md §8) — every one ⇒ rejected + audit entry
+
+### B1 — worker sets status directly
+- **Given** `taskInReview()` with no passing evidence
+- **When** a worker tool call / `korwf` command / raw store patch sets `Task.status = done`
+  without a gate receipt (also: a resumed session replays such a patch)
+- **Then** rejected `status_write_forbidden`; `Task.status` still `review`; audit entry
+  with `actor = engine:gate:task`.
+
+### B2 — Jev "no gap" with a failing check
+- **Given** `passEvidence(chk1)`, `chk2` fresh `fail`, fresh `noGapDecision()`, `policyNone()`
+- **When** `task-done` is evaluated
+- **Then** rejected `check_fail`; audit entry. C2 being ⊤ never substitutes for C1.
+
+### B3 — evidence from a stale revision
+- **Given** all evidence has `revision = "0"*40 ≠ SHA(T)`, `noGapDecision()` fresh
+- **When** evaluated
+- **Then** rejected `evidence_stale_revision` (checks reported `missing`); audit entry.
+
+### B4 — evidence from a stale task revision
+- **Given** evidence with `revision = SHA(T)` but `taskRevision = 2` while `T.rev = 3`
+  (a check was added after the run)
+- **When** evaluated
+- **Then** rejected `evidence_stale_task_revision`; audit entry.
+
+### B5 — check registered after the fact with `true`
+- **Given** a task in `review` and a request to register `CheckDefinition{command: "true"}`
+  (also `exit 0`, `: `, `/bin/true`, `echo ok`, `cd x && true`)
+- **When** the check is registered, then `task-done` evaluated
+- **Then** registration rejected `check_trivial` at `task-ready`; if forced into the record,
+  gate rejects `check_trivial`; audit entry for both.
+
+### B6 — command identity mismatch
+- **Given** `chk1.command = "npm test"` but its evidence has
+  `commandIdentity.command = "true"` and exit 0
+- **When** evaluated
+- **Then** rejected `command_identity_mismatch` (state `fail`, not `pass`); audit entry.
+
+### B7 — review from the authoring context
+- **Given** `policy → {modelReview: true}`, review evidence whose `reviewer.attemptId`
+  equals the implementer attempt, or an attempt whose `handedOffFromAttemptId` chain
+  contains it
+- **When** evaluated
+- **Then** rejected `review_not_independent`; audit entry.
+
+### B8 — approval by a non-user actor or wrong scope
+- **Given** `T.riskClass = high`; `Approval` with `actor.kind = policy`, or with
+  `scope = {task, otherId}`, or `planRevision ≠ W.planRev`, or `expiresAt < now`
+- **When** evaluated
+- **Then** rejected `approval_actor_not_user` / `approval_invalid:<reason>`; audit entry.
+
+### B9 — `required = false` as an exemption
+- **Given** `chk2.required = false` and `chk2` state `missing`
+- **When** evaluated
+- **Then** rejected `check_missing`; audit entry.
+
+### B10 — Jev disabled, condition 2 "skipped"
+- **Given** Jev disabled (`jev.enabled = false` and no key), all checks pass, no `Decision`
+  row at all
+- **When** evaluated
+- **Then** rejected `jev_decision_missing`; audit entry. Absence is never ⊤.
+
+### B11 — Jev disabled, fallback structurally unsatisfied
+- **Given** `fallbackDecision(jev_disabled)`, all checks pass, but `ac2` has no evidence row
+  with `requirementId = ac2` (or provenance of `chk2` has no path in `T.ownership.paths`)
+- **When** evaluated
+- **Then** rejected `fallback_coverage_gap`; audit entry.
+
+### B12 — non-pass states presented as success (flaky / timeout / unavailable)
+- **Given** `chk2` evidence `exitStatus ∈ {{flaky, runs}, {timed_out}, {unavailable, r}}`
+  and a worker report saying "all green", fresh `no_gap`
+- **When** evaluated
+- **Then** rejected `check_flaky` / `check_timeout` / `check_unavailable`; audit entry.
+
+### B13 — phase Jev "no gap" over an undone task or failing integrated check
+- **Given** `phaseGating()` with one task in `review` (or `ichk` failing), fresh phase
+  `no_gap`
+- **When** `phase-done` is evaluated
+- **Then** rejected `tasks_not_done` (or `check_fail`); audit entry.
+
+### B14 — task-worktree evidence offered as integrated evidence; merged SHA moved
+- **Given** `phaseGating()` where the only evidence for task checks is at `SHA(T) ≠ SHA(P)`;
+  separately, `SHA(P)` changes between evaluation start and commit
+- **When** `phase-done` is evaluated
+- **Then** rejected `evidence_stale_revision` / `merged_revision_changed`; audit entry.
+
+## 5. Cross-cutting invariants
+
+### X1 — audit entry written before return
+- **Given** any rejecting fixture above, store instrumented to throw after the audit write
+- **When** evaluated
+- **Then** the `AuditEntry` persists; no receipt; record unchanged.
+
+### X2 — determinism
+- **Given** any fixture above
+- **When** evaluated twice with identical records, `SHA`, `now`
+- **Then** identical result and reason code; no network/Jev calls observed by the mock.
+
+### X3 — Jev disabled leaves C1/C3 (P1/P2/P4) unchanged
+- **Given** `fallbackDecision(jev_no_key)` and a failing check (task) / missing high-risk
+  approval (phase)
+- **When** evaluated
+- **Then** rejected `check_fail` / `approval_missing` — disabling Jev never relaxes a
+  deterministic or policy term; audit entry.
