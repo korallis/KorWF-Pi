@@ -18,6 +18,7 @@ import {
   summariseRequest,
 } from "../../../src/telemetry/trace.ts";
 import { REQUIRED_TRACE_VERSIONS } from "../../../src/telemetry/trace-types.ts";
+import type { OutboundReport } from "../../../src/security/outbound.ts";
 import { clearRegisteredSecrets, registerSecretValue } from "../../../src/security/redact.ts";
 import { makeDecision } from "../../helpers/records.ts";
 import { makeTrace, makeVersions } from "../../helpers/trace.ts";
@@ -143,10 +144,10 @@ describe("a trace never carries an unredacted secret (PLAN §7)", () => {
 });
 
 describe("summariseRequest carries counts and paths, never content", () => {
-  const report = {
+  const report: OutboundReport = {
     purpose: "jev.decision" as const,
     removed: [
-      { kind: "path" as const, what: ".env", reason: "denied" as const, glob: ".env*", rule: "deny" as const, bytes: 120 },
+      { kind: "path" as const, what: ".env", reason: "denied" as const, glob: ".env*", rule: "shipped" as const, bytes: 120 },
       { kind: "field" as const, what: "state.blob", reason: "over_budget" as const, glob: null, rule: null, bytes: 40 },
     ],
     truncated: [{ kind: "snippet" as const, what: "src/a.ts", keptBytes: 100, droppedBytes: 900 }],
