@@ -52,6 +52,79 @@ function neverSettles<T>(): Promise<T> {
   });
 }
 
+describe("CircuitBreaker: closed/open/half-open", () => {
+  it("stays closed below the failure threshold", () => {
+    const b = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 1000 });
+    b.onFailure();
+    b.onFailure();
+    expect(b.status().state).toBe("closed");
+    expect(b.canProceed()).toBe(true);
+  });
+
+  it("AC2: opens after N consecutive failures and blocks further calls", () => {
+    const b = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 1000 });
+    b.onFailure();
+    b.onFailure();
+    b.onFailure();
+    expect(b.status().state).toBe("open");
+    expect(b.canProceed()).toBe(false);
+  });
+
+  it("a success resets the failure count and keeps it closed", () => {
+    const b = new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 1000 });
+    b.onFailure();
+    b.onFailure();
+    b.onSuccess();
+    b.onFailure();
+    b.onFailure();
+    expect(b.status().state).toBe("closed");
+  });
+
+  it("transitions to half-open after resetTimeoutMs and allows one probe", () => {
+    let now = 0;
+    const b = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 1000, now: () => now });
+    b.onFailure();
+    expect(b.canProceed()).toBe(false);
+    now = 1000;
+    expect(b.canProceed()).toBe(true);
+    expect(b.status().state).toBe("half_open");
+  });
+
+  it("a half-open probe success closes the breaker", () => {
+    let now = 0;
+    const b = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 1000, now: () => now });
+    b.onFailure();
+    now = 1000;
+    expect(b.canProceed()).toBe(true);
+    b.beforeCall();
+    b.onSuccess();
+    expect(b.status().state).toBe("closed");
+  });
+
+  it("a half-open probe failure reopens the breaker", () => {
+    let now = 0;
+    const b = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 1000, now: () => now });
+    b.onFailure();
+    now = 1000;
+    expect(b.canProceed()).toBe(true);
+    b.beforeCall();
+    b.onFailure();
+    expect(b.status().state).toBe("open");
+    expect(b.canProceed()).toBe(false);
+  });
+
+  it("limits concurrent half-open probes to halfOpenMaxCalls", () => {
+    let now = 0;
+    const b = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 1000, halfOpenMaxCalls: 1, now: () => now });
+    b.onFailure();
+    now = 1000;
+    expect(b.canProceed()).toBe(true);
+    b.beforeCall();
+    // A second probe is refused while the first is still in flight.
+    expect(b.canProceed()).toBe(false);
+  });
+});
+
 describe("AC3: aborting mid-retry stops further attempts within one tick", () => {
   it("stops retrying once the signal is aborted, without waiting out the backoff", async () => {
     const controller = new AbortController();
