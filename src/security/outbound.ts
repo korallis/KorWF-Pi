@@ -320,6 +320,33 @@ export class OutboundPolicy {
       return out;
     }
 
+    const record = value as Record<string, unknown>;
+
+    // An object that *names* a denied file is a snippet of that file: drop it
+    // whole, siblings included, rather than keep the content and lose only
+    // the label. `{ path: ".env", text: "SECRET=..." }` must leave nothing.
+    for (const key of Object.keys(record)) {
+      let named: unknown;
+      try {
+        named = record[key];
+      } catch {
+        continue;
+      }
+      if (typeof named !== "string" || !isPathKey(key)) continue;
+      const verdict = this.#matcher.verdict(named);
+      if (!verdict.denied) continue;
+      acc.removed.push({
+        kind: "field",
+        what: path === "" ? key : `${path}.${key}`,
+        reason: "denied",
+        glob: verdict.glob,
+        rule: verdict.rule,
+        bytes: byteLength(safeStringify(record)),
+      });
+      seen.delete(object);
+      return undefined;
+    }
+
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(value as Record<string, unknown>)) {
       const child = path === "" ? key : `${path}.${key}`;
@@ -331,22 +358,6 @@ export class OutboundPolicy {
       } catch {
         acc.removed.push({ kind: "field", what: child, reason: "unsupported", glob: null, rule: null, bytes: 0 });
         continue;
-      }
-      // A key whose *name* declares a path gets the deny list applied to its
-      // value, so `{ file: "a/.env" }` cannot smuggle one in.
-      if (typeof entry === "string" && isPathKey(key)) {
-        const verdict = this.#matcher.verdict(entry);
-        if (verdict.denied) {
-          acc.removed.push({
-            kind: "field",
-            what: child,
-            reason: "denied",
-            glob: verdict.glob,
-            rule: verdict.rule,
-            bytes: byteLength(entry),
-          });
-          continue;
-        }
       }
       const filtered = this.#filterState(entry, acc, child, depth + 1, seen);
       if (filtered !== undefined) out[key] = filtered;
@@ -517,6 +528,15 @@ export class OutboundPolicy {
     const frozen = Object.freeze(out);
     requestReports.set(frozen, report);
     return frozen as unknown as FilteredRequest;
+  }
+}
+
+/** JSON, or the empty string for anything that will not serialise. */
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
   }
 }
 
