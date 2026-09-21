@@ -22,6 +22,7 @@ import type {
   AuditEntry,
   Decision,
   Evidence,
+  LedgerEntry,
   Memory,
   ModelAvailability,
   ModelOutcome,
@@ -38,6 +39,7 @@ import {
   auditEntrySpec,
   decisionSpec,
   evidenceSpec,
+  ledgerEntrySpec,
   memorySpec,
   modelAvailabilitySpec,
   modelOutcomeSpec,
@@ -214,6 +216,118 @@ export class ModelOutcomeRepository extends AppendOnlyRepository<ModelOutcome> {
   /** Outcomes attributed to one route (#125): one account never biases another. */
   forRoute(routeId: RouteId | string): readonly ModelOutcome[] {
     return this.findBy("routeId", String(routeId));
+  }
+}
+
+/** Columns a scope filter may key on. Fixed set; never interpolated from input. */
+export type LedgerScopeColumn = "workflowId" | "phaseId" | "taskId" | "attemptId";
+
+/** Summed amounts over a set of ledger rows. `spendUsd` excludes unknown-cost rows. */
+export interface LedgerTotals {
+  readonly requests: number;
+  readonly tokens: number;
+  readonly spendUsd: number;
+  readonly elapsedMs: number;
+  /** Rows whose cost basis is `unknown`: counted, never valued at zero. */
+  readonly unknownCostRequests: number;
+  /** Rows whose spend came from a pre-call estimate rather than the provider. */
+  readonly estimatedRequests: number;
+  readonly estimatedSpendUsd: number;
+  readonly knownSpendUsd: number;
+}
+
+const ZERO_TOTALS: LedgerTotals = {
+  requests: 0,
+  tokens: 0,
+  spendUsd: 0,
+  elapsedMs: 0,
+  unknownCostRequests: 0,
+  estimatedRequests: 0,
+  estimatedSpendUsd: 0,
+  knownSpendUsd: 0,
+};
+
+/**
+ * The append-only usage ledger (issue #30).
+ *
+ * Reads here are the *only* way budget state is derived: there is no running
+ * counter to drift. `outstanding` + `settled` is what a scope has committed.
+ */
+export class LedgerRepository extends AppendOnlyRepository<LedgerEntry> {
+  constructor(ctx: RepoContext) {
+    super(ctx, ledgerEntrySpec);
+  }
+
+  /** Every row of one reservation's life, oldest first. */
+  forReservation(reservationId: string): readonly LedgerEntry[] {
+    return this.findBy("reservationId", reservationId);
+  }
+
+  /** Reservations with no terminal row yet: what reconciliation examines. */
+  openReservations(): readonly LedgerEntry[] {
+    return this.query(
+      "WHERE entryKind = 'reservation' AND reservationId NOT IN " +
+        "(SELECT reservationId FROM ledger_entry WHERE entryKind <> 'reservation')",
+      [],
+    );
+  }
+
+  /**
+   * Totals committed against a scope: settled/abandoned actuals plus the
+   * estimates of reservations that are still open. Released reservations
+   * contribute nothing. Read inside the caller's write transaction so the
+   * number cannot change between the check and the insert.
+   */
+  committedTotals(column: LedgerScopeColumn, id: string, channel?: LedgerEntry["channel"]): LedgerTotals {
+    const openClause =
+      "(entryKind = 'reservation' AND reservationId NOT IN " +
+      "(SELECT reservationId FROM ledger_entry WHERE entryKind <> 'reservation'))";
+    const where =
+      `WHERE "${column}" = ? ${channel === undefined ? "" : "AND channel = ? "}` +
+      `AND (entryKind IN ('settlement', 'abandonment') OR ${openClause})`;
+    const params = channel === undefined ? [id] : [id, channel];
+    return this.sum(where, params);
+  }
+
+  /** Reservations open against a scope right now; this is the concurrency count. */
+  openCount(column: LedgerScopeColumn, id: string, channel?: LedgerEntry["channel"]): number {
+    const sql =
+      `SELECT COUNT(*) AS n FROM ledger_entry WHERE "${column}" = ? ` +
+      `${channel === undefined ? "" : "AND channel = ? "}` +
+      "AND entryKind = 'reservation' AND reservationId NOT IN " +
+      "(SELECT reservationId FROM ledger_entry WHERE entryKind <> 'reservation')";
+    const params = channel === undefined ? [id] : [id, channel];
+    const row = this.ctx.db.prepare(sql).get(...params) as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
+  /** Sum the amount columns over an arbitrary (internally built) WHERE clause. */
+  private sum(where: string, params: readonly (string | number)[]): LedgerTotals {
+    const row = this.ctx.db
+      .prepare(
+        "SELECT " +
+          "COALESCE(SUM(requests), 0) AS requests, " +
+          "COALESCE(SUM(COALESCE(inputTokens, 0) + COALESCE(outputTokens, 0)), 0) AS tokens, " +
+          "COALESCE(SUM(COALESCE(spendUsd, 0)), 0) AS spendUsd, " +
+          "COALESCE(SUM(elapsedMs), 0) AS elapsedMs, " +
+          "COALESCE(SUM(CASE WHEN costBasis = 'unknown' THEN requests ELSE 0 END), 0) AS unknownCostRequests, " +
+          "COALESCE(SUM(CASE WHEN costBasis = 'estimated' THEN requests ELSE 0 END), 0) AS estimatedRequests, " +
+          "COALESCE(SUM(CASE WHEN costBasis = 'estimated' THEN spendUsd ELSE 0 END), 0) AS estimatedSpendUsd, " +
+          "COALESCE(SUM(CASE WHEN costBasis = 'known' THEN spendUsd ELSE 0 END), 0) AS knownSpendUsd " +
+          `FROM ledger_entry ${where}`,
+      )
+      .get(...params) as Record<string, number> | undefined;
+    if (row === undefined) return ZERO_TOTALS;
+    return {
+      requests: Number(row["requests"] ?? 0),
+      tokens: Number(row["tokens"] ?? 0),
+      spendUsd: Number(row["spendUsd"] ?? 0),
+      elapsedMs: Number(row["elapsedMs"] ?? 0),
+      unknownCostRequests: Number(row["unknownCostRequests"] ?? 0),
+      estimatedRequests: Number(row["estimatedRequests"] ?? 0),
+      estimatedSpendUsd: Number(row["estimatedSpendUsd"] ?? 0),
+      knownSpendUsd: Number(row["knownSpendUsd"] ?? 0),
+    };
   }
 }
 

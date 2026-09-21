@@ -96,7 +96,7 @@ describe("every append-only table rejects UPDATE and DELETE (ADR 0006 rule 5)", 
 
   it("all four repositories are append-only, matching APPEND_ONLY_TABLES", () => {
     const store = freshStore();
-    const repos = [store.decisions, store.evidence, store.modelOutcomes, store.audit];
+    const repos = [store.decisions, store.evidence, store.modelOutcomes, store.ledger, store.audit];
     expect(repos.map((r) => r.table).sort()).toEqual([...APPEND_ONLY_TABLES].sort());
     for (const repo of repos) {
       expect(repo).not.toBeInstanceOf(MutableRepository);

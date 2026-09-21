@@ -69,6 +69,7 @@ export {
   AuditRepository,
   DecisionRepository,
   EvidenceRepository,
+  LedgerRepository,
   MemoryRepository,
   ModelAvailabilityRepository,
   ModelOutcomeRepository,
@@ -76,5 +77,7 @@ export {
   TaskRepository,
   WorkflowRepository,
 } from "./repos/index.ts";
+
+export type { LedgerScopeColumn, LedgerTotals } from "./repos/index.ts";
 
 export type { RecordTypes, RecordTable, AnyRecord } from "./records.ts";

@@ -52,6 +52,9 @@ export type MemoryId = RecordId<"memory">;
 export type ModelAvailabilityId = RecordId<"model_availability">;
 export type ModelOutcomeId = RecordId<"model_outcome">;
 export type AuditEntryId = RecordId<"audit_entry">;
+export type LedgerEntryId = RecordId<"ledger_entry">;
+/** Identity of one reservation's whole life: reservation row + terminal row. */
+export type ReservationId = RecordId<"reservation">;
 
 /**
  * Model identifier as exposed by Pi's model registry: `provider/model`.
@@ -176,10 +179,24 @@ export interface Budget {
   readonly maxElapsedMs: number | null;
 }
 
-/** Cost provenance: known (from provider), estimated (from card), or unknown (PLAN §3.I). */
+/**
+ * Cost provenance: known (from provider), estimated (from card), or unknown
+ * (PLAN §3.I).
+ *
+ * `unknown` is not a synonym for free. A route whose model metadata carries no
+ * price — or a price of zero, which is what a proxy reports when it simply has
+ * no figure to give — is `unknown` with `spendUsd === null`. Reports must show
+ * it as unknown, never as `$0.00` (issue #30).
+ */
 export type CostBasis = "known" | "estimated" | "unknown";
 
-/** Usage accounting for an attempt or a decision. */
+/**
+ * Usage accounting for an attempt or a decision.
+ *
+ * Invariant, enforced by `src/telemetry/ledger.ts` and by a CHECK constraint
+ * in migration 0002: `spendUsd === null` exactly when
+ * `costBasis === "unknown"`.
+ */
 export interface Usage {
   readonly inputTokens: number | null;
   readonly outputTokens: number | null;
@@ -187,6 +204,12 @@ export interface Usage {
   readonly spendUsd: number | null;
   readonly costBasis: CostBasis;
 }
+
+/** Which cap channel a charge is drawn from: model spend or Jev spend (PLAN §2.6). */
+export type UsageChannel = "model" | "jev";
+
+/** Budget scopes, innermost last. `jev` is a separate per-workflow channel. */
+export type BudgetScopeKind = "workflow" | "phase" | "task" | "jev";
 
 /** One acceptance criterion; identity is stable across task revisions when the text is unchanged. */
 export interface AcceptanceCriterion {
@@ -722,6 +745,57 @@ export interface ModelOutcome extends AppendOnlyRecord<ModelOutcomeId> {
 }
 
 // ---------------------------------------------------------------------------
+// LedgerEntry (append-only; usage accounting and budget reservations, #30)
+// ---------------------------------------------------------------------------
+
+/**
+ * What a ledger row records about one reservation:
+ *
+ * - `reservation` — budget claimed *before* the call runs. Its amounts are the
+ *   pre-call estimate.
+ * - `settlement` — the call finished; the amounts are what it actually used.
+ * - `release` — the call did not run (cancelled, failed to start, refused);
+ *   the reservation is given back with zero usage.
+ * - `abandonment` — startup reconciliation found a reservation whose session
+ *   died without settling it (PLAN §5 "abandoned attempts reconciled on
+ *   startup"). The estimate is retained as spent-but-unverified.
+ */
+export type LedgerEntryKind = "reservation" | "settlement" | "release" | "abandonment";
+
+/** Scope a charge is attributed to. Enclosing scopes are implied by the ids. */
+export interface LedgerScope {
+  readonly workflowId: WorkflowId;
+  readonly phaseId: PhaseId | null;
+  readonly taskId: TaskId | null;
+  readonly attemptId: AttemptId | null;
+}
+
+/**
+ * One immutable accounting fact (issue #30; PLAN §2.6, §3.I).
+ *
+ * Append-only: a reservation is never edited into a settlement. The pair of
+ * rows is the audit trail of what was claimed and what was actually used, so
+ * a crash between the two is detectable rather than invisible.
+ */
+export interface LedgerEntry extends AppendOnlyRecord<LedgerEntryId> {
+  readonly scope: LedgerScope;
+  readonly channel: UsageChannel;
+  readonly entryKind: LedgerEntryKind;
+  /** Groups the reservation row with its terminal row. Self for a reservation. */
+  readonly reservationId: ReservationId;
+  /** Coordinator session that created the row; used to detect abandonment. */
+  readonly sessionId: string;
+  /** Estimate for a reservation, actuals for a settlement, zeroes for a release. */
+  readonly usage: Usage;
+  /** Wall-clock milliseconds attributed to this row; `0` for a reservation. */
+  readonly elapsedMs: number;
+  /** Free-text label (question id, task kind, route id) for reports. `null` if unset. */
+  readonly label: string | null;
+  /** Why a reservation ended the way it did; `null` on the reservation row. */
+  readonly reason: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // AuditEntry (append-only audit table, PLAN §5)
 // ---------------------------------------------------------------------------
 
@@ -752,6 +826,7 @@ export interface RecordTypes {
   readonly memory: Memory;
   readonly model_availability: ModelAvailability;
   readonly model_outcome: ModelOutcome;
+  readonly ledger_entry: LedgerEntry;
   readonly audit_entry: AuditEntry;
 }
 
@@ -765,7 +840,7 @@ export type AppendOnlyTable = {
 
 export type MutableTable = Exclude<RecordTable, AppendOnlyTable>;
 
-export const APPEND_ONLY_TABLES = ["decision", "evidence", "model_outcome", "audit_entry"] as const satisfies readonly AppendOnlyTable[];
+export const APPEND_ONLY_TABLES = ["decision", "evidence", "model_outcome", "ledger_entry", "audit_entry"] as const satisfies readonly AppendOnlyTable[];
 
 export const MUTABLE_TABLES = ["workflow", "phase", "task", "attempt", "approval", "memory", "model_availability"] as const satisfies readonly MutableTable[];
 
@@ -809,5 +884,9 @@ export const FOREIGN_KEYS: readonly ForeignKey[] = [
   { from: "memory", column: "supersession.supersedesId", to: "memory", onDelete: "set_null" },
   { from: "model_outcome", column: "workflowId", to: "workflow", onDelete: "restrict" },
   { from: "model_outcome", column: "attemptId", to: "attempt", onDelete: "restrict" },
+  { from: "ledger_entry", column: "scope.workflowId", to: "workflow", onDelete: "restrict" },
+  { from: "ledger_entry", column: "scope.phaseId", to: "phase", onDelete: "restrict" },
+  { from: "ledger_entry", column: "scope.taskId", to: "task", onDelete: "restrict" },
+  { from: "ledger_entry", column: "scope.attemptId", to: "attempt", onDelete: "restrict" },
   { from: "audit_entry", column: "workflowId", to: "workflow", onDelete: "restrict" },
 ];

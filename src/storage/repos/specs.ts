@@ -11,6 +11,7 @@ import type {
   AuditEntry,
   Decision,
   Evidence,
+  LedgerEntry,
   Memory,
   ModelAvailability,
   ModelOutcome,
@@ -157,6 +158,44 @@ export const modelOutcomeSpec: TableSpec<ModelOutcome> = {
   workflowIdOf: (r) => r.workflowId,
 };
 
+export const ledgerEntrySpec: TableSpec<LedgerEntry> = {
+  table: "ledger_entry",
+  appendOnly: true,
+  columns: [
+    "workflowId",
+    "phaseId",
+    "taskId",
+    "attemptId",
+    "channel",
+    "entryKind",
+    "reservationId",
+    "sessionId",
+    "requests",
+    "inputTokens",
+    "outputTokens",
+    "spendUsd",
+    "costBasis",
+    "elapsedMs",
+  ],
+  extract: (r) => ({
+    workflowId: r.scope.workflowId,
+    phaseId: r.scope.phaseId,
+    taskId: r.scope.taskId,
+    attemptId: r.scope.attemptId,
+    channel: r.channel,
+    entryKind: r.entryKind,
+    reservationId: r.reservationId,
+    sessionId: r.sessionId,
+    requests: r.usage.requests,
+    inputTokens: r.usage.inputTokens,
+    outputTokens: r.usage.outputTokens,
+    spendUsd: r.usage.spendUsd,
+    costBasis: r.usage.costBasis,
+    elapsedMs: r.elapsedMs,
+  }),
+  workflowIdOf: (r) => r.scope.workflowId,
+};
+
 export const auditEntrySpec: TableSpec<AuditEntry> = {
   table: "audit_entry",
   appendOnly: true,
@@ -183,5 +222,6 @@ export const TABLE_SPECS = {
   memory: memorySpec,
   model_availability: modelAvailabilitySpec,
   model_outcome: modelOutcomeSpec,
+  ledger_entry: ledgerEntrySpec,
   audit_entry: auditEntrySpec,
 } as const;
