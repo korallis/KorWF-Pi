@@ -98,3 +98,45 @@ export interface ApprovalClassDefinition {
   /** Class-specific fields added to the common notification payload (§4 of the doc). */
   readonly payload: readonly string[];
 }
+
+const S = "stop", Q = "queue", A = "auto";
+const pm = (shadow: ApprovalDecision, advisory: ApprovalDecision, supervised: ApprovalDecision, bounded_autonomous: ApprovalDecision): ApprovalPolicyPerMode =>
+  ({ shadow, advisory, supervised, bounded_autonomous });
+const STOP_ALL = pm(S, S, S, S);
+
+/** Fields present on every notification (docs/approval-classes.md §4). */
+export const NOTIFICATION_COMMON_FIELDS = [
+  "event", "class", "tier", "decision", "mode", "workflowId", "phaseId", "taskId", "taskRevision",
+  "planRevision", "attemptId", "summary", "determinedBy", "jevEscalation", "expiresAt", "resume", "createdAt",
+] as const;
+
+// ---------------------------------------------------------------------------
+// Default disposition table: class × mode → auto | queue | stop.
+// Columns: shadow, advisory, supervised, bounded_autonomous.
+// ---------------------------------------------------------------------------
+export const APPROVAL_CLASS_TABLE = [
+  // --- configurable -------------------------------------------------------
+  { id: "read_repository", tier: "configurable", risk: "low",
+    act: "Read files, history or metadata inside the repository, minus privacy deny paths.",
+    why: "No mutation, no credential (deny paths exclude them), nothing leaves the machine.",
+    defaults: pm(A, A, A, A), payload: ["paths"] },
+  { id: "edit_worktree", tier: "configurable", risk: "low",
+    act: "Create or modify a tracked or new file inside the task worktree and within the task's ownership.",
+    why: "Reversible via git; isolated in the task worktree; no consumer impact until merged and gated.",
+    defaults: pm(S, S, Q, A), payload: ["paths", "bytesChanged"] },
+  { id: "delete_file", tier: "configurable", risk: "low",
+    act: "Delete a git-tracked file inside the task worktree and ownership. Untracked, ignored or out-of-worktree deletion is destructive_cleanup.",
+    why: "Tracked content is recoverable from history; the task gate still has to pass on the result.",
+    defaults: pm(S, S, Q, A), payload: ["paths"] },
+  { id: "write_outside_ownership", tier: "configurable", risk: "medium",
+    act: "Create, modify or delete a file in the worktree outside the task's declared ownership paths/components.",
+    why: "Reversible, but may collide with another task's ownership (PLAN §3.E) and hides scope creep.",
+    defaults: pm(S, S, Q, Q), payload: ["paths", "ownerTaskIds"] },
+  { id: "modify_project_config", tier: "configurable", risk: "medium",
+    act: "Edit build, test, lint, CI or packaging configuration of the target project (not KorWF policy — that is modify_policy).",
+    why: "Reversible, but can change what the deterministic checks measure; a human should see it before it is trusted.",
+    defaults: pm(S, S, Q, Q), payload: ["paths", "checksAffected"] },
+  { id: "run_checks", tier: "configurable", risk: "low",
+    act: "Execute a registered check definition of the task inside its worktree.",
+    why: "Bounded by the check definition and budgets; produces gate evidence; read-mostly.",
+    defaults: pm(S, S, A, A), payload: ["checkId", "command"] },
