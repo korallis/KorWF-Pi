@@ -1,0 +1,1230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://korwf.dev/schema/config/v1.json",
+  "title": "KorWF-Pi configuration",
+  "description": "All user-facing policy for KorWF-Pi (PLAN §3.J). Every field has a default; an empty object `{}` is a valid, working, no-Jev configuration. Cross-field rules that JSON Schema cannot express are listed in docs/config-reference.md §Validation rules and enforced by src/config validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "configVersion": {
+      "type": "integer",
+      "const": 1,
+      "default": 1,
+      "description": "Schema version of this file. Bumped on breaking changes; the loader migrates or refuses."
+    },
+    "models": {
+      "$ref": "#/$defs/Models",
+      "default": {}
+    },
+    "budgets": {
+      "$ref": "#/$defs/Budgets",
+      "default": {}
+    },
+    "mode": {
+      "$ref": "#/$defs/Mode",
+      "default": "shadow"
+    },
+    "approvals": {
+      "$ref": "#/$defs/Approvals",
+      "default": {}
+    },
+    "privacy": {
+      "$ref": "#/$defs/Privacy",
+      "default": {}
+    },
+    "fallback": {
+      "$ref": "#/$defs/Fallback",
+      "default": {}
+    },
+    "jev": {
+      "$ref": "#/$defs/Jev",
+      "default": {}
+    },
+    "notifications": {
+      "$ref": "#/$defs/Notifications",
+      "default": {}
+    },
+    "storage": {
+      "$ref": "#/$defs/Storage",
+      "default": {}
+    }
+  },
+  "$defs": {
+    "ModelRef": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[^\\s/][^\\s]*$",
+      "description": "Fully qualified `<provider>/<modelId>` as shown by Pi's model registry."
+    },
+    "NonNegativeOrNull": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "`null` means no cap of this kind."
+    },
+    "Models": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowlist": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "Optional filter over the models Pi already has configured (PLAN §3.D). Empty lists mean 'all configured'. The system never uses a provider or model outside this list.",
+          "properties": {
+            "providers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true,
+              "default": [],
+              "description": "Provider ids eligible for selection. `[]` = every provider Pi has configured."
+            },
+            "models": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ModelRef"
+              },
+              "uniqueItems": true,
+              "default": [],
+              "description": "Fully qualified model refs eligible for selection. `[]` = every model of an eligible provider."
+            },
+            "pins": {
+              "type": "object",
+              "default": {},
+              "description": "Task kind → model ref. A pinned model is never overridden by fallback without asking (PLAN §3.D).",
+              "propertyNames": {
+                "$ref": "#/$defs/TaskKind"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/ModelRef"
+              }
+            }
+          }
+        },
+        "overrides": {
+          "type": "object",
+          "default": {},
+          "description": "Per-model card overrides (PLAN §3.D layer 3). Keys are model refs.",
+          "propertyNames": {
+            "$ref": "#/$defs/ModelRef"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "notes": {
+                "type": "string",
+                "maxLength": 2000
+              },
+              "aptitudes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              },
+              "disabled": {
+                "type": "boolean",
+                "default": false
+              }
+            }
+          }
+        }
+      }
+    },
+    "TaskKind": {
+      "type": "string",
+      "enum": [
+        "default",
+        "plan",
+        "implement",
+        "test",
+        "review",
+        "docs",
+        "refactor",
+        "research"
+      ],
+      "description": "Task kinds used for pins and fallback policy. `default` applies where no specific kind is set."
+    },
+    "BudgetCaps": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Matches the `Budget` record in docs/records.md. `null` = no cap of this kind. All numeric caps are >= 0.",
+      "properties": {
+        "maxSpendUsd": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        },
+        "maxTokens": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        },
+        "maxRequests": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        },
+        "maxConcurrency": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        },
+        "maxElapsedMs": {
+          "$ref": "#/$defs/NonNegativeOrNull"
+        }
+      }
+    },
+    "Budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Hard-stop caps (PLAN §2.6). Exceeding any cap stops the scope and surfaces a resumable state. Task <= phase <= workflow is enforced by the validator when both are non-null.",
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/BudgetCaps",
+          "default": {
+            "maxSpendUsd": 10,
+            "maxTokens": null,
+            "maxRequests": null,
+            "maxConcurrency": 2,
+            "maxElapsedMs": null
+          }
+        },
+        "phase": {
+          "$ref": "#/$defs/BudgetCaps",
+          "default": {
+            "maxSpendUsd": null,
+            "maxTokens": null,
+            "maxRequests": null,
+            "maxConcurrency": null,
+            "maxElapsedMs": null
+          }
+        },
+        "task": {
+          "$ref": "#/$defs/BudgetCaps",
+          "default": {
+            "maxSpendUsd": null,
+            "maxTokens": null,
+            "maxRequests": 200,
+            "maxConcurrency": 1,
+            "maxElapsedMs": 3600000
+          }
+        },
+        "jev": {
+          "$ref": "#/$defs/BudgetCaps",
+          "default": {
+            "maxSpendUsd": 1,
+            "maxTokens": null,
+            "maxRequests": null,
+            "maxConcurrency": 4,
+            "maxElapsedMs": null
+          },
+          "description": "Per-workflow cap on Jev (TypeSafe) spend, separate from model spend. Irrelevant when Jev is disabled."
+        },
+        "costEstimateBeforeRun": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a cost estimate and require confirmation before `run` begins (PLAN §2.6)."
+        }
+      }
+    },
+    "Mode": {
+      "type": "string",
+      "enum": [
+        "shadow",
+        "advisory",
+        "supervised",
+        "bounded_autonomous"
+      ],
+      "description": "Operating mode (docs/records.md `WorkflowMode`). Shadow: observe and record only, no mutation. Advisory: propose, never act. Supervised: act only on explicit approval. Bounded autonomous: act within budgets and approval classes."
+    },
+    "ApprovalDecision": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "queue",
+        "stop"
+      ],
+      "description": "PLAN §2.6: auto = pre-approved for the mode; queue = block this task, continue others, notify; stop = stop the phase and wait for the user."
+    },
+    "ApprovalPolicyPerMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shadow",
+        "advisory",
+        "supervised",
+        "bounded_autonomous"
+      ],
+      "properties": {
+        "shadow": {
+          "$ref": "#/$defs/ApprovalDecision"
+        },
+        "advisory": {
+          "$ref": "#/$defs/ApprovalDecision"
+        },
+        "supervised": {
+          "$ref": "#/$defs/ApprovalDecision"
+        },
+        "bounded_autonomous": {
+          "$ref": "#/$defs/ApprovalDecision"
+        }
+      }
+    },
+    "HighRiskPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "High-risk classes (PLAN §7) are `stop` in every mode; the schema forbids any other value so config cannot weaken it.",
+      "properties": {
+        "shadow": {
+          "const": "stop"
+        },
+        "advisory": {
+          "const": "stop"
+        },
+        "supervised": {
+          "const": "stop"
+        },
+        "bounded_autonomous": {
+          "const": "stop"
+        }
+      }
+    },
+    "Approvals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "queueTimeoutMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Minutes a queued approval waits before the task is marked blocked. 0 = wait indefinitely (never auto-approve on timeout)."
+        },
+        "classes": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "Action class → decision per mode. Low/medium-risk classes are configurable; high-risk classes are fixed to `stop`.",
+          "properties": {
+            "read_repository": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "auto",
+                "advisory": "auto",
+                "supervised": "auto",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "edit_worktree": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "run_checks": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "auto",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "run_shell": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
+            "install_dependencies": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
+            "local_commit": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "spawn_worker": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "model_fallback": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "auto",
+                "advisory": "auto",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "complete_task": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "destructive_cleanup": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
+            "remote_push": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
+            "deployment": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
+            "credential_access": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
+            "publishing": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            }
+          }
+        }
+      }
+    },
+    "ShippedDenyPaths": {
+      "type": "array",
+      "description": "Shipped minimum deny list of path globs (PLAN §7). `privacy.denyPaths` MUST contain every entry; the `allOf`/`contains` constraints below enforce it in-schema.",
+      "const": [
+        "**/.env",
+        "**/.env.*",
+        "**/*.pem",
+        "**/*.key",
+        "**/*.p12",
+        "**/*.pfx",
+        "**/*.jks",
+        "**/id_rsa*",
+        "**/id_ed25519*",
+        "**/id_ecdsa*",
+        "**/.ssh/**",
+        "**/.gnupg/**",
+        "**/.aws/**",
+        "**/.azure/**",
+        "**/.config/gcloud/**",
+        "**/.kube/config",
+        "**/.netrc",
+        "**/.npmrc",
+        "**/.pypirc",
+        "**/.docker/config.json",
+        "**/.git/config",
+        "**/.git/credentials",
+        "**/.git-credentials",
+        "**/credentials.json",
+        "**/service-account*.json",
+        "**/secrets.*",
+        "**/*.secret",
+        "**/*.keystore",
+        "**/.korwf/**",
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/out/**",
+        "**/target/**",
+        "**/.next/**",
+        "**/coverage/**",
+        "**/*.log",
+        "**/*.sqlite",
+        "**/*.sqlite3",
+        "**/*.db"
+      ]
+    },
+    "ShippedDenyPatterns": {
+      "type": "array",
+      "description": "Shipped minimum deny list of content regexes (ECMAScript syntax, compiled with flags `iu`, applied per line). `privacy.denyPatterns` MUST contain every entry.",
+      "const": [
+        "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+        "\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}",
+        "\\bsk-[A-Za-z0-9_-]{16,}\\b",
+        "\\bAKIA[0-9A-Z]{16}\\b",
+        "\\bgh[pousr]_[A-Za-z0-9]{20,}\\b",
+        "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b",
+        "\\bAIza[0-9A-Za-z_-]{35}\\b",
+        "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
+        "\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}",
+        "\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
+      ]
+    },
+    "Privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Data policy (PLAN §7). Default-deny outbound for secrets and sensitive paths; minimal snippets; raw logging opt-in.",
+      "properties": {
+        "denyPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Path globs never read into outbound context or logs. Must be a superset of `$defs/ShippedDenyPaths`; entries can be added, never removed.",
+          "allOf": [
+            {
+              "contains": {
+                "const": "**/.env"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.env.*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.pem"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.key"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.p12"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.pfx"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.jks"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/id_rsa*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/id_ed25519*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/id_ecdsa*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.ssh/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.gnupg/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.aws/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.azure/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.config/gcloud/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.kube/config"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.netrc"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.npmrc"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.pypirc"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.docker/config.json"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.git/config"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.git/credentials"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.git-credentials"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/credentials.json"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/service-account*.json"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/secrets.*"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.secret"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.keystore"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.korwf/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/node_modules/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/dist/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/build/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/out/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/target/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/.next/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/coverage/**"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.log"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.sqlite"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.sqlite3"
+              }
+            },
+            {
+              "contains": {
+                "const": "**/*.db"
+              }
+            }
+          ],
+          "default": [
+            "**/.env",
+            "**/.env.*",
+            "**/*.pem",
+            "**/*.key",
+            "**/*.p12",
+            "**/*.pfx",
+            "**/*.jks",
+            "**/id_rsa*",
+            "**/id_ed25519*",
+            "**/id_ecdsa*",
+            "**/.ssh/**",
+            "**/.gnupg/**",
+            "**/.aws/**",
+            "**/.azure/**",
+            "**/.config/gcloud/**",
+            "**/.kube/config",
+            "**/.netrc",
+            "**/.npmrc",
+            "**/.pypirc",
+            "**/.docker/config.json",
+            "**/.git/config",
+            "**/.git/credentials",
+            "**/.git-credentials",
+            "**/credentials.json",
+            "**/service-account*.json",
+            "**/secrets.*",
+            "**/*.secret",
+            "**/*.keystore",
+            "**/.korwf/**",
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/build/**",
+            "**/out/**",
+            "**/target/**",
+            "**/.next/**",
+            "**/coverage/**",
+            "**/*.log",
+            "**/*.sqlite",
+            "**/*.sqlite3",
+            "**/*.db"
+          ]
+        },
+        "denyPatterns": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "description": "Content regexes; a matching line is redacted before any outbound request or log write. Must be a superset of `$defs/ShippedDenyPatterns`.",
+          "allOf": [
+            {
+              "contains": {
+                "const": "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bsk-[A-Za-z0-9_-]{16,}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bAKIA[0-9A-Z]{16}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bgh[pousr]_[A-Za-z0-9]{20,}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bAIza[0-9A-Za-z_-]{35}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}"
+              }
+            },
+            {
+              "contains": {
+                "const": "\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
+              }
+            }
+          ],
+          "default": [
+            "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+            "\\b(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd)\\b\\s*[:=]\\s*['\"]?[^\\s'\"]{8,}",
+            "\\bsk-[A-Za-z0-9_-]{16,}\\b",
+            "\\bAKIA[0-9A-Z]{16}\\b",
+            "\\bgh[pousr]_[A-Za-z0-9]{20,}\\b",
+            "\\bxox[baprs]-[A-Za-z0-9-]{10,}\\b",
+            "\\bAIza[0-9A-Za-z_-]{35}\\b",
+            "\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b",
+            "\\bbearer\\s+[A-Za-z0-9._~+/=-]{20,}",
+            "\\b[a-z][a-z0-9+.-]*://[^/\\s:@]+:[^/\\s:@]+@"
+          ]
+        },
+        "allowPaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Explicit per-project carve-outs (e.g. `docs/fixtures/.env.example`). A carve-out must not be broader than the deny entry it relaxes; validator rule V7."
+        },
+        "outbound": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "maxSnippetBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 4096,
+              "description": "Largest single file excerpt sent to Jev or a model provider."
+            },
+            "maxSnippetsPerRequest": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 16
+            },
+            "maxRequestBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 262144,
+              "description": "Hard cap on outbound request body size (256 KiB)."
+            },
+            "sendFilePaths": {
+              "type": "boolean",
+              "default": true,
+              "description": "Send project-relative paths with snippets. Absolute paths are never sent."
+            },
+            "sendRepoIdentity": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include remote URL / repo name in Jev context. Off: only a hash."
+            }
+          }
+        },
+        "rawLogging": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "Opt-in raw request/response payload logging (PLAN §7). Off by default.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "retentionDays": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365,
+              "default": 7
+            },
+            "redactBeforeWrite": {
+              "type": "boolean",
+              "const": true,
+              "default": true,
+              "description": "Deny patterns are applied before writing raw logs. Fixed true."
+            }
+          }
+        },
+        "firstUseDisclosure": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show which data classes go to TypeSafe and to model providers before the first outbound request."
+        }
+      }
+    },
+    "MidTaskPolicy": {
+      "type": "string",
+      "enum": [
+        "handoff",
+        "restart"
+      ],
+      "description": "On a cap mid-task: hand off with an explicit handoff packet and intact worktree, or restart the task (PLAN §3.D)."
+    },
+    "Fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Caps and fallback (PLAN §3.D). Applies when a model is capped (quota, rate limit, budget) or unavailable.",
+      "properties": {
+        "midTaskPolicy": {
+          "type": "object",
+          "default": {
+            "default": "handoff"
+          },
+          "description": "Task kind → mid-task policy. `default` is required and covers unlisted kinds.",
+          "propertyNames": {
+            "$ref": "#/$defs/TaskKind"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/MidTaskPolicy"
+          },
+          "properties": {
+            "default": {
+              "$ref": "#/$defs/MidTaskPolicy",
+              "default": "handoff"
+            }
+          }
+        },
+        "dwell": {
+          "type": "string",
+          "enum": [
+            "remainder_of_task",
+            "remainder_of_phase",
+            "minutes"
+          ],
+          "default": "remainder_of_task",
+          "description": "Anti-oscillation: minimum time on the fallback model before the primary is retried."
+        },
+        "dwellMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30,
+          "description": "Only used when `dwell` = `minutes`."
+        },
+        "preferWaitIfResetWithinMinutes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "If the primary cap is estimated to clear within N minutes, wait instead of switching to a more expensive substitute. 0 = never wait."
+        },
+        "retryPrimaryAtTaskBoundary": {
+          "type": "boolean",
+          "const": true,
+          "default": true,
+          "description": "Retry the primary at the next task boundary once the cap is estimated cleared; never re-probe every task. Fixed true."
+        },
+        "staticOrder": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelRef"
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Ordered model refs used when Jev is unavailable or answers none/unknown. Must be a subset of the effective allowlist (validator rule V1). `[]` = Pi registry order filtered by allowlist."
+        },
+        "allCappedBehaviour": {
+          "type": "string",
+          "const": "pause_phase",
+          "default": "pause_phase",
+          "description": "All candidates capped → pause the phase, surface state, resume when a cap clears. Not a failure. Fixed."
+        },
+        "overridePins": {
+          "type": "boolean",
+          "const": false,
+          "default": false,
+          "description": "Pinned models are never overridden by fallback without asking. Fixed false."
+        }
+      }
+    },
+    "Jev": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "TypeSafe/Jev transport (docs/adr/0003-jev-transport.md). With no key the product runs in optional mode: deterministic workflow only.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Master switch. Off by default; with no key it is treated as off even when true."
+        },
+        "baseUrl": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://",
+          "default": "https://api.typesafe.ai",
+          "description": "API origin. HTTPS only. Configurable for users who proxy."
+        },
+        "keySource": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "How the API key is resolved. Never the key itself.",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "env",
+                "pi_secrets",
+                "none"
+              ],
+              "default": "env"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[A-Z][A-Z0-9_]*$",
+              "default": "TYPESAFE_API_KEY",
+              "description": "Env var name (kind=env) or secret name (kind=pi_secrets)."
+            }
+          }
+        },
+        "model": {
+          "type": "string",
+          "pattern": "^jev-\\d+\\.\\d+\\.\\d+$",
+          "default": "jev-1.13.0",
+          "description": "Pinned Jev version. Never `jev-latest`."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "default": 10000,
+          "description": "Per-decision deadline including retries."
+        },
+        "maxRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 2
+        },
+        "pricePerMillionInputTokensUsd": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.042,
+          "description": "Used for known-cost accounting."
+        },
+        "cache": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "ttlSeconds": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 86400
+            }
+          }
+        }
+      }
+    },
+    "NotificationEvent": {
+      "type": "string",
+      "enum": [
+        "approval_queued",
+        "phase_stopped",
+        "budget_exhausted",
+        "all_models_capped",
+        "workflow_completed",
+        "workflow_failed",
+        "model_fallback"
+      ]
+    },
+    "Notifications": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Notification hooks (PLAN §2.6). Only the in-Pi channel is on by default; nothing leaves the machine unless configured.",
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NotificationEvent"
+          },
+          "uniqueItems": true,
+          "default": [
+            "approval_queued",
+            "phase_stopped",
+            "budget_exhausted",
+            "all_models_capped",
+            "workflow_completed",
+            "workflow_failed"
+          ]
+        },
+        "channels": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "ui": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Pi UI notify/status (no-op when `ctx.hasUI` is false).",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                }
+              }
+            },
+            "desktop": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "OS desktop notification via the platform notifier, if present.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                }
+              }
+            },
+            "command": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Run a user-supplied executable with a JSON event on stdin. Off by default; counts as `run_shell` for approvals.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "argv": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": []
+                }
+              }
+            },
+            "webhook": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "POST the event JSON to an HTTPS URL. Off by default; payload is redacted with deny patterns.",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^https://",
+                  "default": null
+                }
+              }
+            }
+          }
+        },
+        "quietHours": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false
+            },
+            "start": {
+              "type": "string",
+              "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+              "default": "22:00"
+            },
+            "end": {
+              "type": "string",
+              "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+              "default": "07:00"
+            }
+          }
+        }
+      }
+    },
+    "Storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "On-disk state (src/storage/paths.ts). Namespaced under the project; never in the source tree outside this directory.",
+      "properties": {
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Override for the storage root. Relative to the project root; absolute allowed only with `allowOutsideProject`. `null` = `<project>/.korwf`."
+        },
+        "allowOutsideProject": {
+          "type": "boolean",
+          "default": false,
+          "description": "Permit an absolute `path` outside the project root."
+        },
+        "artifactRetentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30
+        },
+        "lockTimeoutMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5000
+        }
+      }
+    }
+  }
+}
