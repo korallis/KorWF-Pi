@@ -6,7 +6,9 @@ foreign keys. **Design authority:** PLAN §5 (Records), §2.2, §3.B (provenance
 (evidence), §3.H (memory). The state transitions and approval-invalidation rules (#13), gate formulas (#14),
 approval classes (#15), and the SQLite store (#23) build on this file.
 
-Schema version: `RECORDS_SCHEMA_VERSION = 1`.
+Schema version: `RECORDS_SCHEMA_VERSION = 1`. (#125 re-keyed `ModelAvailability` and
+`ModelOutcome` on `routeId` while still at version 1: no SQLite store (#23) and no release
+had shipped, so no row exists to migrate. The first store migration starts from this shape.)
 
 ## 1. Common envelope
 
@@ -170,7 +172,9 @@ erDiagram
     }
     MODEL_AVAILABILITY {
         string id PK
-        string modelId UK
+        string routeId UK
+        string providerId
+        string modelId
         string capKind
         string detectedAt
         string estimatedReset
@@ -180,6 +184,7 @@ erDiagram
         string id PK
         string workflowId FK
         string attemptId FK
+        string routeId
         string model
         json taskProfile
         string result
@@ -199,8 +204,13 @@ erDiagram
     }
 ```
 
-`MODEL_AVAILABILITY` is global (one row per model id), not workflow-scoped: a quota cap
-applies to the user's account regardless of which workflow hit it.
+`MODEL_AVAILABILITY` is global (one row per **route**), not workflow-scoped: a quota cap
+applies to the account that hit it regardless of which workflow did so. A route is one Pi
+provider entry plus one model id (`routeId`, issue #125, PRD §3.4): the same model id
+configured under two providers — two subscriptions to one vendor — is two routes with
+independent caps, health and outcome history. Model cards stay per model id.
+`routeId` is derived by `src/models/route.ts`; the rename rule is in
+`docs/adr/0011-route-identity.md`.
 
 ## 3. PLAN §5 field coverage
 
@@ -218,8 +228,8 @@ property.
 | Evidence | requirement/check id → `requirementId` + `checkId`; artifact → `artifact`; revision → `revision`; command identity → `commandIdentity`; exit status → `exitStatus`; reviewer → `reviewer`; caveats → `caveats`. Extra (PLAN §3.B): `provenance`; plus `taskRevision`, `supersedesId`. |
 | Approval | actor → `actor`; scope → `scope`; task/plan revision → `taskRevision` + `planRevision`; permitted action → `permittedAction`; expiry → `expiresAt`; invalidation → `invalidation`. Extra: `riskClass`. |
 | Memory | source → `source`; revision → `revision`; type → `type`; freshness → `freshness`; supersession → `supersession`; status → `status`. Extra (PLAN §3.B/§3.H): provenance inside `source`, `content`, `contentHash`, `pinned`. |
-| ModelAvailability | model id → `modelId`; cap kind → `capKind`; detected at → `detectedAt`; estimated reset → `estimatedReset`; last probe → `lastProbe`. |
-| ModelOutcome | model → `model`; task profile → `taskProfile`; result → `result`; cost → `cost`; latency → `latencyMs`. Extra: `attemptId`, `wasFallback`. |
+| ModelAvailability | model id → `routeId` (+ `providerId`, `modelId` components; #125); cap kind → `capKind`; detected at → `detectedAt`; estimated reset → `estimatedReset`; last probe → `lastProbe`. |
+| ModelOutcome | model → `model` and `routeId` (#125); task profile → `taskProfile`; result → `result`; cost → `cost`; latency → `latencyMs`. Extra: `attemptId`, `wasFallback`. |
 
 `AuditEntry` is the PLAN §5 "append-only audit table"; it is not a PLAN §5 record but is
 defined here because the mutability rules in §4 depend on it.
@@ -237,7 +247,7 @@ table exists on the corresponding interface.
 | `attempt` | mutable while `outcome === null`; frozen afterwards (store rejects patches) | `UpdatePatch<Attempt>` |
 | `approval` | mutable in **one** field | `ApprovalPatch` — `invalidation`, `null → non-null` only |
 | `memory` | mutable | `UpdatePatch<Memory>` — `status`, `supersession`, `freshness.lastValidatedAt` |
-| `model_availability` | mutable (upsert by `modelId`) | `UpdatePatch<ModelAvailability>` |
+| `model_availability` | mutable (upsert by `routeId`) | `UpdatePatch<ModelAvailability>` |
 | `decision` | **append-only** | none — `UpdatePatch<Decision>` is `never` |
 | `evidence` | **append-only** | none — `UpdatePatch<Evidence>` is `never` |
 | `model_outcome` | **append-only** | none — `UpdatePatch<ModelOutcome>` is `never` |

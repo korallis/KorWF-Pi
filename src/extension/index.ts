@@ -3,17 +3,19 @@
  *
  * This is the only module that imports `@earendil-works/pi-coding-agent`
  * (docs/adr/0002-source-layout.md). It registers the `/korwf` command
- * namespace with a single subcommand so far: `version`. Later issues add
- * `plan`, `run`, `status`, and the rest of the surface described in
- * README.md "Planned user interface".
+ * namespace with `version`, and the route-aware `models` and `status`
+ * listings from issue #125. Later issues add `plan`, `run`, and the rest
+ * of the surface described in README.md "Planned user interface".
  *
  * Every command, tool, and storage path this package registers is
  * namespaced `korwf` (PLAN §3.J; AGENTS.md constraint).
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { versionMessage } from "./commands/version.ts";
+import { modelsMessage, statusMessage } from "./commands/models.ts";
+import { RouteAvailabilityTable } from "../models/availability.ts";
 
-const SUBCOMMANDS = ["version"] as const;
+const SUBCOMMANDS = ["version", "models", "status"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 function isSubcommand(value: string): value is Subcommand {
@@ -21,6 +23,10 @@ function isSubcommand(value: string): value is Subcommand {
 }
 
 export default function korwfExtension(pi: ExtensionAPI): void {
+  // In-memory until the SQLite store (#23) persists ModelAvailability rows.
+  // Cap detection (#62) writes into this table; listings read from it.
+  const availability = new RouteAvailabilityTable();
+
   pi.registerCommand("korwf", {
     description: `KorWF workflow commands: /korwf <${SUBCOMMANDS.join("|")}>`,
     getArgumentCompletions: (prefix: string) => {
@@ -38,6 +44,16 @@ export default function korwfExtension(pi: ExtensionAPI): void {
       switch (sub) {
         case "version": {
           ctx.ui.notify(versionMessage(), "info");
+          return;
+        }
+        case "models": {
+          const models = ctx.modelRegistry.getAvailable();
+          ctx.ui.notify(modelsMessage({ models, availability, now: new Date().toISOString() }), "info");
+          return;
+        }
+        case "status": {
+          const models = ctx.modelRegistry.getAvailable();
+          ctx.ui.notify(statusMessage({ models, availability, now: new Date().toISOString() }), "info");
           return;
         }
       }

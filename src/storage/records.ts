@@ -60,6 +60,14 @@ export type AuditEntryId = RecordId<"audit_entry">;
  */
 export type ModelRef = string;
 
+/**
+ * Opaque identifier of a *route*: one rate-limited path to a model, i.e. one
+ * Pi provider entry plus one model id under it (issue #125, PRD §3.4).
+ * Derived by `src/models/route.ts` (`deriveRouteId`), never user-supplied,
+ * never parsed. Two providers exposing the same model id are two routes.
+ */
+export type RouteId = RecordId<"route">;
+
 /** Current version of the record schema described by this module. */
 export const RECORDS_SCHEMA_VERSION = 1 as const;
 export type SchemaVersion = typeof RECORDS_SCHEMA_VERSION;
@@ -654,14 +662,26 @@ export interface Memory extends MutableRecord<MemoryId> {
 }
 
 // ---------------------------------------------------------------------------
-// ModelAvailability (mutable; one row per model)
+// ModelAvailability (mutable; one row per ROUTE, not per model id)
 // ---------------------------------------------------------------------------
 
 export type CapKind = "quota_exhausted" | "rate_limited" | "budget_cap" | "unavailable" | "none";
 
-/** PLAN §5: model id, cap kind, detected at, estimated reset, last probe. */
+/**
+ * PLAN §5: model id, cap kind, detected at, estimated reset, last probe.
+ *
+ * Keyed on `routeId` (issue #125): a quota cap belongs to the provider
+ * account that hit it, so the same model id under another provider is
+ * unaffected. `providerId` and `modelId` are the components the id was
+ * derived from, kept for display and for joining to the per-model card.
+ */
 export interface ModelAvailability extends MutableRecord<ModelAvailabilityId> {
-  readonly modelId: ModelRef;
+  /** Upsert key. One row per route. */
+  readonly routeId: RouteId;
+  /** Pi provider key the route belongs to (user-chosen name; never a shipped default). */
+  readonly providerId: string;
+  /** Bare model id under that provider; joins to the model card. */
+  readonly modelId: string;
   readonly capKind: CapKind;
   /** `null` when `capKind === "none"`. */
   readonly detectedAt: IsoTimestamp | null;
@@ -680,10 +700,18 @@ export interface ModelAvailability extends MutableRecord<ModelAvailabilityId> {
 
 export type OutcomeResult = "succeeded" | "failed" | "needs_changes" | "cancelled" | "handed_off";
 
-/** PLAN §5: model, task profile, result, cost, latency. */
+/**
+ * PLAN §5: model, task profile, result, cost, latency.
+ *
+ * Attributed per route (issue #125): `routeId` identifies the account the
+ * attempt actually ran on, so one account's results never bias another's.
+ * `model` remains the `provider/model` ref for the per-model card layer 4.
+ */
 export interface ModelOutcome extends AppendOnlyRecord<ModelOutcomeId> {
   readonly workflowId: WorkflowId;
   readonly attemptId: AttemptId;
+  /** Route the attempt ran on. */
+  readonly routeId: RouteId;
   readonly model: ModelRef;
   readonly taskProfile: TaskProfile;
   readonly result: OutcomeResult;

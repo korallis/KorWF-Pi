@@ -83,9 +83,9 @@ type _Approval = Assert<
 >;
 type _Memory = Assert<HasKeys<Memory, ["source", "revision", "type", "freshness", "supersession", "status"]>>;
 type _ModelAvailability = Assert<
-  HasKeys<ModelAvailability, ["modelId", "capKind", "detectedAt", "estimatedReset", "lastProbe"]>
+  HasKeys<ModelAvailability, ["routeId", "providerId", "modelId", "capKind", "detectedAt", "estimatedReset", "lastProbe"]>
 >;
-type _ModelOutcome = Assert<HasKeys<ModelOutcome, ["model", "taskProfile", "result", "cost", "latencyMs"]>>;
+type _ModelOutcome = Assert<HasKeys<ModelOutcome, ["routeId", "model", "taskProfile", "result", "cost", "latencyMs"]>>;
 
 // Provenance fields (PLAN §3.B) on Evidence and Memory sources.
 type _ProvenanceFields = Assert<

@@ -22,6 +22,7 @@ Related), then Context, Decision, Consequences. Status is one of `Proposed`,
 | [0008](0008-code-enforced-policy-after-jev-selection.md) | Jev ranks, code enforces | Accepted | #17 | Five-stage pipeline: filter → Jev → validate → policy → record; Jev answers can only narrow |
 | [0009](0009-worktree-isolation-model.md) | Worktree isolation model | Accepted | #17 | One worktree per writing attempt, one integration owner, worktrees are not a security boundary |
 | [0010](0010-no-fork-pi-package.md) | KorWF ships as a Pi package; Pi is never forked or patched | Accepted | #17 | Documented-surface allowlist, single import boundary, gaps handled KorWF-side or upstream |
+| [0011](0011-route-identity.md) | Route identity is derived from the provider key; a rename is a new route | Accepted | #125 | Opaque `routeId` per (provider, model); caps, health and outcomes per route, cards per model; rename loses history deliberately, failure mode documented |
 
 ## Related specifications (not ADRs)
 
