@@ -31,7 +31,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 
 - [x] Initialise Git; package manifest per `docs/packages.md`; modular layout; namespaced commands/tools/storage.
 - [x] Formatting, type checking, unit and integration test scripts.
-- [ ] Config loading, validation, safe defaults, first-use disclosure.
+- [x] Config loading, validation, safe defaults, first-use disclosure. (#21)
 - [ ] Credential resolution; secrets excluded from all logs and exports.
 - [ ] SQLite store, migrations, lockfile ownership, append-only audit, artifact directory.
 - [ ] Jev transport behind mockable interface; configurable base URL; optional mode when no key.

@@ -37,6 +37,8 @@ Table columns: **Key** · **Type** · **Default** · **Why the default is safe**
 10. [`storage`](#10-storage)
 11. [Validation rules beyond types](#11-validation-rules-beyond-types)
 12. [Worked examples](#12-worked-examples)
+13. [Loading, layered merge, and environment overrides](#13-loading-layered-merge-and-environment-overrides)
+14. [First-use disclosure](#14-first-use-disclosure)
 
 ## 1. Root
 
@@ -333,8 +335,9 @@ weaker interpretation.
 }
 ```
 
-`denyPaths` must list the shipped minimum plus additions; the loader (issue #21) will
-expose the current minimum so users can paste it rather than retype it.
+`denyPaths` must list the shipped minimum plus additions; the loader exposes the current
+minimum as `SHIPPED_DENY_PATHS` / `SHIPPED_DENY_PATTERNS` (`src/config/defaults.ts`) so
+users can paste it rather than retype it.
 
 **Rejected configs** (verified against the schema with ajv 2020 strict):
 `{"privacy":{"denyPaths":["**/.env"]}}` (floor), `{"privacy":{"denyPatterns":[]}}` (floor),
@@ -342,3 +345,85 @@ expose the current minimum so users can paste it rather than retype it.
 `{"approvals":{"classes":{"remote_push":{…,"bounded_autonomous":"auto"}}}}` (high-risk const),
 `{"jev":{"baseUrl":"http://…"}}` (https only), `{"jev":{"model":"jev-latest"}}` (pin),
 `{"nope":1}` (unknown key).
+
+## 13. Loading, layered merge, and environment overrides
+
+Implemented in `src/config/` (issue #21): `defaults.ts` (shipped defaults materialised
+from the schema), `schema-check.ts` (dependency-free draft 2020-12 checker for the subset
+the schema uses), `validate.ts` (rules V1–V12) and `load.ts` (`loadConfig`).
+
+### 13.1 Files and precedence
+
+| Layer | Source | Precedence |
+|---|---|---|
+| shipped defaults | `src/config/schema.json` (`properties[*].default`, recursively) | lowest |
+| user | `<pi config dir>/korwf/config.json`, where the Pi config dir is `$PI_CODING_AGENT_DIR` or `~/.pi/agent` | ↑ |
+| project | `<project>/.korwf/config.json` | ↑ |
+| environment | the documented variables in §13.3 only | highest |
+
+Objects merge key by key; **arrays and scalars are replaced wholesale** by the higher
+layer. Because a higher layer can replace an array, the privacy floors are re-checked
+*after* the merge (V5), so no layer can drop a shipped deny entry by replacing the list.
+A missing file is not an error — a project with no config runs entirely on the defaults.
+A `$schema` key in a config file is ignored (editor tooling only), not treated as unknown.
+
+### 13.2 Result shape
+
+`loadConfig(projectDir, options)` never throws on user input. It returns either
+
+- `{ ok: true, config, layers, warnings }` — `config` is fully defaulted, validated and
+  **deep-frozen** (`Object.freeze` recursively, so no later code can mutate policy); or
+- `{ ok: false, errors, warnings, layers, message }` — every error carries `rule`
+  (`schema`, or `V1`…`V12`), `path` (e.g. `budgets.task.maxSpendUsd`, or the config file
+  path for parse failures) and a reason. An invalid config is a refusal, never a fallback
+  to a weaker interpretation.
+
+Unreadable files, truncated JSON, a top-level array and an empty file are all reported
+as path-qualified errors rather than exceptions, so a bad config cannot crash Pi.
+
+### 13.3 Environment overrides
+
+Only these variables are read. None of them can weaken policy: they select a mode
+(schema-validated), toggle a feature off, or name a key *source* — never a key value.
+
+| Variable | Sets | Notes |
+|---|---|---|
+| `KORWF_MODE` | `mode` | Validated against the mode enum like any other value. |
+| `KORWF_JEV_ENABLED` | `jev.enabled` | `1/true/yes/on` and `0/false/no/off`. |
+| `KORWF_JEV_BASE_URL` | `jev.baseUrl` | Still `https://`-only. |
+| `KORWF_JEV_KEY_ENV` | `jev.keySource.name` | The *name* of the variable holding the key. |
+| `KORWF_STORAGE_PATH` | `storage.path` | Still subject to V8. |
+
+### 13.4 V9 downgrade
+
+If the merged config has `jev.enabled: true` but `keySource.kind` is `none`, or the named
+environment variable is absent, the loader **downgrades `jev.enabled` to `false`** in the
+resolved config and records a `V9` warning. Loading still succeeds: a missing key must
+never prevent the deterministic workflow from running (PLAN §3.J). Only the *presence* of
+the named variable is inspected; its value is never read into config, logs or payloads.
+
+## 14. First-use disclosure
+
+`src/extension/disclosure.ts`. Before any outbound request — TypeSafe (edge 1), a model
+provider (edge 2) or a notification channel (edge 3) — the project must have accepted the
+data disclosure.
+
+- `buildDisclosure(config)` composes the text from the **effective** config, so the user
+  is told what their configuration actually does. It names the three edges, what each
+  carries, and the never-leaves list from `docs/threat-model.md` §4.1.
+- `DISCLOSURE_VERSION` versions the text. Acceptance stores
+  `{ disclosureAcceptedAt, disclosureVersion, packageVersion }` in the project's storage
+  root (`<project>/.korwf/disclosure.json` by default). The disclosure is shown **once per
+  project per version**: bumping `DISCLOSURE_VERSION` re-shows it everywhere.
+- `assertOutboundAllowed` / `guardOutbound` are the gate. `guardOutbound` wraps a
+  transport so the wrapped function is never invoked while the disclosure is pending;
+  the gate throws `DisclosureRequiredError` rather than returning a value a caller could
+  ignore. A corrupt or unreadable record counts as "not accepted" — the safe direction.
+- Declining, and running with no UI (print/RPC mode), both leave the gate shut. Nothing
+  is auto-accepted on the user's behalf; the deterministic workflow continues with no
+  outbound calls.
+- `privacy.firstUseDisclosure: false` is the user explicitly opting out of the *prompt*
+  (threat model §4.2, "shown, or explicitly disabled"). It changes no filter.
+
+`/korwf config` prints the effective config, its layers and any warnings;
+`/korwf disclosure` prints the disclosure text and this project's acceptance state.
