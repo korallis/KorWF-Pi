@@ -462,11 +462,30 @@ function sweepWorktrees() {
 // ---------- worker ----------
 function slug(t) { return t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40); }
 
-function ensureWorktree(issue) {
+// `knownBranch` pins the branch instead of deriving it from the issue title. An agentic
+// worker's branch is whatever the orchestrator named when spawning it, which need not
+// match `slug(issue.title)` — #18's agent worked on
+// `issue-18-plan-scenarios-as-acceptance-test-outlines` while this function computed
+// `issue-18-write-plan-2-8-scenarios-as-acceptance-t`. The gate then checked out an empty
+// worktree at the derived name and reported pushed=false / pr=false for work that was
+// pushed and had an open PR: a false negative that would have sent good work back for
+// rework. Attempts record their own `branch`, so callers pass it through.
+function ensureWorktree(issue, knownBranch) {
   const root = resolve(ROOT, CONFIG.workers.worktreeRoot);
   mkdirSync(root, { recursive: true });
-  const dir = join(root, `issue-${issue.number}`);
-  const branch = `issue-${issue.number}-${slug(issue.title)}`;
+  const branch = knownBranch ?? `issue-${issue.number}-${slug(issue.title)}`;
+  // A branch can only be checked out in one worktree. An agentic worker's checkout lives
+  // wherever it was spawned (herdr puts them under ~/.herdr/worktrees), so reuse that
+  // rather than trying to add a second worktree for the same branch, which git refuses.
+  const existing = sh("git", ["worktree", "list", "--porcelain"], { cwd: ROOT });
+  const found = existing.split("\n\n").find((b) => b.includes(`branch refs/heads/${branch}\n`) || b.endsWith(`branch refs/heads/${branch}`));
+  if (found) {
+    const path = found.split("\n").find((l) => l.startsWith("worktree "))?.slice(9);
+    if (path && existsSync(path)) return { dir: path, branch };
+  }
+  // Keep one checkout per branch, not per issue, so a pinned branch never collides with a
+  // stale worktree left from a differently-named attempt on the same issue.
+  const dir = join(root, knownBranch ? `issue-${issue.number}--${slug(branch)}` : `issue-${issue.number}`);
   if (!existsSync(dir)) {
     sh("git", ["fetch", "-q", "origin"], { cwd: ROOT });
     const remoteHas = sh("git", ["ls-remote", "--heads", "origin", branch], { cwd: ROOT }) !== "";
@@ -761,7 +780,8 @@ async function reviewOnly(jev, n) {
   const issues = fetchIssues(); const issue = issues[n];
   const attempts = state.attempts[n] ?? []; const attempt = attempts.at(-1);
   if (!attempt) throw new Error(`no attempts recorded for #${n}`);
-  const { dir, branch } = ensureWorktree(issue);
+  // Use the branch the attempt actually used (agentic workers name their own).
+  const { dir, branch } = ensureWorktree(issue, attempt.branch);
   const criteria = parseCriteria(issue.body);
   const checks = deterministicChecks(issue, dir, branch, parseVerification(issue.body));
   const gap = await evidenceGap(jev, issue, criteria, attempt.report ?? "", checks, dir);
@@ -782,7 +802,7 @@ async function mergeReview(jev, n) {
   const issues = fetchIssues(); const issue = issues[n];
   const attempt = (state.attempts[n] ?? []).at(-1);
   if (!attempt || attempt.outcome !== "awaiting-review") throw new Error(`#${n} is not awaiting review (last outcome: ${attempt?.outcome ?? "none"})`);
-  const { dir, branch } = ensureWorktree(issue);
+  const { dir, branch } = ensureWorktree(issue, attempt.branch);
   sh("git", ["fetch", "-q", "origin"], { cwd: dir });
   const prState = () => JSON.parse(gh(["pr", "view", branch, "--json", "number,url,body,title,mergeable,mergeStateStatus"]));
   let pr = prState();
