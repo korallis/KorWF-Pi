@@ -112,6 +112,42 @@ follows:
 Decisions are append-only. A changed input produces a new row with a new state hash; a
 correction is a new row, never an edit.
 
+## 5.1 Caching (issue #29)
+
+[`cache.ts`](../src/decisions/cache.ts) is a separate, optional layer on top of
+`ask`'s recording: it lets a caller reuse a `Decision` that was already computed for
+the exact same complete versioned key, instead of a fresh `ask`/`askAll` call.
+
+The key (`cacheKeyOf`) is a sha256 over `questionId`, `questionVersion`, `contentHash`,
+`jevModelVersion`, `policyVersion` (`Workflow.policyVersion`, docs/records.md §5) and
+`stateHash`, plus `repoRevision` — but **only** when the question declares
+`revisionSensitive: true`. That flag is per-question, not per-call: a question whose
+answer cannot change as the repository changes (e.g. "is this string a question or a
+statement?") does not fragment the cache on every commit; a question whose answer can
+(e.g. anything reading file contents at a path) declares `revisionSensitive: true` and
+every commit is a fresh key.
+
+Two rules make a cache hit across a boundary structurally impossible rather than merely
+unlikely:
+
+- **Any key component changing is a different key.** There is no partial match, no
+  "close enough" state, and no separate invalidation pass to keep in sync — a stale
+  question version, a re-pinned Jev model, a bumped policy version, a changed minimal
+  state, or (for a revision-sensitive question) a new commit all produce a cache miss by
+  construction, because the key literally is not the same key.
+- **Approval questions never enter the cache at all.** `isApprovalQuestion` recognises
+  the `approval.` family prefix; `cacheStore` and `cacheLookup` are no-ops for it
+  regardless of `revisionSensitive`, `enabled`, or TTL — PLAN §6's "never reuse a stale
+  approval" is enforced before the key is even computed.
+
+Backed by `decision_cache` (`src/storage/migrations/0003-decision-cache.sql`), a
+separate table from `decision` itself: a cache row only points at the `Decision` row
+that is its answer (`decisionId`, `ON DELETE RESTRICT`), so it carries no independent
+truth, is not audited, and may be overwritten or deleted — the append-only guarantee
+still applies only to `decision`. TTL (`config.jev.cache.ttlSeconds`) is a ceiling on top
+of key freshness, not a substitute for it: `ttlSeconds: 0` means "no time limit", never
+"no key check".
+
 ## 6. Fallback reasons
 
 `FallbackReason` is a closed set, and every one of them is recorded:
