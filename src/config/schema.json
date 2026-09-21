@@ -291,6 +291,43 @@
         }
       }
     },
+    "NoAutoPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Classes that may be `queue` or `stop` but never `auto` in any mode (PLAN §3.C: no silent scope expansion). Not PLAN §7 high-risk, so `queue` is allowed.",
+      "required": [
+        "shadow",
+        "advisory",
+        "supervised",
+        "bounded_autonomous"
+      ],
+      "properties": {
+        "shadow": {
+          "enum": [
+            "queue",
+            "stop"
+          ]
+        },
+        "advisory": {
+          "enum": [
+            "queue",
+            "stop"
+          ]
+        },
+        "supervised": {
+          "enum": [
+            "queue",
+            "stop"
+          ]
+        },
+        "bounded_autonomous": {
+          "enum": [
+            "queue",
+            "stop"
+          ]
+        }
+      }
+    },
     "Approvals": {
       "type": "object",
       "additionalProperties": false,
@@ -305,7 +342,7 @@
           "type": "object",
           "additionalProperties": false,
           "default": {},
-          "description": "Action class → decision per mode. Low/medium-risk classes are configurable; high-risk classes are fixed to `stop`.",
+          "description": "Action class → decision per mode (docs/approval-classes.md, src/workflow/approval-classes.ts). Configurable classes accept any decision (validator V4 still forbids `auto` for mutation classes in shadow/advisory); `scope_change`/`replan` are never `auto`; high-risk classes (PLAN §7) are fixed to `stop`.",
           "properties": {
             "read_repository": {
               "$ref": "#/$defs/ApprovalPolicyPerMode",
@@ -323,6 +360,33 @@
                 "advisory": "stop",
                 "supervised": "queue",
                 "bounded_autonomous": "auto"
+              }
+            },
+            "delete_file": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "write_outside_ownership": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
+            "modify_project_config": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
               }
             },
             "run_checks": {
@@ -343,6 +407,15 @@
                 "bounded_autonomous": "queue"
               }
             },
+            "run_migration": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
             "install_dependencies": {
               "$ref": "#/$defs/ApprovalPolicyPerMode",
               "default": {
@@ -352,7 +425,34 @@
                 "bounded_autonomous": "queue"
               }
             },
+            "add_dependency": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
+            "network_access": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
             "local_commit": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "auto"
+              }
+            },
+            "push_own_branch": {
               "$ref": "#/$defs/ApprovalPolicyPerMode",
               "default": {
                 "shadow": "stop",
@@ -379,6 +479,24 @@
                 "bounded_autonomous": "auto"
               }
             },
+            "model_substitute_more_expensive": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "auto",
+                "advisory": "auto",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
+            "spend_over_estimate": {
+              "$ref": "#/$defs/ApprovalPolicyPerMode",
+              "default": {
+                "shadow": "auto",
+                "advisory": "auto",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
             "complete_task": {
               "$ref": "#/$defs/ApprovalPolicyPerMode",
               "default": {
@@ -388,7 +506,34 @@
                 "bounded_autonomous": "auto"
               }
             },
+            "scope_change": {
+              "$ref": "#/$defs/NoAutoPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
+            "replan": {
+              "$ref": "#/$defs/NoAutoPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
             "destructive_cleanup": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
+            "destructive_git": {
               "$ref": "#/$defs/HighRiskPolicy",
               "default": {
                 "shadow": "stop",
@@ -415,6 +560,15 @@
                 "bounded_autonomous": "stop"
               }
             },
+            "publishing": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
             "credential_access": {
               "$ref": "#/$defs/HighRiskPolicy",
               "default": {
@@ -424,7 +578,7 @@
                 "bounded_autonomous": "stop"
               }
             },
-            "publishing": {
+            "modify_policy": {
               "$ref": "#/$defs/HighRiskPolicy",
               "default": {
                 "shadow": "stop",
