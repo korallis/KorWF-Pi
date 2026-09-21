@@ -24,7 +24,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Write the task gate and phase gate formulas (PLAN §2.4–2.5) as testable specs.
 - [ ] Define unattended approval classes (auto / queue / stop) (PLAN §2.6).
 - [x] Select worker interface (subagent example vs SDK vs RPC).
-- [ ] Record architecture decisions and threat boundaries.
+- [x] Record architecture decisions and threat boundaries. (#17 → `docs/threat-model.md`, `docs/adr/0006`–`0010`, `docs/adr/README.md`)
 - [x] Write scenarios 2.8 as acceptance test outlines.
 
 ## 2. Package and adapter foundation (Stage 2)

@@ -195,8 +195,8 @@ of his working tab, while the actual work was invisible.
 
 ## Follow-ups
 
-- #17 threat model: add "worker SIGKILL orphans detached commands" and "compiled-in
-  extensions bypass `--no-extensions`" as residual risks with the mitigations above.
+- ~~#17 threat model~~ done: `docs/threat-model.md` R10 ("worker SIGKILL orphans detached commands") and R6 ("compiled-in
+  extensions bypass `--no-extensions`") carry the mitigations above.
 - Stage 2 `workers/` implementation issue: a worker must be visible in Herdr's Agents
   panel while it runs ("Worker visibility" above) — headless RPC workers are invisible by
   construction, so the Space-based surface is part of the worker lifecycle, not an
