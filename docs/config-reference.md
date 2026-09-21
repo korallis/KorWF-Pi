@@ -124,30 +124,49 @@ gate's `Approval` record (`docs/gates.md` C3), which a `policy` actor cannot sat
 
 ### 5.1 `approvals.classes` defaults
 
+The full vocabulary, per-class rationale and the deterministic classifier are in
+[approval-classes.md](approval-classes.md) (issue #15); `src/workflow/approval-classes.ts`
+is the data authority and a test fails if this schema's defaults drift from it.
 Columns are modes: shadow / advisory / supervised / bounded_autonomous.
 
-| Class | shadow | advisory | supervised | bounded_autonomous | Why |
+| Class | shadow | advisory | supervised | bounded_autonomous | Tier |
 |---|---|---|---|---|---|
-| `read_repository` | auto | auto | auto | auto | Reading is what every mode needs; deny paths (§6) still apply. |
-| `edit_worktree` | stop | stop | queue | auto | Mutation is impossible in shadow/advisory by definition; supervised asks; autonomous edits its own worktree only. |
-| `run_checks` | stop | stop | auto | auto | Deterministic checks are the gate's evidence; they are read-mostly and bounded by budgets. |
-| `run_shell` | stop | stop | queue | queue | Arbitrary shell is not pre-approved in any mode; the user opts in per project. |
-| `install_dependencies` | stop | stop | queue | queue | Network + arbitrary code execution; queued even when autonomous. |
-| `local_commit` | stop | stop | queue | auto | A local commit on a task branch is reversible and never leaves the machine. |
-| `spawn_worker` | stop | stop | queue | auto | Workers spend budget; supervised asks, autonomous is bounded by `budgets.workflow.maxConcurrency`. |
-| `model_fallback` | auto | auto | queue | auto | Switching within the allowlist is visible and recorded on the Attempt; supervised asks because it may change cost. |
-| `complete_task` | stop | stop | queue | auto | In supervised mode the user confirms completion; in autonomous the task gate (C1–C5) is the guard. |
-| `destructive_cleanup` | **stop** | **stop** | **stop** | **stop** | High-risk (PLAN §7). *Fixed.* |
-| `remote_push` | **stop** | **stop** | **stop** | **stop** | High-risk. *Fixed.* |
-| `deployment` | **stop** | **stop** | **stop** | **stop** | High-risk. *Fixed.* |
-| `credential_access` | **stop** | **stop** | **stop** | **stop** | High-risk. *Fixed.* |
-| `publishing` | **stop** | **stop** | **stop** | **stop** | High-risk. *Fixed.* |
+| `read_repository` | auto | auto | auto | auto | configurable |
+| `edit_worktree` | stop | stop | queue | auto | configurable |
+| `delete_file` | stop | stop | queue | auto | configurable |
+| `write_outside_ownership` | stop | stop | queue | queue | configurable |
+| `modify_project_config` | stop | stop | queue | queue | configurable |
+| `run_checks` | stop | stop | auto | auto | configurable |
+| `run_shell` | stop | stop | queue | queue | configurable |
+| `run_migration` | stop | stop | queue | queue | configurable |
+| `install_dependencies` | stop | stop | queue | queue | configurable |
+| `add_dependency` | stop | stop | queue | queue | configurable |
+| `network_access` | stop | stop | queue | queue | configurable |
+| `local_commit` | stop | stop | queue | auto | configurable |
+| `push_own_branch` | stop | stop | queue | auto | configurable |
+| `spawn_worker` | stop | stop | queue | auto | configurable |
+| `model_fallback` | auto | auto | queue | auto | configurable |
+| `model_substitute_more_expensive` | auto | auto | queue | queue | configurable |
+| `spend_over_estimate` | auto | auto | queue | queue | configurable |
+| `complete_task` | stop | stop | queue | auto | configurable |
+| `scope_change` | stop | stop | queue | queue | never `auto` (V11) |
+| `replan` | stop | stop | queue | queue | never `auto` (V11) |
+| `destructive_cleanup` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
+| `destructive_git` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
+| `remote_push` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
+| `deployment` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
+| `publishing` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
+| `credential_access` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
+| `modify_policy` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
 
 High-risk rows use `$defs/HighRiskPolicy`, whose four properties are each `const: "stop"`.
 A config that sets any of them to `auto` or `queue` fails schema validation — the system
-never weakens its own permission policy (AGENTS.md §4). The configurable rows may be set
-to any decision; validator rule V4 additionally forbids `auto` for mutation classes in
-`shadow` and `advisory`, because those modes are defined as non-mutating.
+never weakens its own permission policy (AGENTS.md §4). `scope_change` and `replan` use
+`$defs/NoAutoPolicy` (`enum: ["queue", "stop"]`). The configurable rows may be set to any
+decision; validator rule V4 additionally forbids `auto` for mutation classes in `shadow` and
+`advisory`, because those modes are defined as non-mutating. `remote_push` means a push to a
+ref the workflow does not own; the agent's own task branch is `push_own_branch`
+(PLAN §7, ADR 0005).
 
 ## 6. `privacy`
 
@@ -265,12 +284,15 @@ weaker interpretation.
 | V1 | `fallback.staticOrder` ⊆ effective allowlist (providers ∩ models, minus `overrides[*].disabled`). Every entry must also be a model Pi has configured; unknown refs are an error, not ignored. | Static order is the no-Jev path; it must not route outside the allowlist. |
 | V2 | All `Budget` numbers ≥ 0 (schema `minimum: 0`); `null` means no cap. | Negative caps are meaningless; `0` is a valid "nothing allowed" cap. |
 | V3 | Where both sides are non-null: `budgets.task.x ≤ budgets.phase.x ≤ budgets.workflow.x` for each cap kind `x`. | A child cap larger than its parent is unreachable and hides a mistake. |
-| V4 | `approvals.classes[c][m] ≠ "auto"` for any mutation class `c` (`edit_worktree`, `run_shell`, `install_dependencies`, `local_commit`, `spawn_worker`, `complete_task`) when `m ∈ {shadow, advisory}`. | Those modes are defined as non-mutating. |
+| V4 | `approvals.classes[c][m] ≠ "auto"` for any mutation class `c` (`MUTATION_CLASSES` in `src/workflow/approval-classes.ts`: every class except `read_repository`, `model_fallback`, `model_substitute_more_expensive`, `spend_over_estimate`) when `m ∈ {shadow, advisory}`. | Those modes are defined as non-mutating. |
 | V5 | `privacy.denyPaths` ⊇ shipped minimum and `privacy.denyPatterns` ⊇ shipped minimum. Enforced in-schema (`allOf` of `contains`/`const`) **and** re-checked by the validator after layered merge, so a higher-precedence file cannot drop entries by replacing the array. | The deny list can be extended, never reduced. |
 | V6 | Every `privacy.denyPatterns` entry compiles as an ECMAScript regex with flags `iu`. | A broken pattern must fail loudly, not silently match nothing. |
 | V7 | Each `privacy.allowPaths` entry must be a literal file path or a glob strictly narrower than a deny entry it intersects; `**`, bare directories and anything matching `**/.env` / key-material globs are rejected. `allowPaths` never applies to logging. | Carve-outs are for specific fixtures, not for re-opening a class. |
 | V8 | `storage.path`, if absolute and outside the project root, requires `allowOutsideProject: true`. | Keeps state next to the project unless explicitly moved. |
 | V9 | `models.allowlist.pins[*]` values and `models.overrides` keys must be in the effective allowlist. `jev.enabled: true` with an unresolvable key **downgrades to optional mode with a warning**, not an error. | Pins outside the allowlist would contradict it; a missing key must never prevent the deterministic workflow from running. |
+| V10 | `approvals.classes[c][m] = "stop"` for every high-risk class `c` and mode `m`; re-checked after layered merge by `validateApprovalClasses`. | PLAN §7: high-risk classes cannot be set to `auto`. |
+| V11 | `approvals.classes[c][m] ≠ "auto"` for `c ∈ {scope_change, replan}`. | PLAN §3.C: no silent scope expansion or replan. |
+| V12 | Every class present in `approvals.classes` has a decision for all four modes. | A partial row must not silently take an unseen default. |
 
 ## 12. Worked examples
 

@@ -7,7 +7,7 @@
  * defaults applied) and of the raw user input (everything optional).
  *
  * Defaults and the rationale for each live in `docs/config-reference.md`.
- * Cross-field rules (V1–V9 in that document) are enforced by the validator
+ * Cross-field rules (V1–V12 in that document) are enforced by the validator
  * in `src/config/` (issue #21), not here.
  *
  * Shared enums are re-used from `src/storage/records.ts` so config and
