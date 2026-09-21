@@ -151,6 +151,43 @@ describe("wrapWithCircuitBreaker: end-to-end over the mock transport", () => {
     await promise;
     expect(wrapped.breakerStatus().state).toBe("closed");
   });
+
+  it("a cancelled half-open probe does not close or reopen the breaker", async () => {
+    let now = 0;
+    const controller = new AbortController();
+    const mock = new MockJevTransport({ responder: () => errorResult("jev.unavailable", false) });
+    const wrapped = wrapWithCircuitBreaker(mock, {
+      deadlineMs: 60_000,
+      maxRetries: 0,
+      failureThreshold: 1,
+      resetTimeoutMs: 1000,
+      now: () => now,
+    });
+    // Trip the breaker, then let it become half-open.
+    await wrapped.evaluate(REQUEST);
+    expect(wrapped.breakerStatus().state).toBe("open");
+    now = 1000;
+
+    // A realistic transport observes the signal it is given (like
+    // `HttpJevTransport` does via `fetch`); this responder mirrors that.
+    mock.setResponder(
+      (_req, opts) =>
+        new Promise<JevEvaluateResult>((resolve) => {
+          opts?.signal?.addEventListener("abort", () => resolve(errorResult("jev.cancelled", false)), { once: true });
+        }),
+    );
+    const promise = wrapped.evaluate(REQUEST, { signal: controller.signal });
+    expect(wrapped.breakerStatus().state).toBe("half_open");
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await promise;
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") expect(result.error.code).toBe("jev.cancelled");
+    // Cancelling the probe neither closes it (still needs a real success) nor
+    // reopens it (cancellation is not a failure) — it stays half-open, so the
+    // next call gets a fresh probe attempt rather than being locked out.
+    expect(wrapped.breakerStatus().state).toBe("half_open");
+  });
 });
 
 describe("CircuitBreaker: closed/open/half-open", () => {

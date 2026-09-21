@@ -263,6 +263,11 @@ export class CircuitBreaker {
     this.#openedAt = null;
   }
 
+  /** A call was cancelled rather than succeeding or failing: release any half-open slot, change nothing else. */
+  onCancelled(): void {
+    if (this.#state === "half_open") this.#halfOpenInFlight = Math.max(0, this.#halfOpenInFlight - 1);
+  }
+
   onFailure(): void {
     if (this.#state === "half_open") {
       this.#halfOpenInFlight = Math.max(0, this.#halfOpenInFlight - 1);
@@ -430,11 +435,12 @@ export function wrapWithCircuitBreaker(
 
     if (outcome.kind === "ok") {
       breaker.onSuccess();
-    } else if (outcome.kind === "error" && outcome.error.code !== "jev.cancelled") {
+    } else if (outcome.kind === "error" && outcome.error.code === "jev.cancelled") {
+      // Cancellation is not a failure of the transport (ADR 0003 table); do not trip
+      // or close the breaker on it, only release any half-open slot taken.
+      breaker.onCancelled();
+    } else {
       breaker.onFailure();
-    } else if (outcome.kind === "error") {
-      // Cancellation is not a failure of the transport (ADR 0003 table); do not trip the breaker.
-      breaker.onSuccess();
     }
     return outcome;
   }
