@@ -39,6 +39,7 @@ Table columns: **Key** · **Type** · **Default** · **Why the default is safe**
 12. [Worked examples](#12-worked-examples)
 13. [Loading, layered merge, and environment overrides](#13-loading-layered-merge-and-environment-overrides)
 14. [First-use disclosure](#14-first-use-disclosure)
+15. [Credential resolution and redaction](#15-credential-resolution-and-redaction)
 
 ## 1. Root
 
@@ -427,3 +428,81 @@ data disclosure.
 
 `/korwf config` prints the effective config, its layers and any warnings;
 `/korwf disclosure` prints the disclosure text and this project's acceptance state.
+
+## 15. Credential resolution and redaction
+
+`src/security/secrets.ts` and `src/security/redact.ts` (issue #22). This section is the
+mechanical counterpart of the rule at the top of this document: **`jev.keySource` names
+where a key lives, never the key.**
+
+### 15.1 `resolveJevKey(config, options)`
+
+Resolution is **lazy** (nothing is read until it is called), **total** (it never throws
+and never logs) and **never returns a string**. The result is:
+
+| Field | Meaning |
+|---|---|
+| `status` | `resolved` · `jev_disabled` · `no_key_source` · `key_absent` · `secrets_unavailable` |
+| `secret` | a `Secret`, or `null`. Never a string. |
+| `jevEnabled` | true only when a key resolved **and** `jev.enabled` is true |
+| `source` | the configured `jev.keySource` (names only) |
+| `message` | one clear sentence for the user; contains no value |
+
+Lookup order for `keySource.kind`:
+
+- **`env`** — the variable named by `keySource.name` (default `TYPESAFE_API_KEY`), then
+  the documented development fallback `JEV_API_KEY`. The configured name always wins; the
+  fallback can be switched off with `allowFallbackNames: false`. A blank or whitespace-only
+  value counts as absent.
+- **`pi_secrets`** — Pi's secrets facility, supplied by the extension as a narrow
+  `SecretsPort` (`src/security/` never imports the Pi API; ADR 0002). No port ⇒
+  `secrets_unavailable`. A facility that throws is treated as "no key", because the thrown
+  object may quote the value it failed on.
+- **`none`** — nothing is looked for.
+
+`jev.enabled: false` short-circuits before any lookup: a user who turned Jev off does not
+have their environment read. `applyKeyResolution(config, resolution)` returns the config
+with `jev.enabled` forced to `false` when no key resolved — the same tightening the loader
+applies as the §13.4 V9 downgrade, and it can only ever turn Jev *off*.
+
+**A missing key is a state, not an error.** There is no failure variant and nothing throws;
+the deterministic workflow runs in full and each Jev-assisted decision takes its documented
+fallback (PLAN §3.J, ADR 0007). `/korwf jev` prints the resolution: source kind and name,
+where it resolved from, key length and a non-reversible fingerprint — never the key.
+
+### 15.2 The `Secret` wrapper
+
+`toString`, `toJSON`, `valueOf`, `Symbol.toPrimitive` and Node's inspect hook all return
+`[redacted]`, so template literals, string concatenation, `JSON.stringify`, `console.log`
+and `util.inspect` are all safe. The instance is frozen and the value lives in a private
+field reachable only through `expose()` or `withValue(fn)`; `authorizationHeader(secret)`
+is the one place it becomes a plain string, immediately inside the object handed to
+`fetch`. `fingerprint()` gives a stable, non-reversible id for traces and cache keys.
+
+### 15.3 The global redactor
+
+Two layers, because either alone is insufficient:
+
+1. **Registered values.** Constructing a `Secret` registers its literal value. That exact
+   string — and its percent-encoded, JSON-escaped and base64 forms — is replaced wherever
+   it appears. The registry is module-private: `redactedValues()` reports a count only.
+2. **Shape patterns.** Credential-shaped text is redacted whether or not this process
+   resolved it: `apikey_…`, `sk-…`, `gh[pousr]_…`, `AKIA…`, `xox?-…`, `AIza…`, JWTs, PEM
+   headers, `Bearer`/`Authorization`/`x-api-key` headers, `key|secret|token|password = …`
+   assignments, and `scheme://user:pass@` URLs. The set is a strict superset of
+   `scripts/check-secrets.sh` and of the shipped `privacy.denyPatterns` minimum, asserted
+   by `test/unit/security/scanner-parity.test.ts`.
+
+Entry points: `redactString`, `redactValue` (structure-aware — sensitive keys are dropped
+whole, cycles and depth are bounded, a getter that throws yields `[unreadable]`),
+`redactedStringify` (use instead of `JSON.stringify` for anything written to disk or sent
+to a trace), `redactError` (in place, so the class and `instanceof` survive) and
+`formatError`. Every logger comes from `createLogger`, whose sink is wrapped
+unconditionally, so there is no code path that writes an unredacted string.
+
+In the extension, `redactedUi(ctx.ui)` and `guardHandler` are the boundary: every `/korwf`
+message is redacted, and anything thrown inside a handler is redacted, reported as one
+line, and swallowed rather than taking the Pi session down.
+
+Nothing in the redactor throws. A redactor that failed would push callers back towards
+logging the raw value.
