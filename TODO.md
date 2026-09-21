@@ -37,7 +37,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Jev transport behind mockable interface; configurable base URL; optional mode when no key.
 - [x] Response validation for Choice/Score/Noul (unknown fields, bounds, malformed).
 - [ ] Cancellation, deadlines, bounded retries, backoff, circuit breaking.
-- [ ] Versioned question definitions and composition policy.
+- [x] Versioned question definitions and composition policy.
 - [ ] Minimal-state construction, outbound limits, default-deny path/data filtering.
 - [ ] Revision-aware caching and invalidation.
 - [x] Usage accounting; atomic budget reservations; known/estimated/unknown cost.
