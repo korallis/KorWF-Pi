@@ -40,7 +40,7 @@ import type {
   WorkflowId,
 } from "../storage/records.ts";
 import { RECORDS_SCHEMA_VERSION } from "../storage/records.ts";
-import type { LedgerScopeColumn, LedgerTotals } from "../storage/repos/index.ts";
+import type { LedgerScopeColumn } from "../storage/repos/index.ts";
 import type { Store } from "../storage/db.ts";
 import { StoreError } from "../storage/errors.ts";
 import type { BudgetsConfig } from "../config/types.ts";
