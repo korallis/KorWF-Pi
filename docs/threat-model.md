@@ -160,7 +160,7 @@ The diagram is normative: an edge not drawn here is a defect.
 | Edge | Precondition (all must hold) | Default state |
 |---|---|---|
 | 1 · TypeSafe | `jev.enabled: true` **and** a key resolves via `jev.keySource` **and** `firstUseDisclosure` has been shown (or explicitly disabled) **and** the body passed filters 1–5 | **Closed** (`jev.enabled: false`) |
-| 2 · Model provider | The model is in the effective allowlist (§2.1, V1) **and** the role's turn passed filters 1–5 **and** the approval class for the action was `auto` or approved | **Open only to what Pi already has configured**; KorWF never introduces a provider (the `mac-mini` author setup is a local uncommitted config, PLAN §11) |
+| 2 · Model provider | The model is in the effective allowlist (§2.1, V1) **and** the role's turn passed filters 1–5 **and** the approval class for the action was `auto` or approved | **Open only to what Pi already has configured**; KorWF never introduces a provider (the author's own proxy setup is a local uncommitted config, PLAN §11) |
 | 3 · Notification channels | The channel is enabled in config; `command` is treated as `run_shell` for approvals; `webhook` must be `https://` | **Closed** (all three off) |
 
 ### 4.3 Consistency check against the schema
