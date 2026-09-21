@@ -202,6 +202,28 @@ async function profileAndSelect(jev, issue, def, attempt, prev) {
     model = ranking.find((r) => r.model !== prev.model)?.model ?? CONFIG.staticFallbackOrder.find((m) => m !== prev.model && candidates.includes(m));
     rule += " (avoid capped)";
   }
+  // A model that has already failed this issue twice should not get a third go at it.
+  // Jev ranks the model against the *task*, which does not change between attempts, so
+  // it keeps returning the same top pick while the evidence says that pick is not
+  // working. Observed on #14: three consecutive claude-fable-5-1 attempts each stopped
+  // after ~67k tokens with a 53-83 character report and no fenced JSON block, writing no
+  // files; Jev agreed a different family should be tried (`try_different_family` 0.81).
+  // Deterministic rather than Jev-gated: it is an evidence count, not a judgment, and it
+  // must also hold when Jev is unavailable.
+  const repeatedFailures = (prevAttempts) => prevAttempts
+    .filter((a) => a.model === model && ["gap", "timeout", "error"].includes(a.outcome)).length;
+  const priorAttempts = state.attempts[issue.number] ?? [];
+  if (repeatedFailures(priorAttempts) >= 2) {
+    const family = (m) => m.split(/[-.]/)[0]; // claude-*, gpt-*, kimi-*, zai-*, grok-*
+    const failed = model;
+    const alt = ranking.find((r) => r.model !== failed && family(r.model) !== family(failed) && r.p >= 0.5)
+      ?? ranking.find((r) => r.model !== failed)
+      ?? { model: CONFIG.staticFallbackOrder.find((m) => m !== failed && candidates.includes(m)) };
+    if (alt?.model) {
+      model = alt.model;
+      rule += ` (${failed} failed \u00d72 \u2192 different family)`;
+    }
+  }
   const thinking = profile.depth >= 1.5 ? "high" : profile.depth >= 0.75 ? "medium" : "low";
   return { profile, model, rule, ranking, thinking };
 }
