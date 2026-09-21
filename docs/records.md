@@ -250,6 +250,17 @@ property.
 `AuditEntry` is the PLAN §5 "append-only audit table"; it is not a PLAN §5 record but is
 defined here because the mutability rules in §4 depend on it.
 
+Two tables are deliberately **outside** this taxonomy because they carry no independent
+truth about the workflow, only pointers into it:
+
+- `decision_cache` (#29) — a cache row that points at the `Decision` which is the answer.
+- `decision_trace` (#31) — observability *about* a `Decision`: the five PLAN §3.I versions,
+  latency, retries, breaker state, a sanitised outbound summary, and an optional pointer
+  to opt-in raw payload bytes. Write-once (a trigger rejects UPDATE from any connection)
+  but deletable, because PLAN §7 requires retention and deletion controls for logging.
+  Deleting a trace never deletes the `Decision` it pointed at — the foreign key is
+  `ON DELETE RESTRICT`. See [decision-traces.md](decision-traces.md).
+
 The compile-time test `test/storage/records.types.test.ts` asserts every property in this
 table exists on the corresponding interface.
 
