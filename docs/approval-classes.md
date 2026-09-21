@@ -28,3 +28,36 @@ auto-approved on timeout (config-reference §5).
 A disposition is **not** an `Approval` record. `auto` means "no prompt"; the task gate
 (gates.md C3) and phase gate (P4) still require a valid `Approval` with `actor.kind = user` for
 any high-risk task, and a `policy` actor can never satisfy that.
+
+## 2. How a class is judged (the ADR 0005 test)
+
+A class describes **what the act does**, not which file, label, topic or directory it touches.
+The test, from [ADR 0005](adr/0005-agent-autonomy-and-approval-scope.md):
+
+> reversible **∧** touches no credential **∧** no consumer impact **∧** not a policy loosening
+> ⇒ candidate for `auto`.
+
+Failing exactly one of the four is what makes a class `queue`-by-default; failing it
+*irreversibly* or in a way only the owner can resolve is what makes it high-risk (`stop`,
+fixed). Consequences of applying the test rather than a proxy:
+
+- Pushing the workflow's own task branch to the configured remote (`push_own_branch`) is
+  reversible, credential-free, reaches no consumer and loosens nothing → configurable, `auto`
+  in bounded-autonomous. The PLAN §7 "remote push" (`remote_push`) is a push to a ref the
+  workflow does not own or to another remote — consumers receive it → `stop`, fixed.
+- Deleting a git-tracked file inside the worktree (`delete_file`) is reversible → configurable.
+  Deleting anything not recoverable from git (`destructive_cleanup`) is not → `stop`, fixed.
+- Editing the target project's build/test config (`modify_project_config`) is reversible but
+  changes what the checks measure → `queue`. Editing KorWF's own policy (`modify_policy`) is a
+  policy loosening → `stop`, fixed, regardless of which file carries it.
+- A `Task.riskClass = high` label does **not** make an edit `stop`; the label drives the gate's
+  human-approval requirement (gates.md C3), while this table drives what the worker may do
+  unattended. Both apply; neither substitutes for the other.
+
+## 3. Tiers
+
+| Tier | Config freedom | Why |
+|---|---|---|
+| **configurable** | any decision per mode, subject to V4 (no `auto` for a mutation class in `shadow`/`advisory`, which are non-mutating by definition) | The user pre-approves what they are comfortable with per mode. |
+| **never auto** (`scope_change`, `replan`) | `queue` or `stop` only, schema `enum` + V11 | PLAN §3.C: replan without silent scope expansion. Reversible, so not pinned to `stop`. |
+| **high-risk** (PLAN §7) | `stop` only, schema `const` + V10 | Destructive cleanup, deployment, credential access, publishing, force-push/rewriting shared history, changes to permission/allowlist/spending policy, pushes to refs the workflow does not own. Explicit approval regardless of mode. |
