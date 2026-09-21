@@ -427,7 +427,8 @@ data disclosure.
   (threat model §4.2, "shown, or explicitly disabled"). It changes no filter.
 
 `/korwf config` prints the effective config, its layers and any warnings;
-`/korwf disclosure` prints the disclosure text and this project's acceptance state.
+`/korwf disclosure` prints the disclosure text and this project's acceptance state;
+`/korwf jev` prints credential resolution (§15).
 
 ## 15. Credential resolution and redaction
 
