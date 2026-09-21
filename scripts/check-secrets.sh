@@ -20,7 +20,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 # Patterns are intentionally simple substrings/prefixes, not full secret
 # formats — false positives are fine here, false negatives are not.
-PATTERN='apikey_[A-Za-z0-9]|[^a-zA-Z0-9_-]sk-[A-Za-z0-9]{10,}|^sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|JEV_API_KEY='
+PATTERN='apikey_[A-Za-z0-9]|[^a-zA-Z0-9_-]sk-[A-Za-z0-9]{10,}|^sk-[A-Za-z0-9]{10,}|ghp_[A-Za-z0-9]{10,}|JEV_API_KEY='  # check-secrets:allow
 
 MODE="tracked"
 RANGE=""
