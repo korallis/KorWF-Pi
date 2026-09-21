@@ -1,0 +1,15 @@
+{
+  "description": "model field absent entirely; version check must be 'missing', not a throw",
+  "questionKey": "q1",
+  "expectedCode": null,
+  "expectedVersionStatus": "missing",
+  "request": {
+    "state": "state",
+    "model": "jev-1.13.0",
+    "questions": { "q1": { "type": "noul", "instructions": "is it true" } }
+  },
+  "raw": {
+    "answers": { "q1": { "type": "noul", "noul": 0.4 } },
+    "usage": { "input_tokens": 1, "output_tokens": 1 }
+  }
+}

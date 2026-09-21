@@ -1,0 +1,23 @@
+{
+  "description": "score legend/probabilities keys do not match 0..N-1",
+  "questionKey": "q1",
+  "expectedCode": "key_mismatch",
+  "request": {
+    "state": "state",
+    "model": "jev-1.13.0",
+    "questions": { "q1": { "type": "score", "instructions": "rate it", "criteria": ["low", "mid", "high"] } }
+  },
+  "raw": {
+    "model": "jev-1.13.0",
+    "answers": {
+      "q1": {
+        "type": "score",
+        "score": 1,
+        "legend": { "0": "low", "1": "mid", "5": "high" },
+        "probabilities": { "0": 0.3, "1": 0.3, "5": 0.4 },
+        "confidence": 0.8
+      }
+    },
+    "usage": { "input_tokens": 1, "output_tokens": 1 }
+  }
+}
