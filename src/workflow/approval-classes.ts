@@ -354,3 +354,47 @@ export interface ActFacts {
   readonly isDeploy?: boolean;
   readonly isPublish?: boolean;
 }
+
+/**
+ * Deterministic classifier (docs/approval-classes.md §5). Rules are ordered
+ * most-restrictive-first and the first match wins, so an act that satisfies
+ * several rules lands in the most restrictive class. Anything unmatched falls
+ * to `run_shell` for executions and `write_outside_ownership` for writes —
+ * never to `auto` by omission. Jev is not consulted here.
+ */
+export function classifyAct(f: ActFacts): ApprovalClassId {
+  // High-risk first (PLAN §7). Order within the tier does not matter: all are `stop`.
+  if (f.touchesDenyPath === true) return "credential_access";
+  if (f.touchesKorwfPolicy === true) return "modify_policy";
+  if (f.isPublish === true || f.gitOp === "tag") return "publishing";
+  if (f.isDeploy === true || (f.isMigration === true && f.targetIsEphemeral !== true)) return "deployment";
+  if (f.gitOp === "force_push" || f.gitOp === "rewrite" || f.gitOp === "delete_ref") return "destructive_git";
+  if (f.gitOp === "push" && (f.refOwnedByWorkflow !== true || f.remoteIsConfigured !== true)) return "remote_push";
+  if (f.kind === "delete" && (f.gitTracked !== true || f.insideWorktree !== true)) return "destructive_cleanup";
+  if ((f.kind === "write" || f.kind === "delete") && f.insideWorktree !== true) return "destructive_cleanup";
+  // Never-auto.
+  if (f.planOp === "scope_change") return "scope_change";
+  if (f.planOp === "replan") return "replan";
+  // Configurable, medium before low.
+  if (f.kind === "network") return f.hostAllowlisted === true ? "read_repository" : "network_access";
+  if (f.kind === "model") return (f.costDeltaUsd ?? 0) > 0 ? "model_substitute_more_expensive" : "model_fallback";
+  if (f.kind === "task") {
+    if (f.taskOp === "spend_over_estimate") return "spend_over_estimate";
+    if (f.taskOp === "complete_task") return "complete_task";
+    return "spawn_worker";
+  }
+  if (f.kind === "git") return f.gitOp === "push" ? "push_own_branch" : "local_commit";
+  if (f.kind === "exec") {
+    if (f.isRegisteredCheck === true) return "run_checks";
+    if (f.isMigration === true) return "run_migration";
+    if (f.touchesDependencyManifest === true) return "add_dependency";
+    if (f.isInstallOfDeclared === true) return "install_dependencies";
+    return "run_shell";
+  }
+  if (f.kind === "read") return "read_repository";
+  // write | delete inside the worktree
+  if (f.touchesDependencyManifest === true) return "add_dependency";
+  if (f.touchesProjectConfig === true) return "modify_project_config";
+  if (f.insideOwnership !== true) return "write_outside_ownership";
+  return f.kind === "delete" ? "delete_file" : "edit_worktree";
+}
