@@ -61,3 +61,100 @@ fixed). Consequences of applying the test rather than a proxy:
 | **configurable** | any decision per mode, subject to V4 (no `auto` for a mutation class in `shadow`/`advisory`, which are non-mutating by definition) | The user pre-approves what they are comfortable with per mode. |
 | **never auto** (`scope_change`, `replan`) | `queue` or `stop` only, schema `enum` + V11 | PLAN §3.C: replan without silent scope expansion. Reversible, so not pinned to `stop`. |
 | **high-risk** (PLAN §7) | `stop` only, schema `const` + V10 | Destructive cleanup, deployment, credential access, publishing, force-push/rewriting shared history, changes to permission/allowlist/spending policy, pushes to refs the workflow does not own. Explicit approval regardless of mode. |
+
+## 4. Default disposition table
+
+Columns are modes (`WorkflowMode`): shadow / advisory / supervised / bounded_autonomous.
+Bold rows are fixed. This table is generated from `APPROVAL_CLASS_TABLE`; the test
+`AC1` in `test/workflow/approval-classes.test.mjs` fails if this section, the code and
+`schema.json` disagree.
+
+| Class | Tier | Risk | shadow | advisory | supervised | bounded_autonomous | Act | Why (ADR 0005 test) |
+|---|---|---|---|---|---|---|---|---|
+| `read_repository` | configurable | low | auto | auto | auto | auto | Read files, history or metadata inside the repository, minus privacy deny paths. | No mutation, no credential (deny paths exclude them), nothing leaves the machine. |
+| `edit_worktree` | configurable | low | stop | stop | queue | auto | Create or modify a tracked or new file inside the task worktree and within the task's ownership. | Reversible via git; isolated in the task worktree; no consumer impact until merged and gated. |
+| `delete_file` | configurable | low | stop | stop | queue | auto | Delete a git-tracked file inside the task worktree and ownership. Untracked, ignored or out-of-worktree deletion is destructive_cleanup. | Tracked content is recoverable from history; the task gate still has to pass on the result. |
+| `write_outside_ownership` | configurable | medium | stop | stop | queue | queue | Create, modify or delete a file in the worktree outside the task's declared ownership paths/components. | Reversible, but may collide with another task's ownership (PLAN §3.E) and hides scope creep. |
+| `modify_project_config` | configurable | medium | stop | stop | queue | queue | Edit build, test, lint, CI or packaging configuration of the target project (not KorWF policy — that is modify_policy). | Reversible, but can change what the deterministic checks measure; a human should see it before it is trusted. |
+| `run_checks` | configurable | low | stop | stop | auto | auto | Execute a registered check definition of the task inside its worktree. | Bounded by the check definition and budgets; produces gate evidence; read-mostly. |
+| `run_shell` | configurable | medium | stop | stop | queue | queue | Execute a shell command that is not a registered check and matches no other class. | Arbitrary code execution; reversibility unknown. Never pre-approved by default; the user opts in per project. |
+| `run_migration` | configurable | medium | stop | stop | queue | queue | Run a schema or data migration against a local/ephemeral development database created by the task. | Reversible on a throwaway store; against any shared or persistent store it is deployment. |
+| `install_dependencies` | configurable | medium | stop | stop | queue | queue | Install the project's already-declared dependencies (lockfile unchanged). | Network plus execution of install scripts, but nothing new enters the declared set. |
+| `add_dependency` | configurable | medium | stop | stop | queue | queue | Add, remove or change the version of a declared dependency (manifest or lockfile diff). | Reversible, but consumers inherit supply-chain and licence consequences; a human should see it. |
+| `network_access` | configurable | medium | stop | stop | queue | queue | Any outbound connection other than the configured Jev endpoint, model providers and the package registry used by install_dependencies. | Data may leave the machine (PLAN §7 data policy); destination is not pre-approved. |
+| `local_commit` | configurable | low | stop | stop | queue | auto | Create a commit on the task branch in the task worktree. | Reversible, local, never leaves the machine. |
+| `push_own_branch` | configurable | low | stop | stop | queue | auto | Fast-forward push of the workflow's own task branch to the workflow's configured remote (ADR 0005). | Reversible (branch can be deleted), no shared history rewritten, nothing consumers receive. Not the PLAN §7 remote push. |
+| `spawn_worker` | configurable | low | stop | stop | queue | auto | Start a worker attempt for a ready task within the allowlist and budgets. | Spends budget; bounded by budgets.*.maxConcurrency and the caps; visible in the task board. |
+| `model_fallback` | configurable | low | auto | auto | queue | auto | Switch a running or next attempt to another allowlisted model at equal or lower estimated cost. | Within the allowlist, recorded on the Attempt, visible; cost cannot rise. |
+| `model_substitute_more_expensive` | configurable | medium | auto | auto | queue | queue | Switch to an allowlisted model whose estimated cost for the attempt exceeds the primary's. | Within the allowlist but spends more than the plan assumed; budgets still hard-stop. |
+| `spend_over_estimate` | configurable | medium | auto | auto | queue | queue | Continue a phase whose projected spend exceeds the pre-run estimate by budgets' tolerance (never past a hard cap). | Money; a hard cap is still a hard stop regardless of this class (PLAN §2.6). |
+| `complete_task` | configurable | low | stop | stop | queue | auto | Mark a task done after the task gate (docs/gates.md C1–C5) has passed. | The gate is the guard; this class decides only whether a human confirms the transition. |
+| `scope_change` | never auto | medium | stop | stop | queue | queue | Change a task's goal, acceptance criteria or exclusions, or add/remove tasks in the running phase. | Reversible, but PLAN §3.C forbids silent scope expansion; invalidates approvals (plan_revision_changed). |
+| `replan` | never auto | medium | stop | stop | queue | queue | Regenerate the phase plan or task decomposition after a failure or gap. | Reversible, but it is a product decision the user must see; never auto in any mode. |
+| `destructive_cleanup` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Delete or overwrite anything not recoverable from git: untracked/ignored files, directories outside the worktree, other worktrees, stores. | Irreversible. |
+| `destructive_git` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Rewrite or discard history that is shared or not owned by this workflow: force-push, branch -D of a non-task branch, reset --hard past pushed commits, reflog expiry, tag deletion. | Irreversible for other people; PLAN §7 'force-pushing or rewriting shared history'. |
+| `remote_push` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Push to a ref the workflow does not own (main/default branch, shared branches, another workflow's branch) or to a remote other than the configured one. | Consumers receive it; may be irreversible downstream. The agent's own task branch is push_own_branch. |
+| `deployment` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Any action that changes a running or shared environment: deploy, migrate a shared database, change infrastructure. | Consumer impact; often irreversible. |
+| `publishing` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Publish or release: create/push tags, publish to a registry, create a release, anything consumers receive. | Consumers receive it; registries do not un-publish. |
+| `credential_access` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Read, write, print or transmit a secret, key, token or credential store, or a privacy deny path. | Credential. |
+| `modify_policy` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Change KorWF config or policy: approval classes, allowlist, budgets, privacy lists, execution isolation, or this table. | Policy loosening; the system never weakens its own permission, allowlist or spending policy (AGENTS.md §4). |
+
+Mode rationale: `shadow` observes only and `advisory` proposes only, so every mutation is
+`stop` there and the only `auto` rows are non-mutating (read, model choice, spend bookkeeping).
+`supervised` acts only on explicit approval, so mutations are `queue` and the user works the
+queue. `bounded_autonomous` pre-approves reversible, local, credential-free acts and queues
+anything that spends more than planned, reaches the network, changes dependencies or leaves
+the task's ownership.
+
+## 5. Notification payload
+
+Every `approval_queued` and `phase_stopped` notification (config-reference §8) carries the
+common fields below plus the class-specific fields from the table. Payloads are built from
+records and `ActFacts` only; they pass the privacy filter (§6 of config-reference) and never
+include file contents, secrets or raw model output.
+
+Common fields: `event`, `class`, `tier`, `decision`, `mode`, `workflowId`, `phaseId`, `taskId`, `taskRevision`, `planRevision`, `attemptId`, `summary`, `determinedBy`, `jevEscalation`, `expiresAt`, `resume`, `createdAt`.
+
+| Field | Content |
+|---|---|
+| `event` | `approval_queued` or `phase_stopped` (`NotificationEvent`). |
+| `class`, `tier`, `decision`, `mode` | The classified act and the disposition that produced the notification. |
+| `workflowId`, `phaseId`, `taskId`, `taskRevision`, `planRevision`, `attemptId` | Record ids the answer must be scoped to; a later revision invalidates it (records.md §6). |
+| `summary` | One line, human-readable, from the deterministic classifier (never from the worker's prose). |
+| `determinedBy` | The matching rule id of the classifier (§6), so the user can see *why* the class was chosen. |
+| `jevEscalation` | `null`, or `{questionId, proposed, probability}` when Jev raised the decision. |
+| `expiresAt` | When the queued item becomes plain `blocked` (`queueTimeoutMinutes`), or `null`. |
+| `resume` | The command that answers it: `/korwf approve <id>`, `/korwf deny <id>`, or `/korwf resume <phase>`. |
+| `createdAt` | ISO timestamp. |
+
+Class-specific fields:
+
+| Class | Fields |
+|---|---|
+| `read_repository` | `paths` |
+| `edit_worktree` | `paths`, `bytesChanged` |
+| `delete_file` | `paths` |
+| `write_outside_ownership` | `paths`, `ownerTaskIds` |
+| `modify_project_config` | `paths`, `checksAffected` |
+| `run_checks` | `checkId`, `command` |
+| `run_shell` | `command`, `cwd` |
+| `run_migration` | `command`, `target` |
+| `install_dependencies` | `command`, `packageManager` |
+| `add_dependency` | `packages`, `manifestPaths` |
+| `network_access` | `hosts`, `purpose` |
+| `local_commit` | `branch`, `sha` |
+| `push_own_branch` | `branch`, `remote`, `sha` |
+| `spawn_worker` | `role`, `modelRef`, `estimatedCost` |
+| `model_fallback` | `fromModelRef`, `toModelRef`, `reason` |
+| `model_substitute_more_expensive` | `fromModelRef`, `toModelRef`, `estimatedCostDelta` |
+| `spend_over_estimate` | `estimateUsd`, `projectedUsd`, `capUsd` |
+| `complete_task` | `gateReceiptId` |
+| `scope_change` | `planRevisionFrom`, `planRevisionTo`, `diffSummary` |
+| `replan` | `reason`, `planRevisionFrom`, `proposedTaskCount` |
+| `destructive_cleanup` | `paths` |
+| `destructive_git` | `command`, `refs` |
+| `remote_push` | `branch`, `remote`, `sha` |
+| `deployment` | `target`, `command` |
+| `publishing` | `artifact`, `target` |
+| `credential_access` | `paths`, `secretKind` |
+| `modify_policy` | `paths`, `keysChanged` |
