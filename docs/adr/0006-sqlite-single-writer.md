@@ -74,6 +74,30 @@ Rules the implementation (#23) must follow:
    `storage.artifactRetentionDays`; deletion never removes a row (rows record the
    artifact as expired).
 
+## Driver (recorded by #23)
+
+**`node:sqlite`**, the module built into Node itself. Issue #23 required the driver to be
+on the M0-approved dependency list and to prefer the built-in one if the Node floor
+allows. It does, once the floor moves: `node:sqlite` is available without
+`--experimental-sqlite` from **Node 22.13**, so `engines.node` is `>=22.13`
+(`docs/platform-support.md`). On 22.6–22.12 `require("node:sqlite")` throws
+`ERR_UNKNOWN_BUILTIN_MODULE`, which would leave the package unable to open its own store.
+
+Why not `better-sqlite3`: it is a native addon, so every install needs a prebuilt binary
+for the user's platform and Node ABI or a local toolchain — for a Pi *package* that is a
+new class of install failure, on the one component whose absence disables the whole
+workflow. `node:sqlite` adds no dependency, no build step and no third-party notice.
+Its API surface used here (`DatabaseSync`, `prepare`, `exec`, `run/get/all`, triggers,
+WAL) is the same shape as `better-sqlite3`'s, so swapping back behind the repository
+interface stays possible if the built-in module ever proves insufficient.
+
+Storage shape (the question `docs/records.md` §11 left open): envelope fields and every
+column that is joined, filtered or foreign-keyed on are real columns; the record itself is
+one canonical-JSON `payload` column. Nested foreign keys written `a.b` in
+`docs/records.md` §9 are promoted to real columns (`decision.subjectTaskId`,
+`approval.scopeTaskId`, `memory.sourceDecisionId`, …) so SQLite enforces them rather than
+application code.
+
 ## Consequences
 
 - `src/storage/` is a leaf module (ADR 0002) exposing typed repositories, a write queue,
