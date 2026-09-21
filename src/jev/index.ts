@@ -27,6 +27,7 @@ export { JevTransportError, noulQuestion, choiceQuestion, scoreQuestion } from "
 
 export type { HttpJevTransportOptions, FetchLike } from "./http.ts";
 export type { MockCall, MockResponder, MockJevTransportOptions } from "./mock.ts";
+export { filterForTest } from "./mock.ts";
 
 export {
   withDeadline,

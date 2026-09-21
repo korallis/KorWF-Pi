@@ -47,3 +47,37 @@ export type {
   KeyResolutionStatus,
   KeyDiagnostics,
 } from "./secrets.ts";
+
+// Default-deny outbound filtering (issue #28; PLAN §7). `OutboundPolicy` is
+// the single enforcement point: nothing leaves for TypeSafe or a model
+// provider without passing through it.
+export type { DenyRule, DenyVerdict, DenyMatcherOptions } from "./deny-list.ts";
+export {
+  DenyMatcher,
+  SHIPPED_DENY_PATH_NOTES,
+  assertDenyListDocumented,
+  globToRegExp,
+  normalisePath,
+} from "./deny-list.ts";
+
+export type {
+  FilteredPayload,
+  FilteredRequest,
+  FilterOptions,
+  OutboundPayload,
+  OutboundPolicyOptions,
+  OutboundPurpose,
+  OutboundReport,
+  RemovedItem,
+  Snippet,
+  TruncationItem,
+} from "./outbound.ts";
+export {
+  OutboundPolicy,
+  TRUNCATION_MARKER,
+  byteLength,
+  compileDenyPatterns,
+  defaultOutboundPolicy,
+  outboundReportOf,
+  truncateToBytes,
+} from "./outbound.ts";

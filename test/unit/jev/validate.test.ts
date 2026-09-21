@@ -18,7 +18,7 @@ import {
   checkVersion,
   resetVersionMismatchLog,
 } from "../../../src/jev/validate.ts";
-import { MockJevTransport } from "../../../src/jev/mock.ts";
+import { MockJevTransport, filterForTest } from "../../../src/jev/mock.ts";
 import { createLogger, memorySink } from "../../../src/security/redact.ts";
 import type { SystemOneRequest } from "../../../src/jev/transport.ts";
 
@@ -148,7 +148,7 @@ describe("a malformed response never becomes a decision (degrades like a missing
         },
       ],
     });
-    const result = await transport.evaluate(request);
+    const result = await transport.evaluate(filterForTest(request));
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") throw new Error("unreachable");
     const validated = validateResponse(request, result.response);
