@@ -8,7 +8,8 @@
  * ⇒ Jev features off with a clear message, never a crash" true by
  * construction rather than by every caller remembering to check first.
  */
-import type { JevEvaluateOptions, JevEvaluateResult, JevTransport, SystemOneRequest } from "./transport.ts";
+import type { FilteredRequest } from "../security/outbound.ts";
+import type { JevEvaluateOptions, JevEvaluateResult, JevTransport } from "./transport.ts";
 
 const DEFAULT_MESSAGE =
   "Jev assistance is off: every Jev-assisted decision takes its deterministic fallback. The workflow is unaffected.";
@@ -21,7 +22,7 @@ export class DisabledJevTransport implements JevTransport {
     this.#message = message;
   }
 
-  evaluate(_request: SystemOneRequest, _options?: JevEvaluateOptions): Promise<JevEvaluateResult> {
+  evaluate(_request: FilteredRequest, _options?: JevEvaluateOptions): Promise<JevEvaluateResult> {
     return Promise.resolve({ kind: "disabled", message: this.#message });
   }
 

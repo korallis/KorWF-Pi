@@ -27,6 +27,7 @@
  */
 import { createHash } from "node:crypto";
 import type { JevEvaluateOptions, JevTransport, SystemOneRequest } from "../jev/transport.ts";
+import { defaultOutboundPolicy, outboundReportOf, type OutboundPolicy } from "../security/outbound.ts";
 import { validateResponse, type JevAnswer, type ValidatedAnswer } from "../jev/validate.ts";
 import type { Distribution } from "../storage/records.ts";
 import { canonicalJson } from "../storage/repos/base.ts";
@@ -76,6 +77,17 @@ export interface AskContext {
   readonly signal?: AbortSignal;
   /** Monotonic clock, injectable for deterministic latency in tests. */
   readonly nowMs?: () => number;
+  /**
+   * Outbound data policy (issue #28, PLAN §7). Every request is filtered
+   * through it before the transport sees it: denied paths dropped, secrets
+   * redacted, byte caps applied. Omitted, the shipped defaults are used,
+   * which are the strictest configuration — project config can only add deny
+   * entries, never remove them — so forgetting to pass one cannot weaken the
+   * policy.
+   */
+  readonly outbound?: OutboundPolicy;
+  /** Called with the filter report for each request, for the decision trace. */
+  readonly onOutbound?: (report: ReturnType<typeof outboundReportOf>) => void;
 }
 
 /** One question plus the input it is asked about. */
@@ -317,7 +329,13 @@ async function askBatch(ctx: AskContext, state: unknown, items: readonly AnyItem
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
     ...(ctx.deadlineMs !== undefined ? { deadlineMs: ctx.deadlineMs } : {}),
   };
-  const outcome = await ctx.transport.evaluate(pendingRequest, options);
+  // Nothing reaches the transport unfiltered: `evaluate` takes only a
+  // `FilteredRequest`, and this is the one place that mints one (issue #28).
+  const policy = ctx.outbound ?? defaultOutboundPolicy();
+  const filtered = policy.filterRequest(pendingRequest, "jev.decision");
+  ctx.onOutbound?.(outboundReportOf(filtered));
+
+  const outcome = await ctx.transport.evaluate(filtered, options);
   const latencyMs = outcome.kind === "disabled" ? null : nowMs() - started;
 
   if (outcome.kind !== "ok") {
@@ -332,7 +350,7 @@ async function askBatch(ctx: AskContext, state: unknown, items: readonly AnyItem
     return results;
   }
 
-  const validated = validateResponse(pendingRequest, outcome.response, { pinnedModel: ctx.model });
+  const validated = validateResponse(filtered, outcome.response, { pinnedModel: ctx.model });
   const jevModel = typeof outcome.response.model === "string" ? outcome.response.model : ctx.model;
   for (const { item, index } of pending) {
     const answer = validated.answers[wireKeyFor(index, item)] ?? null;

@@ -13,6 +13,7 @@
  */
 import { authorizationHeader, type Secret } from "../security/secrets.ts";
 import { formatError, redactString } from "../security/redact.ts";
+import { defaultOutboundPolicy, type FilteredRequest } from "../security/outbound.ts";
 import {
   JevTransportError,
   type JevErrorCode,
@@ -154,13 +155,18 @@ export class HttpJevTransport implements JevTransport {
   async ping(options: JevEvaluateOptions = {}): Promise<JevEvaluateResult> {
     // A minimal, cheap request: one noul question over empty state. Real
     // reachability probe, still a billed call, so callers use it sparingly.
+    // Filtered like any other request (issue #28): the shipped policy is the
+    // strictest one, and the probe body is constant and secret-free.
     return this.evaluate(
-      { state: "", model: this.#model, questions: { ping: { type: "noul", instructions: "Respond." } } },
+      defaultOutboundPolicy().filterRequest(
+        { state: "", model: this.#model, questions: { ping: { type: "noul", instructions: "Respond." } } },
+        "jev.ping",
+      ),
       options,
     );
   }
 
-  async evaluate(request: SystemOneRequest, options: JevEvaluateOptions = {}): Promise<JevEvaluateResult> {
+  async evaluate(request: FilteredRequest, options: JevEvaluateOptions = {}): Promise<JevEvaluateResult> {
     const start = Date.now();
     const deadlineMs = options.deadlineMs ?? this.#timeoutMs;
     const requestId = options.requestId ?? genRequestId();

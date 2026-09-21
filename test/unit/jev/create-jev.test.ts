@@ -3,7 +3,7 @@
  * throws, no live network request is ever attempted.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { createJev, DisabledJevTransport, HttpJevTransport } from "../../../src/jev/index.ts";
+import { createJev, DisabledJevTransport, HttpJevTransport, filterForTest } from "../../../src/jev/index.ts";
 import { defaultConfig } from "../../../src/config/index.ts";
 import { clearRegisteredSecrets } from "../../../src/security/redact.ts";
 import type { KorwfConfig } from "../../../src/config/types.ts";
@@ -52,7 +52,7 @@ describe("createJev: no key => DisabledJevTransport, never throws", () => {
     const base = defaultConfig();
     const config = { ...base, jev: { ...base.jev, enabled: true } } as KorwfConfig;
     const jev = createJev(config, { env: {}, fetchImpl: failingFetch() });
-    const result = await jev.evaluate({ state: "x", model: "jev-1.13.0", questions: {} });
+    const result = await jev.evaluate(filterForTest({ state: "x", model: "jev-1.13.0", questions: {} }));
     expect(result.kind).toBe("disabled");
   });
 });

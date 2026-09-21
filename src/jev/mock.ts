@@ -5,12 +5,24 @@
  * call recorder, so a test can assert both "what was asked" and "what came
  * back" without a network.
  */
+import { defaultOutboundPolicy, type FilteredRequest } from "../security/outbound.ts";
 import type {
   JevEvaluateOptions,
   JevEvaluateResult,
   JevTransport,
   SystemOneRequest,
 } from "./transport.ts";
+
+/**
+ * Mint a `FilteredRequest` for a test that wants to exercise the transport
+ * directly. It really does run the shipped outbound policy — there is no
+ * unfiltered path, in tests or otherwise (issue #28) — so a fixture carrying
+ * a denied path or a credential shape comes back filtered, as it would in
+ * production.
+ */
+export function filterForTest(request: SystemOneRequest): FilteredRequest {
+  return defaultOutboundPolicy().filterRequest(request);
+}
 
 export interface MockCall {
   readonly request: SystemOneRequest;
@@ -60,7 +72,7 @@ export class MockJevTransport implements JevTransport {
     this.#pingResponse = options.pingResponse ?? DEFAULT_PING_OK;
   }
 
-  async evaluate(request: SystemOneRequest, options?: JevEvaluateOptions): Promise<JevEvaluateResult> {
+  async evaluate(request: FilteredRequest, options?: JevEvaluateOptions): Promise<JevEvaluateResult> {
     this.calls.push({ request, options, at: Date.now() });
     if (this.#responder) return this.#responder(request, options);
     const next = this.#queue.shift();
