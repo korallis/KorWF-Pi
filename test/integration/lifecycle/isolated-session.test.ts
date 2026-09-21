@@ -8,7 +8,7 @@
  * must write nothing outside the temp directory.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
   installPackage,
@@ -66,7 +66,9 @@ describe.skipIf(!available)("M2 exit: the package loads in an isolated Pi sessio
     const entry = String(settings.packages?.[0]);
     const resolved = entry.startsWith("/") ? entry : join(pi.configDir, entry);
     expect(statSync(join(resolved, "package.json")).isFile()).toBe(true);
-    expect(resolved.replace(/\/+$/, "")).toBe(PACKAGE_ROOT);
+    // `realpathSync` on both sides: macOS runners expose the temp dir through
+    // a symlink (`/tmp` → `/private/tmp`), so the raw strings differ there.
+    expect(realpathSync(resolved)).toBe(realpathSync(PACKAGE_ROOT));
   });
 
   it("runs /korwf version in the session and reports the package version", () => {
