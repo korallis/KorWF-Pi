@@ -124,3 +124,54 @@ same input gives the same result.
 - **Given** everything else green, no recorded policy result row
 - **When** evaluated
 - **Then** rejected `policy_result_missing`; audit entry.
+
+## 3. Phase gate — per-predicate
+
+### P1.pass
+- **Given** `phaseGating()`, `pass` evidence for `ichk` and every task check at `SHA(P)`,
+  fresh phase `no_gap`, phase policy result recorded (`none`)
+- **When** `phase-done` is evaluated
+- **Then** `pass`; `Phase.gateStatus = passed`; receipt; one audit entry.
+
+### P1.pass.jevDisabled
+- **Given** `phaseGating()`, integrated evidence passing, `fallbackDecision(jev_disabled)`
+  for the phase, every phase criterion mapped down to a task criterion with a gate receipt
+  or covered by a passing integrated check
+- **When** evaluated
+- **Then** `pass`; receipt records `p3Branch = deterministic_fallback`.
+
+### P2.P1.taskNotDone (parameterised over review, cancelled, failed, blocked, paused_cap)
+- **Given** one task in state *S*, rest green
+- **When** evaluated
+- **Then** rejected `tasks_not_done`; audit entry.
+
+### P2.P1.noGateReceipt
+- **Given** a task with `status = done` but no gate receipt
+- **When** evaluated
+- **Then** rejected `no_gate_receipt`; audit entry.
+
+### P2.P2.integratedCheckFails
+- **Given** `ichk` latest fresh evidence `fail`, phase `no_gap`
+- **When** evaluated
+- **Then** rejected `check_fail`; audit entry.
+
+### P2.P3.fallbackCoverageGap
+- **Given** Jev disabled, fallback row present, one phase criterion neither mapped down nor
+  covered by an integrated check
+- **When** evaluated
+- **Then** rejected `fallback_coverage_gap`; audit entry.
+
+### P2.P3.noFallbackRow
+- **Given** Jev disabled, no `Decision` row for the phase
+- **When** evaluated
+- **Then** rejected `jev_decision_missing`; audit entry.
+
+### P2.P4.highRiskTaskNeedsPhaseApproval
+- **Given** one task `riskClass = high`, no phase `Approval`
+- **When** evaluated
+- **Then** rejected `approval_missing`; audit entry.
+
+### P2.P0.integrationOwnerInvalid
+- **Given** two attempts with role `integrator`, or none
+- **When** evaluated
+- **Then** rejected `integration_owner_invalid`; audit entry.
