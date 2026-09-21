@@ -277,6 +277,17 @@ describe("reserve() refuses a call that would breach any enclosing cap", () => {
     expect(() => fx.ledger.reserve({ scope: SCOPE, estimate: knownUsage(0.1) })).not.toThrow();
   });
 
+  it("refuses a new reservation once the elapsed-time cap is spent", () => {
+    const fx = fixture(budgetsWith({ task: { maxElapsedMs: 1000 } }));
+    const first = fx.ledger.reserve({ scope: SCOPE, estimate: knownUsage(0.1) });
+    // Elapsed time is only knowable after the fact, so it is charged on
+    // settlement and gates the *next* reservation.
+    fx.ledger.settle(first, knownUsage(0.1), { elapsedMs: 1500 });
+    expect(() => fx.ledger.reserve({ scope: SCOPE, estimate: knownUsage(0.1) })).toThrow(
+      BudgetExceededError,
+    );
+  });
+
   it("stops charging an estimate once the call is released", () => {
     const fx = fixture(budgetsWith({ workflow: { maxSpendUsd: 1 } }));
     const reservation = fx.ledger.reserve({ scope: SCOPE, estimate: knownUsage(0.9) });
