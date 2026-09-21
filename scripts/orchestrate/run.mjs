@@ -449,13 +449,33 @@ When finished, your LAST message must be exactly one fenced json block and nothi
 // register a surface pane per worker purely for observability: the pane reports the
 // worker's lifecycle state and is closed when the worker exits. Best-effort throughout —
 // if Herdr is absent or the call fails, the worker still runs.
+//
+// The surface MUST live in the worker's own worktree Space, never in the caller's tab.
+// `pane split --current` splits whatever tab the orchestrator happens to be running in —
+// which is the user's tab — and with `workers.concurrency` > 1 it shredded that layout
+// with a new pane per dispatch. `worktree open --path <dir>` yields a Space linked to the
+// worker's checkout, so it nests under the project in the sidebar (herdr-pi-delegation
+// §1.1: nesting is by git worktree identity, never by cwd or label) and the user's tab is
+// left alone. Never fall back to splitting the current tab: no surface is strictly better
+// than a mangled layout, since the surface is pure observability.
+//
+// Why a surface exists at all: workers are headless `pi -p --mode json` subprocesses
+// (see runWorker), which is what lets us stream structured events and enforce timeouts.
+// Headless pi is not in a pane, so Herdr's agent detection cannot see it and it never
+// appears in the Agents panel by itself. The Space below is the only thing that makes a
+// running worker visible to the user, so it must be created for every dispatch — keep it
+// idempotent (`already_open`) rather than skipping it.
 function herdrSurface(issue, model, dir) {
   if (!process.env.HERDR_ENV) return null;
   try {
     const name = `w-issue-${issue.number}`;
-    const paneId = JSON.parse(sh("herdr", ["pane", "split", "--current", "--direction", "down", "--ratio", "0.18", "--cwd", dir]))
-      .result?.pane?.pane_id;
+    const res = JSON.parse(sh("herdr", ["worktree", "open", "--path", dir, "--label", name, "--no-focus"])).result;
+    const paneId = res?.root_pane?.pane_id;
+    const workspaceId = res?.workspace?.workspace_id;
     if (!paneId) return null;
+    // Only close a Space we actually created; if it was already open it belongs to
+    // someone else (possibly the user) and must outlive this worker.
+    const ownsWorkspace = res?.already_open === false;
     sh("herdr", ["pane", "rename", paneId, name]);
     sh("herdr", ["pane", "report-agent", paneId, "--source", "korwf:orchestrator", "--agent", name, "--state", "working",
       "--message", `#${issue.number} ${model}`]);
@@ -467,7 +487,7 @@ function herdrSurface(issue, model, dir) {
     sh("herdr", ["pane", "report-metadata", paneId, "--source", "korwf:orchestrator", "--agent", "pi",
       "--display-agent", `#${issue.number} · ${model}`, "--title", issue.title.slice(0, 60),
       "--token", `model=${model}`, "--token", `issue=${issue.number}`]);
-    return { paneId, name };
+    return { paneId, name, workspaceId: ownsWorkspace ? workspaceId : null };
   } catch { return null; }
 }
 
@@ -477,7 +497,11 @@ function herdrSurfaceEnd(surface, state, message) {
     sh("herdr", ["pane", "report-agent", surface.paneId, "--source", "korwf:orchestrator",
       "--agent", surface.name, "--state", state, "--message", message.slice(0, 200)]);
     sh("herdr", ["pane", "release-agent", surface.paneId, "--source", "korwf:orchestrator", "--agent", surface.name]);
-    sh("herdr", ["pane", "close", surface.paneId]);
+    // Close only what this function's own surface created, and only the Space we opened
+    // for it — never a tab, which would kill every agent inside it (herdr-pi-delegation
+    // §0 rule 2). `cleanupWorktree()` removes the checkout itself once the issue closes.
+    if (surface.workspaceId) sh("herdr", ["workspace", "close", surface.workspaceId]);
+    else sh("herdr", ["pane", "close", surface.paneId]);
   } catch {}
 }
 
