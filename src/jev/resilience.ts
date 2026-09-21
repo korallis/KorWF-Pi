@@ -185,9 +185,88 @@ export interface CircuitBreakerOptions {
   readonly now?: () => number;
 }
 
+/**
+ * Standard closed/open/half-open breaker, per host (one instance per Jev
+ * base URL / transport). Trips to `open` after `failureThreshold`
+ * consecutive failures; after `resetTimeoutMs` it allows a bounded number of
+ * probe calls (`half_open`); a probe success closes it, a probe failure
+ * reopens it and restarts the timeout.
+ *
+ * Success/failure are reported by the caller via `onSuccess`/`onFailure`
+ * after `beforeCall` grants permission — this class does not itself know how
+ * to run a call, so it composes with any transport.
+ */
 export class CircuitBreaker {
-  constructor(_options: CircuitBreakerOptions) {
-    throw new Error("not implemented");
+  readonly #failureThreshold: number;
+  readonly #resetTimeoutMs: number;
+  readonly #halfOpenMaxCalls: number;
+  readonly #now: () => number;
+
+  #state: BreakerState = "closed";
+  #failures = 0;
+  #openedAt: number | null = null;
+  #halfOpenInFlight = 0;
+
+  constructor(options: CircuitBreakerOptions) {
+    this.#failureThreshold = options.failureThreshold;
+    this.#resetTimeoutMs = options.resetTimeoutMs;
+    this.#halfOpenMaxCalls = options.halfOpenMaxCalls ?? 1;
+    this.#now = options.now ?? Date.now;
+  }
+
+  status(): BreakerStatus {
+    this.#maybeTransitionToHalfOpen();
+    return {
+      state: this.#state,
+      failures: this.#failures,
+      openedAt: this.#openedAt,
+      nextAttemptAt: this.#openedAt === null ? null : this.#openedAt + this.#resetTimeoutMs,
+    };
+  }
+
+  /** May a call proceed right now? Also performs the open->half_open transition. */
+  canProceed(): boolean {
+    this.#maybeTransitionToHalfOpen();
+    if (this.#state === "closed") return true;
+    if (this.#state === "half_open") return this.#halfOpenInFlight < this.#halfOpenMaxCalls;
+    return false;
+  }
+
+  /** Reserve a half-open probe slot. Call only after `canProceed()` returned true. */
+  beforeCall(): void {
+    this.#maybeTransitionToHalfOpen();
+    if (this.#state === "half_open") this.#halfOpenInFlight += 1;
+  }
+
+  onSuccess(): void {
+    if (this.#state === "half_open") this.#halfOpenInFlight = Math.max(0, this.#halfOpenInFlight - 1);
+    this.#state = "closed";
+    this.#failures = 0;
+    this.#openedAt = null;
+  }
+
+  onFailure(): void {
+    if (this.#state === "half_open") {
+      this.#halfOpenInFlight = Math.max(0, this.#halfOpenInFlight - 1);
+      this.#trip();
+      return;
+    }
+    this.#failures += 1;
+    if (this.#failures >= this.#failureThreshold) this.#trip();
+  }
+
+  #trip(): void {
+    this.#state = "open";
+    this.#openedAt = this.#now();
+    this.#halfOpenInFlight = 0;
+  }
+
+  #maybeTransitionToHalfOpen(): void {
+    if (this.#state !== "open" || this.#openedAt === null) return;
+    if (this.#now() - this.#openedAt >= this.#resetTimeoutMs) {
+      this.#state = "half_open";
+      this.#halfOpenInFlight = 0;
+    }
   }
 }
 
