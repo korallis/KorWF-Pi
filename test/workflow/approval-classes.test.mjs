@@ -77,3 +77,59 @@ test("AC2: scope_change and replan are never `auto`; mutation classes are never 
   const missing = validateApprovalClasses({ edit_worktree: { shadow: "stop", advisory: "stop", supervised: "queue" } });
   assert.equal(missing[0]?.rule, "V12");
 });
+
+test("AC3: Jev may escalate a disposition but never de-escalate it; no Jev ⇒ rules alone", () => {
+  assert.match(doc, /Jev may only escalate, never de-escalate/);
+  assert.ok(isMoreRestrictive("stop", "queue") && isMoreRestrictive("queue", "auto") && !isMoreRestrictive("auto", "stop"));
+  const up = resolveDisposition("edit_worktree", "bounded_autonomous", DEFAULT_APPROVAL_CLASSES, { questionId: "touches_enforcement", proposed: "queue", probability: 0.8 });
+  assert.equal(up.ruleDecision, "auto"); assert.equal(up.decision, "queue"); assert.equal(up.jevEscalation?.questionId, "touches_enforcement");
+  const down = resolveDisposition("run_shell", "bounded_autonomous", DEFAULT_APPROVAL_CLASSES, { questionId: "looks_harmless", proposed: "auto", probability: 0.99 });
+  assert.equal(down.decision, "queue"); assert.equal(down.jevEscalation, null);
+  for (const id of HIGH_RISK_CLASSES)
+    assert.equal(resolveDisposition(id, "bounded_autonomous", DEFAULT_APPROVAL_CLASSES, { questionId: "q", proposed: "auto", probability: 1 }).decision, "stop");
+  const none = resolveDisposition("local_commit", "supervised");
+  assert.deepEqual(none, { classId: "local_commit", mode: "supervised", ruleDecision: "queue", decision: "queue", jevEscalation: null });
+});
+
+test("classifier: deterministic, most-restrictive-first, judges the act not the label (ADR 0005)", () => {
+  const w = { kind: "write", insideWorktree: true, insideOwnership: true, gitTracked: true };
+  assert.equal(classifyAct(w), "edit_worktree");
+  assert.equal(classifyAct({ ...w, touchesDenyPath: true }), "credential_access");
+  assert.equal(classifyAct({ ...w, touchesKorwfPolicy: true }), "modify_policy");
+  assert.equal(classifyAct({ ...w, touchesProjectConfig: true }), "modify_project_config");
+  assert.equal(classifyAct({ ...w, touchesDependencyManifest: true }), "add_dependency");
+  assert.equal(classifyAct({ ...w, insideOwnership: false }), "write_outside_ownership");
+  assert.equal(classifyAct({ ...w, insideWorktree: false }), "destructive_cleanup");
+  assert.equal(classifyAct({ kind: "delete", insideWorktree: true, insideOwnership: true, gitTracked: true }), "delete_file");
+  assert.equal(classifyAct({ kind: "delete", insideWorktree: true, insideOwnership: true, gitTracked: false }), "destructive_cleanup");
+  assert.equal(classifyAct({ kind: "git", gitOp: "push", refOwnedByWorkflow: true, remoteIsConfigured: true }), "push_own_branch");
+  assert.equal(classifyAct({ kind: "git", gitOp: "push", refOwnedByWorkflow: false, remoteIsConfigured: true }), "remote_push");
+  assert.equal(classifyAct({ kind: "git", gitOp: "push", refOwnedByWorkflow: true, remoteIsConfigured: false }), "remote_push");
+  assert.equal(classifyAct({ kind: "git", gitOp: "force_push", refOwnedByWorkflow: true }), "destructive_git");
+  assert.equal(classifyAct({ kind: "git", gitOp: "tag" }), "publishing");
+  assert.equal(classifyAct({ kind: "git", gitOp: "commit" }), "local_commit");
+  assert.equal(classifyAct({ kind: "exec", isRegisteredCheck: true }), "run_checks");
+  assert.equal(classifyAct({ kind: "exec", isMigration: true, targetIsEphemeral: true }), "run_migration");
+  assert.equal(classifyAct({ kind: "exec", isMigration: true, targetIsEphemeral: false }), "deployment");
+  assert.equal(classifyAct({ kind: "exec", isInstallOfDeclared: true }), "install_dependencies");
+  assert.equal(classifyAct({ kind: "exec" }), "run_shell");
+  assert.equal(classifyAct({ kind: "exec", isDeploy: true }), "deployment");
+  assert.equal(classifyAct({ kind: "network", hostAllowlisted: false }), "network_access");
+  assert.equal(classifyAct({ kind: "model", costDeltaUsd: 0 }), "model_fallback");
+  assert.equal(classifyAct({ kind: "model", costDeltaUsd: 0.5 }), "model_substitute_more_expensive");
+  assert.equal(classifyAct({ kind: "plan", planOp: "scope_change" }), "scope_change");
+  assert.equal(classifyAct({ kind: "plan", planOp: "replan" }), "replan");
+  assert.equal(classifyAct({ kind: "task", taskOp: "spend_over_estimate" }), "spend_over_estimate");
+  assert.equal(classifyAct({ kind: "task", taskOp: "complete_task" }), "complete_task");
+  assert.equal(classifyAct({ kind: "task", taskOp: "spawn_worker" }), "spawn_worker");
+  assert.equal(classifyAct({ kind: "read" }), "read_repository");
+});
+
+test("doc table mirrors the data table (every class row present with its defaults)", () => {
+  for (const c of APPROVAL_CLASS_TABLE) {
+    const line = doc.split("\n").find((l) => l.startsWith(`| \`${c.id}\` |`) && l.includes("| Act") === false && l.split("|").length > 9);
+    assert.ok(line, `doc row for ${c.id}`);
+    const cells = line.split("|").map((s) => s.trim().replaceAll("**", ""));
+    assert.deepEqual(cells.slice(4, 8), WORKFLOW_MODES.map((m) => c.defaults[m]), c.id);
+  }
+});

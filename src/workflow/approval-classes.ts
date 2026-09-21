@@ -250,7 +250,8 @@ export const MUTATION_CLASSES: readonly ApprovalClassId[] = APPROVAL_CLASS_TABLE
  * JSON schema cannot express after a layered merge:
  *  - V10: high-risk classes are `stop` in every mode (schema `const`, re-checked here).
  *  - V11: `scope_change`/`replan` are never `auto`.
- *  - V4:  mutation classes are never `auto` in shadow/advisory.
+ *  - V4:  configurable mutation classes are never `auto` in shadow/advisory
+ *         (the other tiers are already covered by V10/V11).
  *  - V12: every listed class has a decision for all four modes.
  * Returns an empty array when valid. Unknown class ids are rejected by the
  * schema (`additionalProperties: false`) and are ignored here.
@@ -269,7 +270,7 @@ export function validateApprovalClasses(
         out.push({ rule: "V10", classId: def.id, mode, message: `${def.id} is high-risk (PLAN §7) and must be "stop" in ${mode}, got "${d}"` });
       if (def.tier === "no_auto" && d === "auto")
         out.push({ rule: "V11", classId: def.id, mode, message: `${def.id} may never be "auto" (PLAN §3.C: no silent scope expansion)` });
-      if (d === "auto" && (NON_MUTATING_MODES as readonly WorkflowMode[]).includes(mode) && MUTATION_CLASSES.includes(def.id))
+      if (def.tier === "configurable" && d === "auto" && (NON_MUTATING_MODES as readonly WorkflowMode[]).includes(mode) && MUTATION_CLASSES.includes(def.id))
         out.push({ rule: "V4", classId: def.id, mode, message: `${def.id} mutates; ${mode} is non-mutating so it cannot be "auto"` });
     }
   }
