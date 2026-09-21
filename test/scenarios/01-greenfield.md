@@ -197,3 +197,70 @@ concurrently while `T1` is a hard dependency.
     `spendUsd != null`.
   - Nothing external happened without approval: `count(Approval where permittedAction
     not in {approve_plan, run_phase}) == 0` (no publish/deploy/etc. approvals exist).
+
+## Variant B — Jev disabled (`jev.enabled = false`, no key)
+
+Same fixture and steps; only the differences are asserted. Deterministic fallbacks
+replace every Jev-assisted decision; **C1, C3, P1, P2 and P4 are unchanged** (gates.md
+§5.2, §6.1).
+
+### Step B1 — plan
+
+- Same plan shape as A1 is reachable: the planner (a coding model, not Jev) still produces
+  two phases and five tasks with checks. Planning evaluators (atomicity, coverage,
+  readiness — #39) run in deterministic mode:
+  - Every planning `Decision.override == {actor:'policy', reason:'jev_disabled'}`
+    (or `'jev_no_key'` when the key is simply absent), `Decision.jevModelVersion == null`,
+    `Decision.confidence == null`, `Decision.action == 'deterministic_fallback'`.
+  - `Decision.usage.requests == 0` for every such row (no transport was used).
+  - `count(Decision where override == null) == 0` for the whole workflow.
+- Readiness is unchanged: any task with `Task.checks.length == 0` stays `proposed`
+  (state-machine.md §2 READY). The fixture plan has none; the test additionally mutates
+  one task to `checks: []` and asserts `Task.status` never reaches `ready`.
+
+### Step B2 — model selection without Jev
+
+- `Attempt.requestedModel` for every attempt equals the first eligible entry of the
+  configured static fallback order (PLAN §3.D "Jev unavailable: use the static fallback
+  ordering"); `Attempt.fallbackReason == null` because no substitution happened
+  (`Attempt.usedModel == Attempt.requestedModel`). The selection `Decision` row (question
+  id owned by #60) has `Decision.override.reason == 'jev_disabled'`.
+
+### Step B3 — task gates via `DET_COVERAGE`
+
+- For each of `T0a`, `T0b`, `T1`, `T2`, `T3` (gates.md §5.2):
+  - One `Decision` with `Decision.questionId == 'task_evidence_gap'`,
+    `Decision.action == 'deterministic_fallback'`,
+    `Decision.override == {actor:'policy', reason:'jev_disabled'}`,
+    `Decision.freshness.revision == SHA(T)`, `Decision.subject.taskRevision == Task.revision`.
+  - For every `a ∈ Task.acceptanceCriteria`: some `Task.checks[j]` with
+    `a.id ∈ coversCriteria` has `Evidence.exitStatus == {exited, 0}` at `SHA(T)`, **and**
+    some fresh `Evidence.requirementId == a.id` with `exitStatus == {exited, 0}`.
+  - For every command/assertion check: `Evidence.provenance[*].path ∩ Task.ownership.paths ≠ ∅`.
+  - `Task.status == 'done'` is reached; the gate receipt's reason is `pass`.
+- Negative control (mirrors gates.md B11): the test removes the `requirementId` evidence
+  row for `T2.ac[0]` in an in-memory copy and asserts the gate rejects with
+  `fallback_coverage_gap`, `Task[T2].status` unchanged, one `AuditEntry` with
+  `AuditEntry.actor == 'engine:gate:task'` and `afterHash == beforeHash`.
+
+### Step B4 — phase gate via `PHASE_DET_COVERAGE`
+
+- One `Decision.questionId == 'phase_evidence_gap'` with
+  `Decision.action == 'deterministic_fallback'`, `Decision.override.reason == 'jev_disabled'`,
+  `Decision.subject == {phaseId: P1.id}`, `Decision.freshness.revision == SHA(P1)`.
+- Every `Phase[P1].acceptanceCriteria[i].id` is either mapped down to a done task's
+  criterion or covered by a passing integrated check at `SHA(P1)` (gates.md §6.1).
+- `Phase[P1].gateStatus == 'passed'`; `Phase[P1].report` as in A5.
+- Cost: `Phase[P1].report.cost.requests` excludes Jev requests; every `Decision.usage.requests == 0`.
+
+### Step B5 — no-key disclosure
+
+- The status surface (`/korwf status`, #66/#92) reports Jev as disabled; no log, artifact
+  or `AuditEntry` contains a credential-shaped string (grep for `apikey|secret|token`
+  over `Attempt.artifacts[*]` contents and the audit table is empty or false-positive
+  explained).
+
+## Out of scope for this outline
+
+Cap handling (scenario 4), wrong tests (scenario 3), and retrieval ranking on an existing
+repository (scenario 2). Conflicting edits between parallel workers are covered by #83.
