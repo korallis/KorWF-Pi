@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { openStore, type Store } from "../../../src/storage/db.ts";
+import type { ModelAvailabilityId, RouteId } from "../../../src/storage/records.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 import {
   makeApproval,
@@ -177,12 +178,12 @@ describe("foreign keys declared in docs/records.md §9 are enforced by SQLite", 
 describe("route-keyed model availability (#125)", () => {
   it("keeps one row per route, so two providers exposing one model id stay independent", () => {
     const store = freshStore();
-    store.modelAvailability.upsert(makeModelAvailability({ id: "ma-a", routeId: "route-a", providerId: "provider-a" }));
+    store.modelAvailability.upsert(makeModelAvailability({ id: "ma-a" as ModelAvailabilityId, routeId: "route-a" as RouteId, providerId: "provider-a" }));
     store.modelAvailability.upsert(
-      makeModelAvailability({ id: "ma-b", routeId: "route-b", providerId: "provider-b" }),
+      makeModelAvailability({ id: "ma-b" as ModelAvailabilityId, routeId: "route-b" as RouteId, providerId: "provider-b" }),
     );
     store.modelAvailability.upsert(
-      makeModelAvailability({ id: "ignored", routeId: "route-a", providerId: "provider-a", capKind: "rate_limited" }),
+      makeModelAvailability({ id: "ignored" as ModelAvailabilityId, routeId: "route-a" as RouteId, providerId: "provider-a", capKind: "rate_limited" }),
     );
     expect(store.modelAvailability.count()).toBe(2);
     expect(store.modelAvailability.byRoute("route-a")?.capKind).toBe("rate_limited");
