@@ -59,3 +59,69 @@ Every predicate below is **pure and deterministic**: same records + same `SHA` +
 | **valid approval** | `a ∈ A` with `approvalInvalidReason(a, {task: T, planRevision: W.planRev, now}) = null`, `a.scope = {task, T.id}`, `a.riskClass ≥ T.riskClass`, `a.permittedAction = complete_task`, `a.actor.kind = user`. A `policy` actor MUST NOT satisfy a high-risk approval. |
 | **author** | The `Attempt` whose `outcome` produced the completion claim being gated (the attempt bound to `task-submit`). |
 | **audit entry** | An `AuditEntry` row (§7). |
+
+## 3. Task gate — `TASK_GATE(T)`
+
+The `task-done` transition (`review → done`) commits **iff** `TASK_GATE(T) = ⊤`. It is
+re-evaluated at commit time even if `task-review` passed earlier (state-machine.md §4).
+
+```
+TASK_GATE(T) ≝ C1(T) ∧ C2(T) ∧ C3(T) ∧ C0(T)
+
+C0(T)  ≝ T.status = review                                      -- gate entered from review only
+       ∧ T.blocker = null
+       ∧ author(T).outcome = completion_requested                -- a claim exists but is not evidence
+
+C1(T)  ≝ |T.checks| ≥ 1                                          -- deterministic checks pass
+       ∧ ∀ c ∈ T.checks: ¬trivial(c)
+       ∧ ∀ c ∈ T.checks: state(c, T) = pass                     -- see §4; `required=false` is NOT an exemption
+       ∧ ∀ a ∈ T.ac: ∃ c ∈ T.checks: a.id ∈ c.coversCriteria     -- every criterion has a check
+
+C2(T)  ≝ JEV_NO_GAP(T) ∨ JEV_DISABLED_FALLBACK(T)                 -- exactly one branch is recorded (§5)
+
+C3(T)  ≝ let r = policy(T.riskClass, changeClass(T)) in
+         (r.modelReview   ⇒ ∃ fresh independent review e ∈ E(T))
+       ∧ (r.humanApproval ⇒ ∃ valid approval a ∈ A)
+       ∧ (T.riskClass = high ⇒ r.humanApproval)                  -- policy cannot unset human approval for high risk
+       ∧ policyResultRecorded(T)                                 -- a Decision/Evidence row stating r exists, fresh
+```
+
+Where `state(c, T)` is defined in §4 and `changeClass(T)` is the change class computed by
+`src/git/` from the diff between `W.baseRevision`-derived task base and `SHA(T)` (issue #15
+defines classes; the gate only consumes the result).
+
+Consequences, each of which is a bypass test in §8:
+
+- `C1` is unaffected by `C2`: a `no_gap` decision with any check not in `pass` ⇒ `⊥`
+  (PLAN §2.4 "a Jev 'no gap' result cannot substitute for a failing check").
+- `C1` and `C3` have no Jev term at all, so Jev cannot waive them.
+- No term reads `Task.status = done`, `Attempt.outcome`, or any worker-authored string as
+  a truth value; the worker's claim only appears in `C0` as "a claim exists".
+- All evidence terms require **fresh** evidence (§2), so `e.revision ≠ SHA(T)` ⇒ that
+  evidence is invisible ⇒ the check is `missing` ⇒ `C1 = ⊥`.
+
+## 4. Check states
+
+`state(c, T)` maps the latest fresh result `e` for check `c` (§2) to exactly one state:
+
+| State | Condition | Satisfies C1? |
+| --- | --- | --- |
+| `pass` | `e.exitStatus = {exited, code} ∧ code = c.expectedExitCode ∧ e.commandIdentity.command = c.command ∧ e.commandIdentity.cwd = c.cwd` (human check: `e.reviewer.kind = human ∧ code = 0`) | **yes** — the only one |
+| `fail` | `e.exitStatus = {exited, code} ∧ code ≠ c.expectedExitCode`, or `{signalled, _}`, or command identity differs from `c` | no |
+| `flaky` | `e.exitStatus = {flaky, runs}` — the engine reran and got differing codes | no |
+| `missing` | no fresh evidence for `c` (none recorded, all stale, or all superseded), or `e.exitStatus = {missing}` | no |
+| `unavailable` | `e.exitStatus = {unavailable, reason}` — the runner, toolchain or environment could not execute the command | no |
+| `timeout` | `e.exitStatus = {timed_out}` | no |
+
+Rules:
+
+- **Only `pass` satisfies C1.** Every other state, including the absence of a row, is a
+  distinct, explicit non-success (PLAN §3.F). The gate MUST report the state name in the
+  rejection detail; it MUST NOT collapse `flaky`/`missing`/`unavailable`/`timeout` into
+  `fail` in the audit entry, and MUST NOT treat any of them as `pass`.
+- `expectedExitCode` is read from `c` at `T.rev`. A check whose `expectedExitCode` was
+  edited to match an observed failure bumps `T.rev` and invalidates the evidence anyway.
+- `CheckDefinition.required = false` changes **nothing** about `state(c, T)` or C1
+  (transitions.ts `all_checks_pass_exact_revision`). It exists for reporting only.
+- Command identity is compared against the **definition**, so evidence produced by running a
+  different command (e.g. `true`) under a registered check id is `fail`, not `pass`.
