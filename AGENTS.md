@@ -98,16 +98,19 @@ Closes #<n>
   another agent can resume.
 - Do not rely on chat history for requirements. The issue and PLAN.md are the memory.
 
-## 8. Repository layout (target, PLAN §4)
+## 8. Repository layout (decided in [docs/adr/0002-source-layout.md](docs/adr/0002-source-layout.md))
 
 ```
 src/
-  extension/     Pi lifecycle adapters, commands, tools, UI
-  workflow/      phases, state machine, scheduler, approvals, unattended policy, recovery
+  extension/     Pi lifecycle adapters, commands, tools, hooks; the only module that
+                 imports @earendil-works/pi-coding-agent's ExtensionAPI
+    ui/          Pi-TUI components: questionnaire, boards, status widget, dialogs
+  workflow/      phases, state machine, scheduler, approvals, unattended policy,
+                 recovery, integration ownership
   decisions/     versioned Jev questions and composition policies
   jev/           transport adapter, validation, deadlines, usage, optional-mode
   models/        catalog, model cards, task profiles, Jev selection, caps/fallback
-  workers/       subprocess lifecycle, contracts, role resources, handoff
+  workers/       subprocess lifecycle, contracts, role loading, handoff to workers
   context/       retrieval, passage selection, capability suggestions
   verification/  checks, evidence, reviews, task and phase gates
   memory/        provenance, summaries, compaction, handoff packets
@@ -115,13 +118,20 @@ src/
   security/      data boundaries, privacy defaults, execution policy, secrets
   telemetry/     decision traces, accounting, metrics
   evaluation/    replay, baselines, calibration, regression suites
-  config/        schema, defaults, validation
-docs/            architecture decisions (ADRs), config reference, specs
-test/            unit, integration, scenario tests
+  config/        schema, defaults, validation, layered merge
+  git/           status, checkpoints, worktrees, conflicts (all git invocations)
+resources/       shipped, versioned data: roles/, prompts/, model-hints, questions
+docs/            architecture decisions (docs/adr/), config reference, specs
+test/            unit/, integration/, scenario/ (mirrors src/ paths)
+scripts/         probes and maintenance (scripts/probe/ for Stage 1 experiments)
 ```
 
-This layout is revised in Stage 1 after the reuse table exists; follow whatever
-`docs/adr/` says once it exists.
+Boundaries that reviewers enforce (details in ADR 0002): domain modules never import
+`extension/`; `src/git/` is the only place that runs git; `security/` checks are pure
+functions called by both the extension hooks and `workers/`; everything user-facing is
+namespaced `korwf`. Reuse decisions for Pi's shipped examples are in
+[docs/adr/0001-reuse-of-pi-examples.md](docs/adr/0001-reuse-of-pi-examples.md). If a
+later ADR revises the layout, update this section in the same PR.
 
 ## 9. Pi reference material
 
