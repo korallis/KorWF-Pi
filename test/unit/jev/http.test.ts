@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { HttpJevTransport } from "../../../src/jev/http.ts";
 import { JevTransportError, type SystemOneRequest } from "../../../src/jev/transport.ts";
+import { filterForTest } from "../../../src/jev/mock.ts";
 import { Secret } from "../../../src/security/secrets.ts";
 import { clearRegisteredSecrets } from "../../../src/security/redact.ts";
 
@@ -89,7 +90,7 @@ describe("AC1: no live network request", () => {
       return fetch(input);
     };
     const t = transport({ fetchImpl: failingFetch });
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("ok");
   });
 });
@@ -97,7 +98,7 @@ describe("AC1: no live network request", () => {
 describe("AC3: base URL override is honoured", () => {
   it("requests hit the configured baseUrl, not the default", async () => {
     const t = transport();
-    await t.evaluate(REQUEST);
+    await t.evaluate(filterForTest(REQUEST));
     expect(receivedRequests).toHaveLength(1);
   });
 
@@ -109,7 +110,7 @@ describe("AC3: base URL override is honoured", () => {
       res.end(JSON.stringify({ model: "jev-1.13.0", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }));
     };
     const t = transport();
-    await t.evaluate(REQUEST);
+    await t.evaluate(filterForTest(REQUEST));
     expect(seenUrl).toBe("/v1/systemone");
     expect(receivedRequests[0]!.body).toEqual({ state: "hello", model: "jev-1.13.0", questions: REQUEST.questions });
   });
@@ -118,7 +119,7 @@ describe("AC3: base URL override is honoured", () => {
 describe("headers", () => {
   it("sends Authorization: Bearer <key>, Content-Type and User-Agent only", async () => {
     const t = transport();
-    await t.evaluate(REQUEST);
+    await t.evaluate(filterForTest(REQUEST));
     const headers = receivedRequests[0]!.headers;
     expect(headers.authorization).toBe(`Bearer ${FAKE_KEY}`);
     expect(headers["content-type"]).toBe("application/json");
@@ -133,7 +134,7 @@ describe("success", () => {
       res.end(JSON.stringify({ model: "jev-1.13.0", answers: { q: { type: "noul", noul: 0.4 } }, usage: { input_tokens: 3, output_tokens: 0 } }));
     };
     const t = transport();
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("ok");
     if (result.kind === "ok") {
       expect(result.requestId).toBe("req-123");
@@ -151,7 +152,7 @@ describe("error mapping", () => {
       res.end(JSON.stringify({ error: "invalid key" }));
     };
     const t = transport();
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("error");
     if (result.kind === "error") {
       expect(result.error.code).toBe("jev.auth");
@@ -166,7 +167,7 @@ describe("error mapping", () => {
       res.end(JSON.stringify({ error: "bad field" }));
     };
     const t = transport();
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("error");
     if (result.kind === "error") expect(result.error.code).toBe("jev.bad_request");
   });
@@ -179,7 +180,7 @@ describe("error mapping", () => {
       res.end(JSON.stringify({ error: "rate limited" }));
     };
     const t = transport({ maxRetries: 2 });
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("error");
     if (result.kind === "error") expect(result.error.code).toBe("jev.rate_limited");
     expect(calls).toBe(3); // 1 initial + 2 retries
@@ -191,7 +192,7 @@ describe("error mapping", () => {
       res.end(JSON.stringify({ error: "overloaded" }));
     };
     const t = transport({ maxRetries: 0 });
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("error");
     if (result.kind === "error") expect(result.error.code).toBe("jev.overloaded");
   });
@@ -209,7 +210,7 @@ describe("error mapping", () => {
       res.end(JSON.stringify({ model: "jev-1.13.0", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }));
     };
     const t = transport({ maxRetries: 2 });
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("ok");
     expect(calls).toBe(2);
   });
@@ -220,7 +221,7 @@ describe("error mapping", () => {
       res.end("not json");
     };
     const t = transport();
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("error");
     if (result.kind === "error") expect(result.error.code).toBe("jev.malformed_response");
   });
@@ -236,7 +237,7 @@ describe("deadline and cancellation", () => {
     };
     const t = transport({ timeoutMs: 5000 });
     const controller = new AbortController();
-    const promise = t.evaluate(REQUEST, { signal: controller.signal });
+    const promise = t.evaluate(filterForTest(REQUEST), { signal: controller.signal });
     controller.abort();
     const result = await promise;
     expect(result.kind).toBe("error");
@@ -251,7 +252,7 @@ describe("deadline and cancellation", () => {
       }, 300);
     };
     const t = transport({ timeoutMs: 50, maxRetries: 0 });
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("error");
   });
 });
@@ -263,7 +264,7 @@ describe("redaction", () => {
       res.end(JSON.stringify({ error: `invalid key Bearer ${FAKE_KEY}` }));
     };
     const t = transport();
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("error");
     if (result.kind === "error") {
       const err = result.error;

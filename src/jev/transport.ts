@@ -10,7 +10,14 @@
  * Types here are the *raw wire* shapes from `docs/typesafe-api-reference.md`
  * §2–§3, validated by a separate layer (issue #25). This module does not
  * validate; it moves bytes.
+ *
+ * `evaluate()` accepts only a `FilteredRequest` (issue #28): a request that
+ * has been through `OutboundPolicy.filterRequest`, which applies the
+ * default-deny path rules, the redactor and the outbound byte caps. The brand
+ * cannot be minted outside `src/security/outbound.ts`, so "a request reached
+ * the network unfiltered" is a compile error rather than a leak.
  */
+import type { FilteredRequest } from "../security/outbound.ts";
 
 // ---------------------------------------------------------------------------
 // request
@@ -170,7 +177,8 @@ export interface JevEvaluateOptions {
 export interface JevTransport {
   /** Human-readable name for logs/diagnostics ("http", "mock", "disabled"). */
   readonly kind: "http" | "mock" | "disabled";
-  evaluate(request: SystemOneRequest, options?: JevEvaluateOptions): Promise<JevEvaluateResult>;
+  /** Takes a filtered request only; see `src/security/outbound.ts`. */
+  evaluate(request: FilteredRequest, options?: JevEvaluateOptions): Promise<JevEvaluateResult>;
   ping(options?: JevEvaluateOptions): Promise<JevEvaluateResult>;
 }
 

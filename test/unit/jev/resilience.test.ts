@@ -17,7 +17,7 @@ import {
   RetryAbortedError,
   wrapWithCircuitBreaker,
 } from "../../../src/jev/resilience.ts";
-import { MockJevTransport } from "../../../src/jev/mock.ts";
+import { MockJevTransport, filterForTest } from "../../../src/jev/mock.ts";
 import { JevTransportError, type JevEvaluateResult, type SystemOneRequest } from "../../../src/jev/transport.ts";
 
 beforeEach(() => {
@@ -28,11 +28,19 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const REQUEST: SystemOneRequest = {
+const RAW_REQUEST: SystemOneRequest = {
   state: "s",
   model: "jev-1.13.0",
   questions: { q: { type: "noul", instructions: "?" } },
 };
+
+/**
+ * The wrapper inherits the transport's outbound guarantee (issue #28): only a
+ * `FilteredRequest` can be evaluated, wrapped or not. `filterForTest` runs the
+ * real shipped outbound policy, so these tests exercise the same request shape
+ * production sends.
+ */
+const REQUEST = filterForTest(RAW_REQUEST);
 
 function ok(): JevEvaluateResult {
   return { kind: "ok", response: { model: "jev-1.13.0", answers: {}, usage: { input_tokens: 1, output_tokens: 0 } }, requestId: "r", attempts: 1, elapsedMs: 0 };
@@ -52,6 +60,32 @@ function neverSettles<T>(): Promise<T> {
     /* deliberately hangs */
   });
 }
+
+describe("#28: the outbound guarantee survives the resilience wrapper", () => {
+  it("a wrapped transport cannot be handed an unfiltered request either (compile-time proof)", async () => {
+    const mock = new MockJevTransport({ responder: () => ok() });
+    const wrapped = wrapWithCircuitBreaker(mock, { deadlineMs: 1000, maxRetries: 0 });
+    // @ts-expect-error wrapping in retries and a breaker must not become a way
+    // to reach the network unfiltered: `evaluate` still takes a
+    // `FilteredRequest`, whose brand only OutboundPolicy.filterRequest mints.
+    await wrapped.evaluate(RAW_REQUEST);
+    // The call runs (the brand is erased at runtime); the point is the line
+    // above does not typecheck, which `npm run typecheck` enforces.
+    expect(mock.calls).toHaveLength(1);
+  });
+
+  it("the wrapper forwards the caller's filtered request unchanged and invents none of its own", async () => {
+    const mock = new MockJevTransport({ responder: () => ok() });
+    const wrapped = wrapWithCircuitBreaker(mock, { deadlineMs: 1000, maxRetries: 0 });
+    await wrapped.evaluate(REQUEST);
+    await wrapped.ping();
+    expect(mock.calls).toHaveLength(1);
+    expect(mock.calls[0]?.request).toEqual(RAW_REQUEST);
+    // `ping()` delegates to the inner transport's own (filtered) probe body
+    // rather than constructing a request here.
+    expect(mock.pingCalls).toHaveLength(1);
+  });
+});
 
 describe("wrapWithCircuitBreaker: end-to-end over the mock transport", () => {
   it("AC1: a transport that never resolves is abandoned at the deadline as a typed jev.unavailable error", async () => {

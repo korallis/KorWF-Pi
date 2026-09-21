@@ -4,7 +4,7 @@
  * AC2: "Disabled transport returns within 1 ms and records nothing sensitive."
  */
 import { describe, it, expect } from "vitest";
-import { DisabledJevTransport, MockJevTransport } from "../../../src/jev/index.ts";
+import { DisabledJevTransport, MockJevTransport, filterForTest } from "../../../src/jev/index.ts";
 import type { SystemOneRequest } from "../../../src/jev/index.ts";
 
 const REQUEST: SystemOneRequest = {
@@ -16,8 +16,11 @@ const REQUEST: SystemOneRequest = {
 describe("DisabledJevTransport", () => {
   it("AC2: evaluate resolves within 1ms with kind: disabled", async () => {
     const t = new DisabledJevTransport("Jev is off for this test.");
+    // Filtering happens before the transport is called (issue #28); the 1ms
+    // budget is about the transport, so mint the filtered request first.
+    const filtered = filterForTest(REQUEST);
     const start = performance.now();
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filtered);
     const elapsed = performance.now() - start;
     expect(result.kind).toBe("disabled");
     expect(elapsed).toBeLessThan(1);
@@ -34,7 +37,7 @@ describe("DisabledJevTransport", () => {
 
   it("AC2: records nothing sensitive — message never contains a credential shape", async () => {
     const t = new DisabledJevTransport("Jev assistance is off: no key configured.");
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     if (result.kind === "disabled") {
       expect(result.message).not.toMatch(/apikey_|sk-|Bearer /i);
     }
@@ -55,15 +58,15 @@ describe("MockJevTransport", () => {
       elapsedMs: 1,
     };
     const t = new MockJevTransport({ responses: [ok] });
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result).toEqual(ok);
     expect(t.calls).toHaveLength(1);
-    expect(t.calls[0]!.request).toBe(REQUEST);
+    expect(t.calls[0]!.request).toEqual(REQUEST);
   });
 
   it("throws a clear error when the response queue is exhausted", async () => {
     const t = new MockJevTransport();
-    await expect(t.evaluate(REQUEST)).rejects.toThrow(/no scripted response/);
+    await expect(t.evaluate(filterForTest(REQUEST))).rejects.toThrow(/no scripted response/);
   });
 
   it("supports a computed responder", async () => {
@@ -76,7 +79,7 @@ describe("MockJevTransport", () => {
         elapsedMs: 0,
       }),
     });
-    const result = await t.evaluate(REQUEST);
+    const result = await t.evaluate(filterForTest(REQUEST));
     expect(result.kind).toBe("ok");
   });
 

@@ -9,8 +9,16 @@
  * safety net (a transport can hang or misbehave regardless) plus a circuit
  * breaker that degrades every call to the same `disabled` result product
  * code already treats as "take the deterministic fallback" (PLAN §2.4).
+ *
+ * The wrapper is a `JevTransport`, so it inherits that interface's outbound
+ * guarantee unchanged (issue #28): `evaluate` takes a `FilteredRequest`, the
+ * branded result of `OutboundPolicy.filterRequest`. Wrapping a transport in
+ * retries and a breaker must not become a way to hand it unfiltered state,
+ * so this module never constructs a request of its own — `ping()` calls the
+ * inner transport's `ping()`, which owns its (filtered) probe body.
  */
-import { JevTransportError, type JevEvaluateOptions, type JevEvaluateResult, type JevTransport, type SystemOneRequest } from "./transport.ts";
+import type { FilteredRequest } from "../security/outbound.ts";
+import { JevTransportError, type JevEvaluateOptions, type JevEvaluateResult, type JevTransport } from "./transport.ts";
 
 // ---------------------------------------------------------------------------
 // deadline
@@ -423,7 +431,15 @@ export function wrapWithCircuitBreaker(
   const breaker = registry.get(host);
   const now = options.now ?? Date.now;
 
-  async function run(request: SystemOneRequest, callOptions: JevEvaluateOptions, isPing: boolean): Promise<JevEvaluateResult> {
+  /**
+   * What one wrapped call is. Modelled as a discriminated union rather than
+   * `(request, isPing)` so a ping has no request to invent: the only request
+   * this module can pass to `evaluate` is the `FilteredRequest` its caller
+   * supplied (issue #28).
+   */
+  type Call = { readonly kind: "evaluate"; readonly request: FilteredRequest } | { readonly kind: "ping" };
+
+  async function run(call: Call, callOptions: JevEvaluateOptions): Promise<JevEvaluateResult> {
     if (!breaker.canProceed()) {
       return { kind: "disabled", message: BREAKER_OPEN_MESSAGE };
     }
@@ -443,9 +459,9 @@ export function wrapWithCircuitBreaker(
           }
           const result = await withDeadline<JevEvaluateResult>(
             (signal) =>
-              isPing
+              call.kind === "ping"
                 ? transport.ping({ ...callOptions, signal })
-                : transport.evaluate(request, { ...callOptions, signal }),
+                : transport.evaluate(call.request, { ...callOptions, signal }),
             {
               deadlineMs: remaining,
               ...(callOptions.signal === undefined ? {} : { signal: callOptions.signal }),
@@ -505,8 +521,8 @@ export function wrapWithCircuitBreaker(
 
   return {
     kind: transport.kind,
-    evaluate: (request, callOptions = {}) => run(request, callOptions, false),
-    ping: (callOptions = {}) => run({ state: "", model: "", questions: {} }, callOptions ?? {}, true),
+    evaluate: (request, callOptions = {}) => run({ kind: "evaluate", request }, callOptions),
+    ping: (callOptions = {}) => run({ kind: "ping" }, callOptions),
     breakerStatus: () => breaker.status(),
     breakerStatusByHost: () => registry.snapshot(),
   };
