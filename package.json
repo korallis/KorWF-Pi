@@ -4,12 +4,16 @@
   "description": "A Jev-assisted autonomous development workflow package for Pi.",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "engines": {
     "node": ">=20"
   },
   "pi": {
-    "extensions": ["./src/extension/index.ts"]
+    "extensions": [
+      "./src/extension/index.ts"
+    ]
   },
   "files": [
     "src",
@@ -21,9 +25,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:spec",
     "lint": "eslint . --ext .ts",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:spec": "node --experimental-strip-types --test \"test/workflow/*.test.mjs\" \"test/workflow/*.test.ts\""
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
