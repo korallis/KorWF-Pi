@@ -50,7 +50,7 @@ describe("every record table exists with the columns its spec declares", () => {
     });
   }
 
-  it("covers all eleven record types", () => {
+  it("covers every record type (the eleven of #23 plus ledger_entry from #30)", () => {
     expect(Object.keys(TABLE_SPECS).sort()).toEqual([...APPEND_ONLY_TABLES, ...MUTABLE_TABLES].sort());
   });
 

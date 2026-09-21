@@ -1,5 +1,6 @@
 /**
- * `TableSpec` for each of the eleven record types (issue #23).
+ * `TableSpec` for each record type (the eleven of #23, plus `ledger_entry`
+ * from #30).
  *
  * The indexed/foreign-key columns listed here must match
  * `migrations/0001-initial.sql`; `test/unit/storage/schema.test.ts` asserts

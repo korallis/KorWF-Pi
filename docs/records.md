@@ -192,6 +192,21 @@ erDiagram
         int latencyMs
         bool wasFallback
     }
+    LEDGER_ENTRY {
+        string id PK
+        string workflowId FK
+        string phaseId FK
+        string taskId FK
+        string attemptId FK
+        string channel
+        string entryKind
+        string reservationId
+        string sessionId
+        json usage
+        int elapsedMs
+        string label
+        string reason
+    }
     AUDIT_ENTRY {
         string id PK
         string workflowId FK
@@ -230,6 +245,7 @@ property.
 | Memory | source → `source`; revision → `revision`; type → `type`; freshness → `freshness`; supersession → `supersession`; status → `status`. Extra (PLAN §3.B/§3.H): provenance inside `source`, `content`, `contentHash`, `pinned`. |
 | ModelAvailability | model id → `routeId` (+ `providerId`, `modelId` components; #125); cap kind → `capKind`; detected at → `detectedAt`; estimated reset → `estimatedReset`; last probe → `lastProbe`. |
 | ModelOutcome | model → `model` and `routeId` (#125); task profile → `taskProfile`; result → `result`; cost → `cost`; latency → `latencyMs`. Extra: `attemptId`, `wasFallback`. |
+| LedgerEntry (#30) | PLAN §2.6 budget caps and §3.I "actual/estimated/unknown cost": scope → `scope`; channel → `channel`; reservation/settlement → `entryKind` + `reservationId`; usage → `usage` (`Usage`, carrying `costBasis`); latency → `elapsedMs`. Extra: `sessionId`, `label`, `reason`. |
 
 `AuditEntry` is the PLAN §5 "append-only audit table"; it is not a PLAN §5 record but is
 defined here because the mutability rules in §4 depend on it.
@@ -251,6 +267,7 @@ table exists on the corresponding interface.
 | `decision` | **append-only** | none — `UpdatePatch<Decision>` is `never` |
 | `evidence` | **append-only** | none — `UpdatePatch<Evidence>` is `never` |
 | `model_outcome` | **append-only** | none — `UpdatePatch<ModelOutcome>` is `never` |
+| `ledger_entry` | **append-only** | none — `UpdatePatch<LedgerEntry>` is `never` |
 | `audit_entry` | **append-only** | none — `UpdatePatch<AuditEntry>` is `never` |
 
 How "no update path" is expressed in the type design:
@@ -414,6 +431,10 @@ Declared in `FOREIGN_KEYS`. Rules:
 | memory | supersession.supersedesId | memory | set_null |
 | model_outcome | workflowId | workflow | restrict |
 | model_outcome | attemptId | attempt | restrict |
+| ledger_entry | scope.workflowId | workflow | restrict |
+| ledger_entry | scope.phaseId | phase | restrict |
+| ledger_entry | scope.taskId | task | restrict |
+| ledger_entry | scope.attemptId | attempt | restrict |
 | audit_entry | workflowId | workflow | restrict |
 
 Columns written as `a.b` are keys inside a JSON column; the SQLite migration either
@@ -443,6 +464,39 @@ fork/resume the coordinator:
 3. Marks attempts with no live worker as `abandoned` (frozen; PLAN §5 "abandoned attempts
    reconciled on startup").
 4. Never replays a `Decision` whose `stateHash` still matches — the recorded action stands.
+5. Closes every budget reservation with no terminal row as `abandonment` (§10.1).
+
+## 10.1 Usage accounting and budget reservations (#30)
+
+`LedgerEntry` implements PLAN §2.6 ("per-phase and per-workflow budget caps with hard
+stop") and PLAN §3.I ("actual/estimated/unknown cost tracked explicitly"). Caps are read
+from the `budgets` section of the config schema (`workflow`, `phase`, `task`, `jev`); this
+table holds the *usage*, never the policy.
+
+Rules, implemented in [`src/telemetry/ledger.ts`](../src/telemetry/ledger.ts) and enforced
+by migration `0002-ledger.sql`:
+
+1. **Reserve before, settle after.** Every Jev call and model call appends a `reservation`
+   row carrying its pre-call estimate, then exactly one terminal row: `settlement`
+   (actuals), `release` (never ran), or `abandonment` (session died). A partial unique
+   index makes a second terminal row impossible.
+2. **Atomicity.** The cap check and the reservation insert happen in one
+   `BEGIN IMMEDIATE` transaction (ADR 0006 rule 6), so two workers can never both be told
+   the same remaining budget is available. `BudgetExceededError` is thrown and *no* row is
+   written when any enclosing cap would be breached.
+3. **Committed usage** = settled/abandoned actuals + still-open reservations' estimates.
+   A released reservation contributes nothing. There is no running counter to drift: every
+   budget figure is derived from the rows.
+4. **Honest cost.** `Usage.spendUsd` is `NULL` **exactly** when `costBasis = 'unknown'`
+   (a CHECK constraint, not a convention). A model with absent *or zero* price metadata is
+   `unknown` — a proxy reporting `0` almost always means "no figure", and recording it as
+   free would understate every report. Unknown-cost calls still consume request, token,
+   concurrency and elapsed caps, and status surfaces them as `unknownCostRequests`
+   alongside `knownSpendUsd` and `estimatedSpendUsd`.
+5. **Abandonment keeps the charge.** A reservation reconciled on startup retains its
+   estimate rather than refunding it: the call may have run and cost money, and refunding
+   would let a crash loop spend past its cap. The row says `abandonment` so reports can
+   describe the figure as an unverified estimate.
 
 ## 11. Decisions left open for later issues
 
