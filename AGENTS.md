@@ -17,7 +17,10 @@ them before orchestrating, delegating, or escalating:
   irreversible acts, permissions, unsettled product decisions) — running out of attempts
   is the orchestrator's own problem and gets `orchestrator-stuck` instead.
 - **`.pi/skills/korwf-worker-delegation/SKILL.md`** — read before any delegation, parallel
-  work, or worker. There are no sub-agents: a worker is a new pi session in a Herdr pane.
+  work, or worker. Note §1.1: `run.mjs` workers are **headless subprocesses, not Herdr
+  agents**, so they never appear in the Agents panel — an empty panel is not evidence that
+  a run has stalled, and no script may ever split the user's tab
+  (`node scripts/orchestrate/check-layout.mjs` enforces this). There are no sub-agents: a worker is a new pi session in a Herdr pane.
   Close agents and their Spaces when finished, and clean up worktrees and branches
   (local *and* remote) when work is done. It covers this repo's rules only; generic Herdr
   and pi mechanics live in the machine-wide `herdr-pi-delegation` skill, which it links to.

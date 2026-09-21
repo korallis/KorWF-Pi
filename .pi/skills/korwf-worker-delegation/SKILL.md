@@ -34,6 +34,38 @@ fix it in the machine-wide skill, not in this one.
 6. **Closing a tab or workspace kills every agent inside it.** Clean up only with
    `stop-pi.sh`. Never close a pane/tab/Space you did not create, never close Lee's,
    and never `herdr server stop`.
+7. **Never split Lee's tab from code.** `herdr pane split --current` targets the pane
+   the process was launched from — his. Anything long-lived (orchestrator, worker,
+   surface, monitor) gets its own Space or tab. Enforced by
+   `node scripts/orchestrate/check-layout.mjs`; run it after touching orchestration code.
+
+## 1.1 `run.mjs` workers are NOT Herdr agents
+
+The single most confusing thing about this repo, and the cause of a "nothing is
+happening" incident: **`run.mjs` does not use `herdr agent start`.** Workers are headless
+`pi -p --mode json` subprocesses, which is what lets the orchestrator stream events,
+parse the final JSON report and enforce timeouts. Headless pi is not in a pane, so
+**Herdr's Agents panel cannot show it**. An orchestrated run that is working perfectly
+looks exactly like a crashed one.
+
+Two different mechanisms, do not confuse them:
+
+| | `run.mjs` worker | `spawn-pi.sh` worker (§2) |
+|---|---|---|
+| Started by | `spawn()` → `pi -p --mode json` | `herdr agent start --kind pi` |
+| In the Agents panel? | **No** — only its worktree Space appears | Yes, by name |
+| Visibility | `herdrSurface()` opens the worktree as a Space | the agent itself |
+| Use when | the orchestrator drives the loop | you are delegating by hand |
+
+Before reporting an orchestrated run as dead, check it the way it actually works:
+
+```bash
+pgrep -af 'run.mjs'; pgrep -af 'provider mac-mini'   # orchestrator, worker
+tail -5 .orchestrate/orchestrator.log                # last dispatch/gate decision
+ls -la --time-style=+%H:%M:%S ../korwf-worktrees/issue-<n>/src   # files changing = alive
+```
+
+An empty Agents panel is **not** evidence of a stalled orchestrator.
 
 ## 2. Placing a worker so it nests under KorWF-Pi
 

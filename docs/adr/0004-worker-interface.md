@@ -135,6 +135,36 @@ Worker pids and their snapshots are persisted in the KorWF store (§5) so that a
 orchestrator restart can reap workers it no longer holds handles to (§3.E "restart
 recovery").
 
+### Worker visibility in Herdr (added 2026-09-21 after an incident)
+
+A headless worker (`--mode rpc` or `-p --mode json`) is **not** in a terminal pane, so
+Herdr's agent detection cannot see it and it never appears in the Agents panel. The
+owner's mental model is "agents show up in Herdr"; a correctly running headless fleet
+looks identical to a dead orchestrator. Progress capture (above) is therefore not
+sufficient on its own — the run must also be *visible*.
+
+The bootstrap orchestrator learned this the hard way. It surfaced each worker by calling
+`herdr pane split --current`, which splits whichever pane the orchestrator was launched
+from — the user's. With `workers.concurrency > 1` every dispatch carved another pane out
+of his working tab, while the actual work was invisible.
+
+**Rules for any KorWF code that touches Herdr layout:**
+
+1. A worker's surface belongs to **its own worktree Space** (`herdr worktree open --path
+   <checkout>`). Spaces group in the sidebar by git worktree identity, so the worker
+   nests under the project automatically. Never `pane split --current`, and never fall
+   back to it — no surface is better than a damaged layout, because the surface is pure
+   observability.
+2. Close only what you created, and never a **tab**: closing a tab kills every agent in
+   it. Track ownership explicitly (`already_open === false`) rather than assuming.
+3. The surface is best-effort. If Herdr is absent or any call fails, the worker still
+   runs; visibility must never be able to fail the work.
+4. These rules are enforced by `scripts/orchestrate/check-layout.mjs`, not by prose.
+   The prose version of rule 1 existed in two skill files and was still violated,
+   because a skill constrains the agent while the violation lived in automation the
+   agent started. When the product's own `src/workers/` gains a Herdr surface, extend
+   that check to cover it (it already scans `src/workers/` and `src/extension/`).
+
 ### Resource and progress capture
 
 - Progress: the RPC event stream is forwarded to `workflow/` as-is; `tool_execution_*` and
@@ -167,5 +197,9 @@ recovery").
 
 - #17 threat model: add "worker SIGKILL orphans detached commands" and "compiled-in
   extensions bypass `--no-extensions`" as residual risks with the mitigations above.
+- Stage 2 `workers/` implementation issue: a worker must be visible in Herdr's Agents
+  panel while it runs ("Worker visibility" above) — headless RPC workers are invisible by
+  construction, so the Space-based surface is part of the worker lifecycle, not an
+  afterthought. Include the `check-layout` guard in the package's test script.
 - Stage 2 `workers/` implementation issue: Windows tree enumeration/kill and a test that
   fails if `KORWF_WORKER_DEPTH` handling is removed from the extension.

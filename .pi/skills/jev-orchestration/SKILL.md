@@ -157,6 +157,30 @@ it. An **independent audit by a different model** caught it.
 - Do not dismiss a gate failure without an independent check. Jev was right about #8 and
   the assistant's spot-check was wrong.
 
+## 4.1 "Nothing is happening" is a claim to verify, not a state to report
+
+`run.mjs` workers are headless `pi -p --mode json` subprocesses, **not** Herdr agents, so
+they never appear in the Agents panel (`korwf-worker-delegation` §1.1). A perfectly
+healthy run therefore looks identical to a dead one in the sidebar. Establish liveness
+from the things that actually move before concluding anything:
+
+```bash
+pgrep -af 'run.mjs'                                   # orchestrator alive?
+pgrep -af 'provider mac-mini'                         # a worker actually running?
+tail -5 .orchestrate/orchestrator.log                 # last decision + timestamp
+ls -la --time-style=+%H:%M:%S ../korwf-worktrees/issue-<n>/src   # mtimes = real work
+ps -o etime= -p <worker-pid>                          # vs workers.timeoutMinutes (45)
+```
+
+A long gap in the log is normal: one worker attempt on a spec issue runs for tens of
+minutes with no log line between "dispatching" and its gate result. Silence is not a
+stall. Check mtimes in the worktree before touching a running worker, and never restart
+an orchestrator to "fix" apparent inactivity without that evidence — it destroys the
+attempt in flight.
+
+If Lee cannot see progress, the defect is **observability**, not the orchestrator. Fix
+the surface (a nested worktree Space), do not restart the run.
+
 ## 5. Delegation and cleanup
 
 Workers are real pi sessions in Herdr panes — there are no sub-agents. See the
@@ -168,6 +192,14 @@ worktree identity, never by cwd or label).
 
 **Close agents and their Spaces when finished.** Never close a tab or workspace that
 holds other live agents — it kills them all; `stop-pi.sh` refuses this without `--force`.
+
+**Never split Lee's tab from code.** `herdr pane split --current` targets the pane the
+process was launched from. `herdrSurface()` did this once per dispatch and shredded his
+layout while the real work stayed invisible. Long-lived things get their own Space
+(`herdr worktree open --path <dir>`, which nests under the project) or their own tab.
+A rule written only in a skill governs *you*, not the automation you start — so this one
+is enforced by `node scripts/orchestrate/check-layout.mjs`. Run it after changing
+anything in `scripts/orchestrate/`, `src/workers/` or `src/extension/`.
 
 **Clean up worktrees when done, local and remote.** `gh pr merge --delete-branch` deletes
 only the *remote* branch. `cleanupWorktree()` also removes the worktree, the local branch

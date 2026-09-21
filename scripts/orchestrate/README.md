@@ -36,4 +36,32 @@ Workers run in `../korwf-worktrees/issue-<n>` on branch `issue-<n>-<slug>`, open
 never merge. Issues that fail the gate three times, or that Jev judges under-specified,
 get `needs-human`.
 
+## Where the workers are (they are not Herdr agents)
+
+Workers are **headless** `pi -p --mode json` subprocesses spawned by `run.mjs`, not
+`herdr agent start` sessions. Headless pi is not in a pane, so **Herdr's Agents panel
+cannot see a worker** — a healthy run and a dead orchestrator look identical there. This
+is deliberate: headless mode is what lets the orchestrator stream structured events,
+parse the final JSON report, and enforce `workers.timeoutMinutes`.
+
+To make a run visible, `herdrSurface()` opens each worker's **worktree as a Herdr Space**,
+which nests under KorWF-Pi in the sidebar and shows that worker's live git activity.
+
+```sh
+node scripts/orchestrate/check-layout.mjs   # CI guard: no code may split the user's tab
+```
+
+It must never use `pane split --current` (that splits *your* pane, once per dispatch —
+this actually happened), and it closes only Spaces it created, never a tab (closing a tab
+kills every agent inside it). See `docs/adr/0004-worker-interface.md` §"Worker visibility".
+
+To check a run is alive without the Agents panel:
+
+```sh
+pgrep -af 'run.mjs'                                   # orchestrator
+pgrep -af 'provider mac-mini'                         # the worker itself
+tail -f .orchestrate/orchestrator.log                 # dispatch/gate decisions
+git -C ../korwf-worktrees/issue-<n> status -s         # files changing = real progress
+```
+
 This script is replaced by the product itself from Stage 5 onward.
