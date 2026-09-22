@@ -17,7 +17,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { runCheck } from "../../../src/verification/checks.ts";
+import {
+  humanCheckAction,
+  isProjectCheck,
+  registeredChecks,
+  requestHumanCheck,
+  runCheck,
+  runChecks,
+} from "../../../src/verification/checks.ts";
 import type { CheckDefinition } from "../../../src/storage/records.ts";
 import type { EvidenceSubject } from "../../../src/verification/evidence.ts";
 import { REDACTED, clearRegisteredSecrets, registerSecretValue } from "../../../src/security/redact.ts";
@@ -315,5 +322,99 @@ describe("AC4: secrets never reach stored stdout/stderr", () => {
     expect(base.evidence?.commandIdentity?.environmentHash).not.toBe(
       extra.evidence?.commandIdentity?.environmentHash,
     );
+  });
+});
+
+describe("AC5: a human check creates a pending approval, never Evidence", () => {
+  const humanCheck = check({
+    id: "h1",
+    kind: "human",
+    command: "A maintainer confirms the migration was reviewed against production data.",
+  });
+
+  it("produces a pending approval request pinned to the task and repo revision", () => {
+    const repo = freshRepo();
+    const request = requestHumanCheck(humanCheck, { cwd: repo.path, subject });
+    expect(request.kind).toBe("pending_approval");
+    expect(request.checkId).toBe("h1");
+    expect(request.taskRevision).toBe(subject.taskRevision);
+    expect(request.revision).toBe(repo.head());
+    expect(request.permittedAction).toBe(humanCheckAction("h1"));
+    // The structural point: there is no evidence field to append.
+    expect("evidence" in request).toBe(false);
+  });
+
+  it("refuses to self-certify: running a human check yields no passing evidence", async () => {
+    const repo = freshRepo();
+    const result = await runCheck(humanCheck, { cwd: repo.path, subject });
+    expect(result.status).toBe("unavailable");
+    expect(result.status).not.toBe("pass");
+    expect(result.evidence?.reviewer).toEqual({ kind: "deterministic" });
+    expect(result.evidence?.exitStatus.kind).toBe("unavailable");
+  });
+
+  it("runChecks routes human checks to approvals and never counts them as passed", async () => {
+    const repo = freshRepo();
+    const suite = await runChecks([check(), humanCheck], { cwd: repo.path, subject });
+    expect(suite.results.map((r) => r.checkId)).toEqual(["c1"]);
+    expect(suite.pendingApprovals.map((a) => a.checkId)).toEqual(["h1"]);
+    // The executed check passed, but an unanswered human check is not a pass.
+    expect(suite.results[0]?.status).toBe("pass");
+    expect(suite.allPassed).toBe(false);
+  });
+
+  it("requestHumanCheck refuses a non-human check", () => {
+    const repo = freshRepo();
+    expect(() => requestHumanCheck(check(), { cwd: repo.path, subject })).toThrow(/not a human check/);
+  });
+});
+
+describe("registration: project-wide checks merge with the task's own", () => {
+  it("appends project checks under a namespaced id", () => {
+    const merged = registeredChecks([check()], [{ id: "test", command: "npm test" }]);
+    expect(merged.map((c) => c.id)).toEqual(["c1", "project:test"]);
+    expect(merged[1]?.required).toBe(true);
+    expect(isProjectCheck(merged[1] as CheckDefinition)).toBe(true);
+  });
+
+  it("a task check cannot shadow or silence a project check", () => {
+    // A plan registering its own `test` check must not remove `npm test`.
+    const merged = registeredChecks(
+      [check({ id: "test", command: "node -e \"process.exit(0)\"" })],
+      [{ id: "test", command: "npm test" }],
+    );
+    expect(merged).toHaveLength(2);
+    expect(merged.find((c) => c.id === "project:test")?.command).toBe("npm test");
+  });
+
+  it("a later project declaration overrides an earlier one with the same id", () => {
+    const merged = registeredChecks(
+      [],
+      [
+        { id: "lint", command: "npm run lint" },
+        { id: "lint", command: "npm run lint -- --max-warnings 0" },
+      ],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.command).toBe("npm run lint -- --max-warnings 0");
+  });
+});
+
+describe("#44's isVerifyingCheck is the only definition of a real check", () => {
+  it.each(["true", "exit 0", ":", "cd . && true"])(
+    "refuses to manufacture evidence by running %j",
+    async (command) => {
+      const repo = freshRepo();
+      const result = await runCheck(check({ command }), { cwd: repo.path, subject });
+      expect(result.status).toBe("unavailable");
+      expect(result.exitStatus).toEqual({ kind: "unavailable", reason: "weak_check" });
+    },
+  );
+
+  it("records the refusal as evidence at the current revision, not as silence", async () => {
+    const repo = freshRepo();
+    const result = await runCheck(check({ command: "true" }), { cwd: repo.path, subject });
+    expect(result.evidence?.revision).toBe(repo.head());
+    expect(result.evidence?.exitStatus).toEqual({ kind: "unavailable", reason: "weak_check" });
   });
 });
