@@ -16,6 +16,7 @@ export * from "./action-log.ts";
 export * from "./approval-requests.ts";
 export * from "./gate-receipts.ts";
 export * from "./artifacts.ts";
+export * from "./checkpoints.ts";
 export * from "./db.ts";
 export * from "./decision-cache.ts";
 export * from "./errors.ts";
