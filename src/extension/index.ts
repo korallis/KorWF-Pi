@@ -24,6 +24,7 @@ import { purgeMessage, whyMessage } from "./commands/why.ts";
 import { runPlanIntake } from "./commands/plan.ts";
 import { tasksMessage, parseTasksArgs } from "./commands/tasks.ts";
 import { phasesMessage, parsePhasesArgs } from "./commands/phases.ts";
+import { approvalsMessage, parseApprovalsArgs } from "./commands/approvals.ts";
 import { runExport, parseExportArgs } from "./commands/export.ts";
 import { openStore, resolveStorageRoot } from "../storage/index.ts";
 import { readLiveRepoState } from "../git/revision.ts";
@@ -41,6 +42,7 @@ const SUBCOMMANDS = [
   "plan",
   "tasks",
   "phases",
+  "approvals",
   "export",
 ] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
@@ -138,6 +140,7 @@ export default function korwfExtension(pi: ExtensionAPI): void {
           }
           case "tasks":
           case "phases":
+          case "approvals":
           case "export": {
             const result = loadForProject(ctx.cwd);
             if (!result.ok) {
@@ -154,6 +157,11 @@ export default function korwfExtension(pi: ExtensionAPI): void {
                 ui.notify(outcome.message, outcome.ok ? "info" : "error");
               } else if (sub === "phases") {
                 const outcome = phasesMessage(store, parsePhasesArgs(rest));
+                ui.notify(outcome.message, outcome.ok ? "info" : "error");
+              } else if (sub === "approvals") {
+                // Read-only: the queue is a view. Answering a question is a
+                // separate, explicit act (#49).
+                const outcome = approvalsMessage(store, parseApprovalsArgs(rest, new Date().toISOString()));
                 ui.notify(outcome.message, outcome.ok ? "info" : "error");
               } else {
                 const parsed = parseExportArgs(rest);

@@ -68,6 +68,12 @@ import {
 
 export type { ApprovalRequest, ApprovalRequestStatus };
 
+/**
+ * The slice of the store the read-only helpers need. Declared narrowly so a
+ * command module can render the queue without a writable handle.
+ */
+export type ApprovalReadStore = Pick<Store, "workflows" | "tasks" | "approvals" | "approvalRequests">;
+
 /** Look up the immutable class definition, or throw for an unknown id. */
 export function approvalClassDefinition(classId: ApprovalClassId): (typeof APPROVAL_CLASS_TABLE)[number] {
   const def = APPROVAL_CLASS_TABLE.find((c) => c.id === classId);
@@ -356,7 +362,7 @@ export function grantApproval(options: GrantApprovalOptions): GrantApprovalResul
  * the same named causes rather than two parallel vocabularies.
  */
 export function requestStaleness(
-  store: Store,
+  store: ApprovalReadStore,
   request: ApprovalRequest,
   now: IsoTimestamp,
 ): ApprovalGrantRefusal | null {
@@ -492,7 +498,11 @@ export interface ApprovalQueueRow {
 }
 
 /** The pending queue of a workflow, oldest first, with staleness computed. */
-export function approvalQueue(store: Store, workflowId: WorkflowId, now: IsoTimestamp): readonly ApprovalQueueRow[] {
+export function approvalQueue(
+  store: ApprovalReadStore,
+  workflowId: WorkflowId,
+  now: IsoTimestamp,
+): readonly ApprovalQueueRow[] {
   return store.approvalRequests.pendingForWorkflow(workflowId).map((request) => ({
     request,
     highRisk: request.tier === "high_risk",
@@ -510,7 +520,7 @@ export function approvalQueue(store: Store, workflowId: WorkflowId, now: IsoTime
  * step asking "may I".
  */
 export function validApprovalsFor(options: {
-  readonly store: Store;
+  readonly store: ApprovalReadStore;
   readonly workflowId: WorkflowId;
   readonly permittedAction: string;
   readonly taskId?: TaskId;

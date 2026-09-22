@@ -17,6 +17,7 @@ import {
   type ApprovalPromptUI,
 } from "../../../src/extension/ui/approval-prompt.ts";
 import { requestApproval } from "../../../src/workflow/approvals.ts";
+import { approvalsMessage, parseApprovalsArgs } from "../../../src/extension/commands/approvals.ts";
 import type { ApprovalRequest } from "../../../src/storage/approval-requests.ts";
 import type { TaskId, WorkflowId } from "../../../src/storage/records.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
@@ -282,5 +283,55 @@ describe("the prompt text describes what is being approved", () => {
     expect(line.startsWith("HIGH-RISK")).toBe(true);
     expect(line).toContain("publishing");
     expect(line).toContain("tk-1");
+  });
+});
+
+describe("/korwf approvals shows the queue and never mutates it", () => {
+  it("lists a pending high-risk request as HIGH-RISK/STOP", () => {
+    const store = freshStore();
+    const request = queue(store);
+    const outcome = approvalsMessage(store, parseApprovalsArgs([], AT));
+    expect(outcome.ok).toBe(true);
+    expect(outcome.message).toContain("HIGH-RISK/STOP");
+    expect(outcome.message).toContain(request.requestId);
+    expect(outcome.message).toContain("publish:v1.2.0");
+    expect(store.approvalRequests.find(request.requestId)?.status).toBe("pending");
+  });
+
+  it("marks a request the world outran as STALE and says it cannot be granted", () => {
+    const store = freshStore();
+    queue(store);
+    const task = store.tasks.require(TK);
+    store.tasks.update(TK, { revision: task.revision + 1, goal: `${task.goal} (edited)` });
+    const outcome = approvalsMessage(store, parseApprovalsArgs([], AT));
+    expect(outcome.message).toContain("STALE:task_revision_changed");
+    expect(outcome.message).toContain("cannot be granted");
+  });
+
+  it("--high-risk filters to the PLAN \u00a77 classes", () => {
+    const store = freshStore();
+    queue(store);
+    requestApproval({
+      store,
+      workflowId: WF,
+      classId: "add_dependency",
+      scope: { kind: "task", taskId: TK },
+      permittedAction: "add_dependency:left-pad",
+      summary: "add a dependency",
+      taskRevision: 1,
+      now: AT,
+      newId,
+    });
+    const all = approvalsMessage(store, parseApprovalsArgs([], AT));
+    expect(all.message).toContain("add_dependency");
+    const filtered = approvalsMessage(store, parseApprovalsArgs(["--high-risk"], AT));
+    expect(filtered.message).not.toContain("add_dependency");
+    expect(filtered.message).toContain("publishing");
+  });
+
+  it("says so plainly when nothing is waiting", () => {
+    const store = freshStore();
+    const outcome = approvalsMessage(store, parseApprovalsArgs([], AT));
+    expect(outcome.message).toContain("Nothing is waiting on a human.");
   });
 });
