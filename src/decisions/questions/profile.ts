@@ -14,8 +14,8 @@
  * "what kind of task is this?":
  *
  *  - `profile.domain@1` (choice) — what kind of work the task mainly requires.
- *  - `profile.reasoningDepth@1` (score) — how much reasoning depth it needs.
- *  - `profile.contextSize@1` (choice: small/medium/large) — how much of the
+ *  - `profile.reasoning_depth@1` (score) — how much reasoning depth it needs.
+ *  - `profile.context_size@1` (choice: small/medium/large) — how much of the
  *    repository/docs must be held in context at once.
  *
  * Modality and risk are NOT asked of Jev: modality comes from deterministic
@@ -122,7 +122,7 @@ export const profileDomainQuestion: QuestionDefinition<ProfileDomainState, Domai
 });
 
 // ---------------------------------------------------------------------------
-// profile.reasoningDepth@1
+// profile.reasoning_depth@1
 // ---------------------------------------------------------------------------
 
 export interface ProfileDepthState {
@@ -164,7 +164,7 @@ export const profileDepthQuestion: QuestionDefinition<ProfileDepthState, number 
   ProfileDepthState,
   number | null
 >({
-  id: "profile.reasoningDepth",
+  id: "profile.reasoning_depth",
   version: "1",
   prompt:
     "Given a task's `goal` and `acceptanceCriteria`, how much reasoning depth does completing it need? Consider " +
@@ -189,7 +189,7 @@ export const profileDepthQuestion: QuestionDefinition<ProfileDepthState, number 
 });
 
 // ---------------------------------------------------------------------------
-// profile.contextSize@1
+// profile.context_size@1
 // ---------------------------------------------------------------------------
 
 export interface ProfileContextSizeState {
@@ -221,7 +221,7 @@ export const profileContextSizeQuestion: QuestionDefinition<ProfileContextSizeSt
   ProfileContextSizeState,
   ContextSize
 >({
-  id: "profile.contextSize",
+  id: "profile.context_size",
   version: "1",
   prompt:
     "Given a task's declared `ownershipPaths` and an optional `estimatedTokens` size, how much of the repository " +
@@ -257,8 +257,8 @@ export const profileContextSizeQuestion: QuestionDefinition<ProfileContextSizeSt
 /** Hashes as reviewed; editing prompt/options/levels without a version bump fails registration. */
 export const PROFILE_QUESTION_HASHES: Readonly<Record<string, string>> = Object.freeze({
   "profile.domain@1": profileDomainQuestion.contentHash,
-  "profile.reasoningDepth@1": profileDepthQuestion.contentHash,
-  "profile.contextSize@1": profileContextSizeQuestion.contentHash,
+  "profile.reasoning_depth@1": profileDepthQuestion.contentHash,
+  "profile.context_size@1": profileContextSizeQuestion.contentHash,
 });
 
 export const profileQuestionRegistry = new QuestionRegistry();
