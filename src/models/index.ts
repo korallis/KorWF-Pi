@@ -10,6 +10,8 @@
  * - `cards.ts` — four-layer model card merge: registry (excludes) < hints < user overrides < measured
  *   outcomes with a Wilson interval (#57). Registry metadata never appears here as ranking
  *   material — only hints, overrides, and outcomes rank.
+ * - `hints.ts` — bundled aptitude hints (#58): id-pattern matching against `resources/hints.json`,
+ *   ignoring provider prefixes and cosmetic (date/quant) suffixes so proxied names still match.
  *
  *
  * **Re-export style: `export *`, deliberately.** A barrel listing every symbol is a
@@ -21,5 +23,6 @@ export * from "./availability.ts";
 export * from "./cap-detect.ts";
 export * from "./cards.ts";
 export * from "./catalog.ts";
+export * from "./hints.ts";
 export * from "./outcomes.ts";
 export * from "./route.ts";
