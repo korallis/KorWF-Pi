@@ -119,13 +119,34 @@ export interface PolicyCheck {
   readonly reason: PolicyRejection | null;
 }
 
+/** `allowlist.providers`/`.models` re-check, same rule as `catalog.ts` (never re-widened here). */
+function inAllowlist(ref: ModelRef, allowlist: ModelAllowlist): boolean {
+  const slash = ref.indexOf("/");
+  const provider = slash === -1 ? ref : ref.slice(0, slash);
+  const providerOk = allowlist.providers.length === 0 || allowlist.providers.includes(provider);
+  const modelOk = allowlist.models.length === 0 || allowlist.models.includes(ref);
+  return providerOk && modelOk;
+}
+
+/**
+ * Defence in depth (PLAN §3.D "Selection"): re-checks a winner — whether it
+ * came from Jev, the static order, or anywhere else — against the allowlist,
+ * the eligible set computed by code, and the budget. A Jev answer naming a
+ * model outside the allowlist, or outside the eligible set entirely (an id
+ * Jev invented or misremembered), is rejected here regardless of what Jev
+ * said. This function can only narrow; it never has a path that grants
+ * something the caller did not already establish as eligible.
+ */
 export function enforcePolicy(
   ref: ModelRef,
   eligible: ReadonlySet<ModelRef>,
   allowlist: ModelAllowlist,
   checkBudget?: (ref: ModelRef) => boolean,
 ): PolicyCheck {
-  throw new Error("todo");
+  if (!inAllowlist(ref, allowlist)) return { ok: false, reason: "not_in_allowlist" };
+  if (!eligible.has(ref)) return { ok: false, reason: "not_eligible" };
+  if (checkBudget !== undefined && !checkBudget(ref)) return { ok: false, reason: "budget_unavailable" };
+  return { ok: true, reason: null };
 }
 
 export interface SelectModelParams {
