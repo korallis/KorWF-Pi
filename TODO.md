@@ -96,7 +96,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Opt-in main-session routing at safe boundaries only.
 - [x] Worker roles, contracts, launch with explicit model/profile/tools/cwd; resource inheritance control.
 - [ ] Read-only roles enforced across all mutation routes; sandbox boundaries where supported.
-- [ ] Dirty-tree preservation and repository identity check.
+- [x] Dirty-tree preservation and repository identity check.
 - [ ] Progress, artifacts, usage capture; global/per-worker limits; pause/resume/cancel; process-tree termination.
 - [ ] Crash-interrupted attempt reconciliation.
 - [ ] Single-worker end-to-end run in a disposable repo; simulated-cap test with visible fallback (scenario 4).
