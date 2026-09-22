@@ -286,7 +286,7 @@ export function latestResultFor(
  * (gates.spec.md B6). `required: false` changes nothing here: it is a
  * reporting flag and this function never reads it (B9).
  */
-export function checkState(
+export function gateCheckState(
   check: CheckDefinition,
   fresh: readonly Evidence[],
 ): { readonly state: CheckRunStatus; readonly identityMismatch: boolean } {
@@ -431,7 +431,7 @@ export function evaluateC1(
       states.push({ checkId: check.id, state: "missing" });
       continue;
     }
-    const { state, identityMismatch } = checkState(check, fresh);
+    const { state, identityMismatch } = gateCheckState(check, fresh);
     states.push({ checkId: check.id, state });
     if (state === "pass") continue;
     if (identityMismatch) {
@@ -570,7 +570,7 @@ export function evaluateDetCoverage(
       (check) =>
         !isTrivialCheck(check) &&
         check.coversCriteria.includes(criterion.id) &&
-        checkState(check, fresh).state === "pass",
+        gateCheckState(check, fresh).state === "pass",
     );
     if (!passingCheck) {
       out.push({
