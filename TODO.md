@@ -76,7 +76,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 
 ## 5. Model catalog, Jev selection, fallback, single-worker execution (Stage 5)
 
-- [ ] Catalog from Pi registry filtered by allowlist; no credentials exposed.
+- [x] Catalog from Pi registry filtered by allowlist; no credentials exposed. (#56 → `src/models/catalog.ts`)
 - [ ] Model cards, four layers (PLAN §D): registry metadata → bundled aptitude hints → user overrides → outcome refinement with uncertainty.
 - [ ] Bundled aptitude-hints file: id-pattern matching, versioned, "unrated" default for unknown models, update process documented.
 - [ ] Task-profile evaluator independent of model names.
