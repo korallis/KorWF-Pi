@@ -38,6 +38,7 @@ import {
   type TaskGateResult,
 } from "../../../src/verification/task-gate.ts";
 import { TransitionRejected, transitionTask } from "../../../src/workflow/state.ts";
+import { whyMessage } from "../../../src/extension/commands/why.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 import {
   AT,
@@ -967,5 +968,29 @@ describe("X: cross-cutting invariants", () => {
     const { result, receipt } = runTaskGate(store, TK, { ...gateOptions, resolveRevision: () => OLD_SHA });
     expect(receipt.revision).toBe(OLD_SHA);
     expect(codes(result)).toContain("check_missing");
+  });
+
+  it("X7 — /korwf why explains a refusal from the recorded receipt fields", () => {
+    const store = freshStore();
+    seed(store, { evidence: [passEvidence(CHK1)] });
+    runTaskGate(store, TK, gateOptions);
+    const message = whyMessage(store, TK);
+    expect(message).toContain("Task gate REFUSED");
+    expect(message).toContain("C1: check_missing");
+    expect(message).toContain("C0: satisfied");
+    expect(message).toContain("No status change was made");
+  });
+
+  it("X7.pass — and explains a pass, including whether the receipt was used", () => {
+    const store = freshStore();
+    seed(store);
+    completeTask(store, TK, {
+      ...gateOptions,
+      actor: { kind: "engine", identity: "engine" },
+      evidenceRefs: ["ev:checks", "ev:gap", "ev:policy"],
+    });
+    const message = whyMessage(store, TK);
+    expect(message).toContain("Task gate PASSED");
+    expect(message).toContain("authorised the completion");
   });
 });

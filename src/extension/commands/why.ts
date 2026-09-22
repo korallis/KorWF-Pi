@@ -25,7 +25,39 @@ import {
 } from "../../telemetry/retention.ts";
 
 /** The store surfaces these commands need. `Store` satisfies it. */
-export type TraceReadStore = Pick<Store, "decisions" | "decisionTraces" | "artifacts">;
+export type TraceReadStore = Pick<Store, "decisions" | "decisionTraces" | "artifacts"> &
+  Partial<Pick<Store, "gateReceipts">>;
+
+/**
+ * Explain the last task-gate evaluation for a task, from recorded fields only
+ * (issue #46; docs/gates.md §7).
+ *
+ * The task gate is where "why is this not done?" is most often asked, and the
+ * answer must come from the receipt rather than from a reconstruction: a
+ * refusal names its condition (`C0`…`C3`) and its closed-set reason code, and
+ * this renders exactly those fields. `null` when the subject is not a task
+ * with a receipt, so `whyMessage` can go on to try a decision id.
+ */
+export function gateReceiptMessage(store: TraceReadStore, id: string): string | null {
+  const receipt = store.gateReceipts?.latestForSubject("task", id);
+  if (receipt === undefined) return null;
+  const head =
+    receipt.disposition === "pass"
+      ? `Task gate PASSED for ${id} at revision ${receipt.revision.slice(0, 12)} (task revision ${receipt.subjectRevision}).`
+      : `Task gate REFUSED for ${id} at revision ${receipt.revision.slice(0, 12)} (task revision ${receipt.subjectRevision}).`;
+  const lines = receipt.conditions.map((condition) =>
+    condition.satisfied
+      ? `  ${condition.id}: satisfied`
+      : `  ${condition.id}: ${condition.reasonCode ?? "unsatisfied"} — ${condition.detail ?? "no detail recorded"}`,
+  );
+  const used =
+    receipt.disposition === "pass"
+      ? receipt.consumedAt === null
+        ? "This receipt has not been used yet."
+        : `This receipt authorised the completion at ${receipt.consumedAt}.`
+      : "No status change was made; the task stays where it was.";
+  return [head, `Evaluated at ${receipt.evaluatedAt}.`, ...lines, used].join("\n");
+}
 
 /**
  * Render `/korwf why <id>`. `id` may be a Decision id or a trace id; both
@@ -36,6 +68,11 @@ export function whyMessage(store: TraceReadStore, id: string): string {
   if (trimmed === "") {
     return "Usage: /korwf why <decision-id|trace-id>";
   }
+
+  // A task id is the most common thing a user types after "why": answer from
+  // the gate receipt before falling back to decision traces.
+  const gate = gateReceiptMessage(store, trimmed);
+  if (gate !== null) return gate;
 
   const decision = store.decisions.get(trimmed) ?? null;
   if (decision !== null) {
