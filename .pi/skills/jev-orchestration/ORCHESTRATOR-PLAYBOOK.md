@@ -303,6 +303,32 @@ PATH="$D:/usr/bin:/bin" npx vitest run <file>
 And check whether CI *actually ran* the tests rather than skipping them — `# skipped 0`
 in the log is the proof, especially for suites that shell out to an external binary.
 
+## 3.3 Parallel-branch collisions: the four kinds, and how each resolves
+
+Running three workers at once produces collisions at the integration boundary, not in the
+work itself. All four kinds seen so far are mechanical once recognised:
+
+| Collision | Symptom on rebase | Resolution |
+|---|---|---|
+| **Barrel exports** | conflict in `src/*/index.ts` | keep both; better, convert the barrel to `export *` so it cannot recur |
+| **TODO.md ticks** | adjacent checklist lines | union of ticks — both items really are done |
+| **Migration numbers** | `two migration files claim version N`, store refuses | renumber the *later* branch's file; never renumber a merged one |
+| **Duplicate symbol** | `TS2308: already exported a member named X` | two genuinely different functions — rename one to say what it does, do not merge them |
+
+Two of these were *caught because* of a safety property rather than in spite of one:
+`export *` surfaced a real `checkState` ambiguity that a named barrel would have hidden
+behind a hand resolution, and the store's migration guard refused to apply either file
+rather than silently picking one.
+
+**ADR numbers collide the same way.** An in-flight branch renumbers **its own** new ADR;
+it never edits a merged one. Doing the reverse produced two files titled `ADR 0011` and
+corrupted cross-references (#125).
+
+**Stale PR bodies read as dishonesty.** After the orchestrator fixes something on a
+branch — a renumbered migration, a renamed symbol — the PR body still describes the old
+state, and `honest` drops. Update the body, then re-review: #53 went 0.61 → 0.67 → 0.74
+with the diff attached, purely from correcting one filename.
+
 ## 4. Hard rules (do not let a long session erode these)
 
 1. Only `mac-mini` models from `config.json` `allowlist.models`. Never fall back to another
