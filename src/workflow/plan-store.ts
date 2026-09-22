@@ -92,3 +92,101 @@ export class PlanPersistError extends Error {
     super(message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Record construction
+// ---------------------------------------------------------------------------
+
+function toCriteria(criteria: readonly { id: string; text: string }[]): readonly AcceptanceCriterion[] {
+  return criteria.map((c) => ({ id: c.id, text: c.text }));
+}
+
+function toChecks(task: PlanTask): readonly CheckDefinition[] {
+  return task.checks.map((c) => ({
+    id: c.id,
+    kind: c.kind,
+    command: c.command,
+    cwd: c.cwd,
+    expectedExitCode: c.expectedExitCode,
+    coversCriteria: c.coversCriteria,
+    required: c.required,
+  }));
+}
+
+/**
+ * Status and blocker for a task about to be written.
+ *
+ * There is no parameter that can make this return `ready`: readiness is a
+ * transition the engine performs later, and PLAN §2.3's rule is applied here
+ * as well so a checkless task carries its blocker from the moment it exists.
+ */
+export function initialStatusFor(task: PlanTask): { status: TaskStatus; blocker: string | null } {
+  const readiness = taskReadiness(task);
+  return readiness.canBecomeReady
+    ? { status: INITIAL_TASK_STATUS, blocker: null }
+    : { status: INITIAL_TASK_STATUS, blocker: readiness.blocker ?? NO_CHECKS_BLOCKER };
+}
+
+function buildPhase(args: {
+  id: PhaseId;
+  workflowId: WorkflowId;
+  plan: PlanDocument["phases"][number];
+  baseRevision: string;
+  now: IsoTimestamp;
+}): Phase {
+  return {
+    id: args.id,
+    createdAt: args.now,
+    updatedAt: args.now,
+    schemaVersion: RECORDS_SCHEMA_VERSION,
+    kind: "mutable",
+    workflowId: args.workflowId,
+    order: args.plan.order,
+    goal: args.plan.goal,
+    acceptanceCriteria: toCriteria(args.plan.acceptanceCriteria),
+    budgetCap: { maxSpendUsd: null, maxTokens: null, maxRequests: null, maxConcurrency: null, maxElapsedMs: null },
+    integrationPoint: {
+      branch: args.plan.integrationBranch ?? defaultIntegrationBranch(args.plan.order),
+      baseRevision: args.baseRevision,
+    },
+    gateStatus: "pending",
+    report: null,
+  };
+}
+
+function buildTask(args: {
+  id: TaskId;
+  workflowId: WorkflowId;
+  phaseId: PhaseId;
+  plan: PlanTask;
+  dependencies: readonly TaskId[];
+  now: IsoTimestamp;
+}): Task {
+  const { status, blocker } = initialStatusFor(args.plan);
+  return {
+    id: args.id,
+    createdAt: args.now,
+    updatedAt: args.now,
+    schemaVersion: RECORDS_SCHEMA_VERSION,
+    kind: "mutable",
+    workflowId: args.workflowId,
+    phaseId: args.phaseId,
+    revision: 1,
+    goal: args.plan.goal,
+    dependencies: args.dependencies,
+    ownership: { paths: args.plan.ownership.paths, components: args.plan.ownership.components },
+    acceptanceCriteria: toCriteria(args.plan.acceptanceCriteria),
+    checks: toChecks(args.plan),
+    riskClass: args.plan.riskClass,
+    status,
+    blocker,
+  };
+}
+
+/** Stable comparison of the fields that define "done" (docs/records.md §5.1). */
+export function definitionOfDoneChanged(before: Task, next: PlanTask): boolean {
+  if (before.goal !== next.goal) return true;
+  if (JSON.stringify(before.acceptanceCriteria) !== JSON.stringify(toCriteria(next.acceptanceCriteria))) return true;
+  if (JSON.stringify(before.checks) !== JSON.stringify(toChecks(next))) return true;
+  return false;
+}
