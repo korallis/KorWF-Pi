@@ -116,6 +116,11 @@
             }
           }
         },
+        "routeMainSession": {
+          "type": "boolean",
+          "default": false,
+          "description": "Opt-in: allow KorWF to switch the main Pi session's own model at safe boundaries (PLAN §3.D 'Main session'). Default off; the user's own session is never re-routed without opting in."
+        },
         "overrides": {
           "type": "object",
           "default": {},
