@@ -51,7 +51,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Candidate retrieval; bounded context-evaluation tool; relevance/staleness/contradiction evaluators; provenance; shortlist expansion; pinned context. (#35)
 - [x] Optional skill/tool discovery and ranking; mandatory skill triggers preserved.
 - [x] Structured plan generation: architecture, phases, tasks, dependencies, ownership, acceptance criteria, per-task checks (PLAN §2.3).
-- [ ] Greenfield bootstrap: repo init, scaffolding phase, test infrastructure tasks first.
+- [x] Greenfield bootstrap: repo init, scaffolding phase, test infrastructure tasks first. (#38)
 - [x] Atomicity/coverage/readiness evaluators; "no checks → not ready" rule.
 - [x] Dependency validation and cycle detection.
 - [ ] Task and phase transitions, blockers, revision tracking, reapproval, scope-change handling.

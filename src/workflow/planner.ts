@@ -121,6 +121,13 @@ export interface PlannerPromptInput {
   readonly workerThinking?: ThinkingLevel;
   /** Characters of each excerpt embedded. Excerpts are truncated, never dropped silently. */
   readonly maxExcerptChars?: number;
+  /**
+   * Greenfield-only prompt lines appended when `intake.greenfield` is true
+   * (typically `greenfieldPromptAddendum()` from `greenfield.ts`). Passed in
+   * rather than imported, so this module never depends on `greenfield.ts`
+   * (which itself reuses `greenfieldScaffoldingIssues` from here).
+   */
+  readonly greenfieldAddendum?: readonly string[];
 }
 
 export const DEFAULT_MAX_EXCERPT_CHARS = 1_200;
@@ -164,6 +171,7 @@ export function buildPlannerPrompt(input: PlannerPromptInput): string {
 
   lines.push("", "## Output schema", "Return exactly one JSON document of this shape:", "", planSchemaText());
   lines.push("", ...planRulesText(input.workerLimits, input.workerThinking));
+  if (intake.greenfield && input.greenfieldAddendum !== undefined) lines.push("", ...input.greenfieldAddendum);
   return lines.join("\n");
 }
 
@@ -278,6 +286,8 @@ export interface GeneratePlanOptions {
   readonly workerLimits?: ModelOutputLimits;
   readonly workerThinking?: ThinkingLevel;
   readonly maxExcerptChars?: number;
+  /** See `PlannerPromptInput.greenfieldAddendum`. */
+  readonly greenfieldAddendum?: readonly string[];
 }
 
 export type GeneratePlanResult =
@@ -310,6 +320,7 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Genera
     ...(options.workerLimits === undefined ? {} : { workerLimits: options.workerLimits }),
     ...(options.workerThinking === undefined ? {} : { workerThinking: options.workerThinking }),
     ...(options.maxExcerptChars === undefined ? {} : { maxExcerptChars: options.maxExcerptChars }),
+    ...(options.greenfieldAddendum === undefined ? {} : { greenfieldAddendum: options.greenfieldAddendum }),
   });
 
   const attempts: PlannerAttemptRecord[] = [];

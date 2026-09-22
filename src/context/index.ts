@@ -42,3 +42,10 @@ export {
   detectMandatoryTrigger,
   rankCapabilities,
 } from "./capabilities.ts";
+
+export type { PlanDocumentOptions } from "./plan-document.ts";
+export {
+  PLAN_DOCUMENT_CHUNK_LINES,
+  planDocumentCandidates,
+  retrieveWithPlanDocumentFallback,
+} from "./plan-document.ts";
