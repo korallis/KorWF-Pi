@@ -182,3 +182,94 @@ export function raisePhaseBlocker(
     return { blocker, transition };
   });
 }
+
+/** What resolving a blocker did. */
+export interface ResolveBlockerResult {
+  readonly blocker: BlockerRow;
+  /** Unresolved reasons that remain on the subject afterwards. */
+  readonly remaining: readonly BlockerRow[];
+  /**
+   * `true` when nothing unresolved remains. **Not** "the task is ready":
+   * readiness is a `task-ready` transition with the full conjunction, which
+   * the caller must request separately and which can still be refused.
+   */
+  readonly clear: boolean;
+}
+
+/**
+ * Resolve one blocker. Deliberately does **not** change any status.
+ *
+ * A cleared blocker is a precondition of readiness, not readiness itself
+ * (docs/state-machine.md §2: every edge into `ready` also needs
+ * `checks_registered`, `readiness_valid` and `authorization_current`); and
+ * §5 is explicit that "a cap clearing cannot clear another unresolved
+ * reason". So the only state effect here is keeping `Task.blocker` in step
+ * with the rows.
+ */
+export function resolveBlocker(
+  options: BlockerContext & { readonly blockerId: string; readonly detail: string },
+): ResolveBlockerResult {
+  const { store } = options;
+  return store.write(() => {
+    const existing = store.blockers.get(options.blockerId);
+    if (existing === undefined) {
+      throw new TransitionRejected({ message: `unknown blocker ${options.blockerId}`, code: "unknown_subject" });
+    }
+    const blocker = store.blockers.resolve(options.blockerId, {
+      at: options.now(),
+      by: `${options.actor.kind}:${options.actor.identity}`,
+      detail: options.detail,
+    });
+    const remaining = store.blockers.unresolvedForSubject(existing.subjectKind, existing.subjectId);
+    if (existing.subjectKind === "task") {
+      const task = store.tasks.get(existing.subjectId as TaskId);
+      if (task !== undefined && task.status !== "done" && task.status !== "cancelled") {
+        store.tasks.update(task.id, { blocker: deriveBlockerField(store, "task", task.id) });
+      }
+    }
+    return { blocker, remaining, clear: remaining.length === 0 };
+  });
+}
+
+/** Resolve every unresolved blocker of one kind on a subject. */
+export function resolveBlockersOfKind(
+  options: BlockerContext & {
+    readonly subjectKind: TransitionSubjectKind;
+    readonly subjectId: string;
+    readonly kind: string;
+    readonly detail: string;
+  },
+): readonly BlockerRow[] {
+  const { store } = options;
+  return store.write(() => {
+    const matching = store.blockers
+      .unresolvedForSubject(options.subjectKind, options.subjectId)
+      .filter((blocker) => blocker.kind === options.kind);
+    return matching.map(
+      (blocker) => resolveBlocker({ ...options, blockerId: blocker.blockerId, detail: options.detail }).blocker,
+    );
+  });
+}
+
+/** Unresolved reasons on a subject. Empty means nothing is holding it. */
+export function activeBlockers(
+  store: Store,
+  subjectKind: TransitionSubjectKind,
+  subjectId: string,
+): readonly BlockerRow[] {
+  return store.blockers.unresolvedForSubject(subjectKind, subjectId);
+}
+
+/**
+ * Is the subject blocked? Derived from the rows, which is the whole point:
+ * there is no setter for this.
+ */
+export function isBlocked(store: Store, subjectKind: TransitionSubjectKind, subjectId: string): boolean {
+  return activeBlockers(store, subjectKind, subjectId).length > 0;
+}
+
+/** One line per unresolved reason, for `/korwf tasks` and `/korwf why`. */
+export function describeBlockers(blockers: readonly BlockerRow[]): string {
+  if (blockers.length === 0) return "no unresolved blockers";
+  return blockers.map((blocker) => `  ! ${blocker.kind}: ${blocker.detail} (raised by ${blocker.raisedBy})`).join("\n");
+}
