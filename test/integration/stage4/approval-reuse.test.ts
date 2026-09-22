@@ -178,6 +178,38 @@ describe("AC5 an approval is single-use and revision-pinned", () => {
     ).toBe("task_revision_changed");
   }, 30_000);
 
+  it("raw SQL cannot re-pin, re-scope, revive or delete a granted approval (#55 finding)", async () => {
+    const fixture = await readyExceptApproval();
+    const approval = grantCompletionApproval(fixture);
+    const db = fixture.store.connection;
+    const payloadOf = (): Record<string, unknown> =>
+      JSON.parse((db.prepare("SELECT payload FROM approval WHERE id = ?").get(approval.id) as { payload: string }).payload);
+    const writePayload = (mutate: (p: Record<string, unknown>) => void): void => {
+      const p = payloadOf();
+      mutate(p);
+      db.prepare("UPDATE approval SET payload = ? WHERE id = ?").run(JSON.stringify(p), approval.id);
+    };
+
+    // Before this issue every one of these succeeded: the in-process
+    // repository guarded the fields, but the database did not.
+    expect(() => db.exec("UPDATE approval SET taskRevision = 2")).toThrow(/immutable/);
+    expect(() => db.exec("UPDATE approval SET riskClass = 'low'")).toThrow(/immutable/);
+    expect(() => db.exec("UPDATE approval SET scopeTaskId = NULL")).toThrow(/immutable/);
+    expect(() => writePayload((p) => { p.taskRevision = 2; })).toThrow(/immutable/);
+    expect(() => writePayload((p) => { p.permittedAction = "publish"; })).toThrow(/immutable/);
+    expect(() => writePayload((p) => { p.actor = { kind: "user", identity: "somebody-else" }; })).toThrow(/immutable/);
+    expect(() => db.exec(`DELETE FROM approval WHERE id = '${approval.id}'`)).toThrow(/never deleted/);
+
+    // The record is exactly as granted, and the one supported mutation works.
+    const stored = fixture.store.approvals.require(approval.id);
+    expect(stored.taskRevision).toBe(1);
+    expect(stored.permittedAction).toBe("complete_task");
+    consumeApproval({ store: fixture.store, approvalId: approval.id, now: AT });
+    expect(fixture.store.approvals.require(approval.id).invalidation?.reason).toBe("consumed");
+    // ...and a consumed approval is never revived, by any route.
+    expect(() => db.exec("UPDATE approval SET invalidated = 0")).toThrow(/never revived/);
+  }, 30_000);
+
   it("a gate receipt authorises exactly one completion and stops at the next revision", async () => {
     const fixture = await readyExceptApproval();
     grantCompletionApproval(fixture);
