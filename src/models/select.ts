@@ -12,6 +12,7 @@ import { askAll, type AskContext, type AskItem } from "../decisions/ask.ts";
 import type { DecisionRecorder } from "../decisions/record.ts";
 import { modelsRankQuestion, type ModelRankState } from "../decisions/questions/models.ts";
 import type { ModelAllowlist, ModelRef } from "../config/types.ts";
+import { applyPin, type PinResolution } from "./pins.ts";
 import type { FallbackReason, IsoTimestamp, RouteId, TaskProfile } from "../storage/records.ts";
 import type { ModelCard } from "./cards.ts";
 import type { CatalogEntry } from "./catalog.ts";
@@ -157,6 +158,12 @@ export interface SelectModelParams {
   readonly staticOrder: readonly ModelRef[];
   readonly checkBudget?: (ref: ModelRef) => boolean;
   readonly recorder?: DecisionRecorder;
+  /**
+   * User's explicit pin (already resolved task > phase > workflow > config
+   * by `resolvePin`), or `null` for no pin. Outranks Jev's ranking entirely
+   * but not the allowlist/budget (PLAN §3.D).
+   */
+  readonly pin?: ModelRef | null;
 }
 
 export type SelectionResult =
@@ -168,7 +175,20 @@ export type SelectionResult =
       readonly rationale: string;
       readonly decisionId: string | null;
     }
-  | { readonly kind: "none"; readonly reason: "inadequate" | "insufficient_info"; readonly decisionId: string | null };
+  | { readonly kind: "none"; readonly reason: "inadequate" | "insufficient_info"; readonly decisionId: string | null }
+  /**
+   * The user pinned a model but it is capped/ineligible or policy-rejects
+   * it (PLAN §3.D "user pins are not overridden by fallback without
+   * asking"). Never silently substituted; the caller must raise the
+   * `model_substitute_pinned` approval class and ask.
+   */
+  | {
+      readonly kind: "pin_blocked";
+      readonly ref: ModelRef;
+      readonly reason: "capped" | "not_eligible" | "policy_rejected";
+      readonly approvalClass: "model_substitute_pinned";
+      readonly decisionId: string | null;
+    };
 
 /** Order candidates by `staticOrder` position (present entries first, in that order), then input order. */
 function orderByStatic(
@@ -200,6 +220,40 @@ function recordStatic(recorder: DecisionRecorder | undefined, ref: ModelRef): st
     latencyMs: null,
     usage: { inputTokens: 0, outputTokens: 0, requests: 0, spendUsd: 0, costBasis: "known" },
   }).id;
+}
+
+/** Records the pin as the winning Decision, rule `pin` (visible/auditable, never silent). */
+function recordPin(recorder: DecisionRecorder | undefined, ref: ModelRef): string | null {
+  if (recorder === undefined) return null;
+  return recorder.record({
+    stateHash: `pin:${ref}`,
+    questionId: "models.rank",
+    questionVersion: "1",
+    jevModelVersion: null,
+    rawDistribution: {},
+    confidence: null,
+    policyRule: "pin",
+    action: ref,
+    latencyMs: null,
+    usage: { inputTokens: 0, outputTokens: 0, requests: 0, spendUsd: 0, costBasis: "known" },
+  }).id;
+}
+
+/** Audits a pin that could not be honoured — never silent (PLAN §3.D). */
+function recordPinBlocked(recorder: DecisionRecorder | undefined, ref: ModelRef, reason: "capped" | "not_eligible" | "policy_rejected"): void {
+  if (recorder === undefined) return;
+  recorder.record({
+    stateHash: `pin_blocked:${ref}`,
+    questionId: "models.rank",
+    questionVersion: "1",
+    jevModelVersion: null,
+    rawDistribution: {},
+    confidence: null,
+    policyRule: `pin_blocked:${reason}`,
+    action: ref,
+    latencyMs: null,
+    usage: { inputTokens: 0, outputTokens: 0, requests: 0, spendUsd: 0, costBasis: "known" },
+  });
 }
 
 function recordPolicyRejection(recorder: DecisionRecorder | undefined, ref: ModelRef, reason: PolicyRejection): void {
@@ -256,8 +310,37 @@ function firstPolicyPassing(
  * silent degrade.
  */
 export async function selectModel(params: SelectModelParams): Promise<SelectionResult> {
-  const { profile, candidates, allowlist, staticOrder, checkBudget, recorder } = params;
+  const { profile, candidates, allowlist, staticOrder, checkBudget, recorder, pin } = params;
   const eligible = new Set(candidates.map((c) => c.ref));
+
+  // Pin outranks Jev's ranking entirely (never code's eligibility/policy):
+  // decided before any Jev call is made, so a pin is honoured even with no
+  // Jev key at all. A pin that fails eligibility/policy is never silently
+  // substituted — it surfaces as `pin_blocked` for the caller to ask.
+  if (pin !== undefined && pin !== null) {
+    const resolution: PinResolution = applyPin(pin, candidates, allowlist, checkBudget);
+    if (resolution.kind === "pinned") {
+      const decisionId = recordPin(recorder, resolution.ref);
+      return {
+        kind: "selected",
+        requestedModel: resolution.ref,
+        usedModel: resolution.ref,
+        fallbackReason: null,
+        rationale: `user pin ${resolution.ref}`,
+        decisionId,
+      };
+    }
+    if (resolution.kind === "needs_ask") {
+      recordPinBlocked(recorder, resolution.ref, resolution.reason);
+      return {
+        kind: "pin_blocked",
+        ref: resolution.ref,
+        reason: resolution.reason,
+        approvalClass: "model_substitute_pinned",
+        decisionId: null,
+      };
+    }
+  }
 
   const runStatic = (): SelectionResult => {
     const ordered = orderByStatic(candidates, staticOrder);

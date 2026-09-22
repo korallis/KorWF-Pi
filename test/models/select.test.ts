@@ -178,6 +178,101 @@ describe("AC: none adequate → returns none, no model used", () => {
   });
 });
 
+describe("AC (#61): pinned model used regardless of mock Jev ranking", () => {
+  it("honours the pin even when Jev would rank a different candidate adequate", async () => {
+    const candidates = [candidate("m1", "acme"), candidate("m2", "acme")];
+    const mock = new MockJevTransport({
+      responder: (request) => ({
+        kind: "ok",
+        response: {
+          model: MODEL,
+          // Jev prefers whatever it is asked about first (m1); the pin names m2.
+          answers: Object.fromEntries(Object.keys(request.questions).map((key) => [key, { type: "noul", noul: 0.9 }])),
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+        requestId: "req",
+        attempts: 1,
+        elapsedMs: 1,
+      }),
+    });
+    const ctx: AskContext = { transport: mock, model: MODEL };
+    const { recorder: rec, sink } = recorder();
+    const result = await selectModel({
+      ctx,
+      profile: PROFILE,
+      candidates,
+      allowlist: ALLOW_ALL,
+      staticOrder: [],
+      pin: "acme/m2" as ModelRef,
+      recorder: rec,
+    });
+    expect(result).toEqual({
+      kind: "selected",
+      requestedModel: "acme/m2",
+      usedModel: "acme/m2",
+      fallbackReason: null,
+      rationale: "user pin acme/m2",
+      decisionId: expect.any(String),
+    });
+    expect(sink.rows.some((r) => r.policyRule === "pin" && r.action === "acme/m2")).toBe(true);
+  });
+
+  it("a pin outside the allowlist is never silently substituted; returns pin_blocked", async () => {
+    const candidates = [candidate("m1", "acme")];
+    const allowlist: ModelAllowlist = { providers: [], models: ["acme/other" as ModelRef], pins: {} };
+    const { recorder: rec, sink } = recorder();
+    const result = await selectModel({
+      ctx: null,
+      profile: PROFILE,
+      candidates,
+      allowlist,
+      staticOrder: [],
+      pin: "acme/m1" as ModelRef,
+      recorder: rec,
+    });
+    expect(result).toEqual({
+      kind: "pin_blocked",
+      ref: "acme/m1",
+      reason: "policy_rejected",
+      approvalClass: "model_substitute_pinned",
+      decisionId: null,
+    });
+    expect(sink.rows.some((r) => r.policyRule === "pin_blocked:policy_rejected")).toBe(true);
+  });
+
+  it("a pin that is capped/ineligible (not in the candidate set) returns pin_blocked with no Jev call", async () => {
+    const candidates = [candidate("m1", "acme")];
+    const result = await selectModel({
+      ctx: null,
+      profile: PROFILE,
+      candidates,
+      allowlist: ALLOW_ALL,
+      staticOrder: [],
+      pin: "acme/capped" as ModelRef,
+    });
+    expect(result).toEqual({
+      kind: "pin_blocked",
+      ref: "acme/capped",
+      reason: "capped",
+      approvalClass: "model_substitute_pinned",
+      decisionId: null,
+    });
+  });
+
+  it("no pin falls through to normal Jev/static selection", async () => {
+    const candidates = [candidate("m1", "acme")];
+    const result = await selectModel({
+      ctx: null,
+      profile: PROFILE,
+      candidates,
+      allowlist: ALLOW_ALL,
+      staticOrder: ["acme/m1"],
+      pin: null,
+    });
+    expect(result.kind).toBe("selected");
+  });
+});
+
 describe("AC: mock Jev returning an out-of-allowlist id → rejected, audited, next candidate used", () => {
   it("Jev ranks a disallowed candidate first; policy rejects it and the next adequate one is used", async () => {
     const candidates = [candidate("blocked", "acme"), candidate("ok", "acme")];

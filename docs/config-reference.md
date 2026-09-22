@@ -177,6 +177,7 @@ Columns are modes: shadow / advisory / supervised / bounded_autonomous.
 | `spawn_worker` | stop | stop | queue | auto | configurable |
 | `model_fallback` | auto | auto | queue | auto | configurable |
 | `model_substitute_more_expensive` | auto | auto | queue | queue | configurable |
+| `model_substitute_pinned` | queue | queue | queue | queue | never `auto` (V11) |
 | `spend_over_estimate` | auto | auto | queue | queue | configurable |
 | `complete_task` | stop | stop | queue | auto | configurable |
 | `scope_change` | stop | stop | queue | queue | never `auto` (V11) |
@@ -393,7 +394,7 @@ weaker interpretation.
 | V8 | `storage.path`, if absolute and outside the project root, requires `allowOutsideProject: true`. | Keeps state next to the project unless explicitly moved. |
 | V9 | `models.allowlist.pins[*]` values and `models.overrides` keys must be in the effective allowlist. `jev.enabled: true` with an unresolvable key **downgrades to optional mode with a warning**, not an error. | Pins outside the allowlist would contradict it; a missing key must never prevent the deterministic workflow from running. |
 | V10 | `approvals.classes[c][m] = "stop"` for every high-risk class `c` and mode `m`; re-checked after layered merge by `validateApprovalClasses`. | PLAN §7: high-risk classes cannot be set to `auto`. |
-| V11 | `approvals.classes[c][m] ≠ "auto"` for `c ∈ {scope_change, replan}`. | PLAN §3.C: no silent scope expansion or replan. |
+| V11 | `approvals.classes[c][m] ≠ "auto"` for `c ∈ {scope_change, replan, model_substitute_pinned}`. | PLAN §3.C: no silent scope expansion or replan; PLAN §3.D: a pin's fallback is never silent either. |
 | V12 | Every class present in `approvals.classes` has a decision for all four modes. | A partial row must not silently take an unseen default. |
 
 ## 12. Worked examples

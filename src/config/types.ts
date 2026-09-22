@@ -34,6 +34,9 @@ export type TaskKind =
   | "refactor"
   | "research";
 
+/** Every `TaskKind`, in schema order. Mirrors `$defs/TaskKind.enum` in `schema.json`. */
+export const TASK_KINDS = ["default", "plan", "implement", "test", "review", "docs", "refactor", "research"] as const satisfies readonly TaskKind[];
+
 /** Utility: deep-partial for the raw (pre-default) user config. */
 export type DeepPartial<T> = T extends readonly (infer U)[]
   ? readonly DeepPartial<U>[]
@@ -127,8 +130,12 @@ export type ConfigurableApprovalClass =
   | "spend_over_estimate"
   | "complete_task";
 
-/** Never `auto` (PLAN §3.C: no silent scope expansion or replan). */
-export type NoAutoApprovalClass = "scope_change" | "replan";
+/**
+ * Never `auto` (PLAN §3.C: no silent scope expansion or replan).
+ * `model_substitute_pinned` (PLAN §3.D) joins them: falling back from a
+ * user's pinned model always asks, in every mode.
+ */
+export type NoAutoApprovalClass = "scope_change" | "replan" | "model_substitute_pinned";
 
 /** High-risk action classes (PLAN §7): explicit approval regardless of mode. */
 export type HighRiskApprovalClass =
