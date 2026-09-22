@@ -19,10 +19,13 @@ import { runCheck } from "../../../src/verification/checks.ts";
 import type { CheckDefinition } from "../../../src/storage/records.ts";
 import type { EvidenceSubject } from "../../../src/verification/evidence.ts";
 import { makeTestRepo, type TestRepo } from "../../helpers/git-repo.ts";
+import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 
 const repos: TestRepo[] = [];
+const dirs: TempDir[] = [];
 afterEach(() => {
   while (repos.length > 0) repos.pop()?.cleanup();
+  while (dirs.length > 0) dirs.pop()?.cleanup();
 });
 
 function freshRepo(): TestRepo {
@@ -84,5 +87,83 @@ describe("AC1: Evidence.revision is the worktree HEAD at run time", () => {
     expect(first.evidence?.revision).toBe(firstHead);
     expect(second.evidence?.revision).toBe(secondHead);
     expect(second.evidence?.revision).not.toBe(first.evidence?.revision);
+  });
+
+  it("reads the revision through src/git/, so the runner is the single git path", async () => {
+    const repo = freshRepo();
+    const calls: string[][] = [];
+    const spying = {
+      run: (args: readonly string[], cwd: string): string =>
+        (calls.push([...args]),
+        execFileSync("git", [...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })),
+    };
+    const result = await runCheck(check(), { cwd: repo.path, subject, gitRunner: spying });
+    expect(result.revision).toBe(repo.head());
+    expect(calls.some((args) => args[0] === "rev-parse" && args.includes("HEAD"))).toBe(true);
+  });
+
+  it("is unavailable, not pass, when the directory is not a git repository", async () => {
+    const dir = makeTempDir("korwf-norepo-");
+    dirs.push(dir);
+    const result = await runCheck(check(), { cwd: dir.path, subject });
+    expect(result.status).toBe("unavailable");
+    expect(result.exitStatus).toEqual({ kind: "unavailable", reason: "no_revision" });
+    // Nothing to pin evidence to, so no row is drafted at all.
+    expect(result.evidence).toBeNull();
+  });
+});
+
+describe("AC2: a command that cannot be executed is unavailable, never pass", () => {
+  it("classifies an absent binary as unavailable rather than fail", async () => {
+    const repo = freshRepo();
+    const result = await runCheck(check({ command: "korwf-definitely-not-a-real-binary --version" }), {
+      cwd: repo.path,
+      subject,
+    });
+    expect(result.status).toBe("unavailable");
+    expect(result.exitStatus).toEqual({ kind: "unavailable", reason: "command_not_found" });
+    expect(result.status).not.toBe("pass");
+  });
+
+  it("does not report unavailable as pass even when the check expects exit 127", async () => {
+    const repo = freshRepo();
+    // The confusion this criterion exists for, inverted: a check that declares
+    // 127 as its expected code must still not pass on a missing tool, because
+    // the shell's 127 says the command never ran.
+    const result = await runCheck(
+      check({ command: "korwf-definitely-not-a-real-binary", expectedExitCode: 127 }),
+      { cwd: repo.path, subject },
+    );
+    expect(result.status).toBe("unavailable");
+  });
+
+  it("still reports a genuine non-zero exit as fail", async () => {
+    const repo = freshRepo();
+    const result = await runCheck(check({ command: 'node -e "process.exit(3)"' }), {
+      cwd: repo.path,
+      subject,
+    });
+    expect(result.status).toBe("fail");
+    expect(result.exitStatus).toEqual({ kind: "exited", code: 3 });
+  });
+
+  it("treats a program that chooses exit 127 itself as fail, not unavailable", async () => {
+    const repo = freshRepo();
+    const result = await runCheck(check({ command: 'node -e "process.exit(127)"' }), {
+      cwd: repo.path,
+      subject,
+    });
+    expect(result.status).toBe("fail");
+    expect(result.exitStatus).toEqual({ kind: "exited", code: 127 });
+  });
+
+  it("reports a missing working directory as unavailable", async () => {
+    const repo = freshRepo();
+    const result = await runCheck(check({ cwd: "no/such/dir" }), { cwd: repo.path, subject });
+    expect(result.status).toBe("unavailable");
+    expect(result.exitStatus).toEqual({ kind: "unavailable", reason: "cwd_missing" });
+    // Evidence is still recorded: "the check could not run here" is a fact
+    // about this revision (PLAN §3.F "represented explicitly").
+    expect(result.evidence?.revision).toBe(repo.head());
   });
 });
