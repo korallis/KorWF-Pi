@@ -163,6 +163,7 @@ export function makeAttempt(overrides: Partial<Attempt> = {}): Attempt {
     worktree: { relativePath: "wt/tk-1", branch: "korwf/tk-1", baseRevision: SHA },
     timestamps: { startedAt: AT, endedAt: null, lastActivityAt: AT },
     usage,
+    termination: null,
     outcome: null,
     artifacts: [],
     handedOffFromAttemptId: null,
