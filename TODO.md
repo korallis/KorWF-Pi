@@ -68,7 +68,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Independent review contexts; findings, severity, disposition, recheck.
 - [ ] Human-approval gates for high-risk classes.
 - [ ] Evidence invalidation after relevant changes.
-- [ ] Flaky/missing/unavailable checks represented explicitly.
+- [x] Flaky/missing/unavailable checks represented explicitly. (#51 → `src/verification/flaky.ts`, `src/extension/ui/board.ts`)
 - [x] Failure taxonomy incl. quota/rate-limit; stall and drift detection.
 - [ ] Bounded recovery policies; side-effect reconciliation before retry.
 - [ ] Checkpoints and rollback proposals preserving user changes.
