@@ -35,6 +35,7 @@ Table columns: **Key** · **Type** · **Default** · **Why the default is safe**
 8. [`jev`](#8-jev)
 9. [`notifications`](#9-notifications)
 10. [`storage`](#10-storage)
+10a. [`recovery`](#10a-recovery)
 11. [Validation rules beyond types](#11-validation-rules-beyond-types)
 12. [Worked examples](#12-worked-examples)
 13. [Loading, layered merge, and environment overrides](#13-loading-layered-merge-and-environment-overrides)
@@ -56,6 +57,7 @@ Table columns: **Key** · **Type** · **Default** · **Why the default is safe**
 | `jev` | object | `{}` | See §8. |
 | `notifications` | object | `{}` | See §9. |
 | `storage` | object | `{}` | See §10. |
+| `recovery` | object | `{}` | See §10a. |
 
 ## 2. `models`
 
@@ -286,6 +288,27 @@ into the source tree outside it.
 | `allowOutsideProject` | boolean | `false` | An absolute `path` outside the project root is rejected (V8) unless the user says so explicitly. |
 | `artifactRetentionDays` | integer ≥ 1 | `30` | Evidence artifacts are kept long enough to replay a workflow, then deleted. |
 | `lockTimeoutMs` | integer ≥ 0 | `5000` | A second instance on the same project fails fast instead of corrupting SQLite. |
+
+## 10a. `recovery`
+
+PLAN §3.G bounded recovery. When a task fails, the response is drawn from a fixed menu —
+`gather_evidence`, `retry`, `fallback_model`, `replan`, `change_worker`, `request_review`,
+`ask_user`, `stop` — by `src/workflow/recovery.ts`, from the failure category that
+`src/workflow/failure.ts` assigned. **Every count below is a ceiling**, and the ladder always
+ends on a terminal response. The failure this section exists to prevent is an unbounded
+retry loop.
+
+| Key | Type | Default | Why the default is safe |
+|---|---|---|---|
+| `maxAttemptsPerTask` | integer 1–10 | `3` | Hard ceiling on attempts for one task, counting the first. On reaching it the only responses left are `ask_user`/`stop`; nothing may raise it mid-task. |
+| `maxAttemptsPerPhase` | integer 1–10 | `2` | Same bound for a phase gate, which recovers by re-running tasks and so must be tighter. |
+| `maxEvidenceGatherings` | integer 0–3 | `1` | Gathering evidence indefinitely is a stall wearing a recovery costume; after this many, the response advances. |
+| `maxReplans` | integer 0–3 | `1` | A second replan on the same task means the plan is not the problem. |
+| `maxModelFallbacks` | integer 0–3 | `1` | Which route to fall back to is `fallback` (§7); how many times recovery may reach for one is here. |
+| `maxWorkerChanges` | integer 0–3 | `1` | Changing worker/profile twice on one task is churn, not recovery. |
+| `requireReconciliationBeforeRetry` | `const true` | `true` | A step that may have had side effects is never retried until its outcome is reconciled (PLAN §3.G). *Fixed* — a switch here would be a supported way to cause a double effect. |
+| `unreconcilableSideEffect` | `ask_user \| stop` | `"ask_user"` | When a side-effecting step has no reconciliation probe, or the probe itself failed, the outcome is unknown. Both options are terminal; `retry` is not an option at all. |
+| `finalResponse` | `ask_user \| stop` | `"ask_user"` | What the exhausted ladder returns. Unattended runs that must not queue a question set `stop`. |
 
 ## 11. Validation rules beyond types
 
