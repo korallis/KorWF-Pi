@@ -26,3 +26,80 @@ That rule is enforced **in code**, not in the prompt:
 
 A checkless task is therefore stored, visible on the board, and permanently unrunnable
 until checks are added — which is the point: it is a *known gap*, not a silent pass.
+
+## 2. Document shape
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "architectureSummary": "prose",
+  "openQuestions": ["anything the planner could not settle"],
+  "phases": [
+    {
+      "id": "p1",                 // planner-local, unique in the document
+      "order": 0,                 // dense 0..n-1 across the document
+      "goal": "...",
+      "acceptanceCriteria": [{ "id": "pac1", "text": "..." }],
+      "integrationBranch": "..."  // optional; defaults to korwf/phase-<order>
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "phaseId": "p1",
+      "goal": "...",
+      "acceptanceCriteria": [{ "id": "ac1", "text": "..." }],
+      "checks": [
+        {
+          "id": "c1",
+          "kind": "command | assertion | lint | typecheck | human",
+          "command": "npm test -- example",   // for kind=human, the instruction
+          "cwd": ".",                         // repository-relative
+          "expectedExitCode": 0,
+          "coversCriteria": ["ac1"],           // ids on *this* task
+          "required": true,
+          "rationale": "optional"
+        }
+      ],
+      "ownership": { "paths": ["src/example.ts"], "components": ["example"] },
+      "dependencies": [],                      // planner-local task ids
+      "riskClass": "low | medium | high",
+      "expectedArtifacts": [
+        { "path": "src/example.ts", "estimate": { "unit": "lines", "value": 120 } }
+      ]
+    }
+  ]
+}
+```
+
+Ids in the document are **planner-local**. `plan-store.ts` maps them to opaque record
+ids; the planner never sees or supplies a record id.
+
+## 3. Validation rules
+
+Every finding carries a dotted/indexed `path` (`tasks[2].checks[0].command`), a stable
+`rule` id, and a severity. **Errors** reject the document; **warnings** do not.
+
+| Rule | Severity | What it catches |
+|---|---|---|
+| `type`, `required`, `enum`, `range` | error | Structural shape: wrong type, missing field, unknown enum member, empty string, negative order, unsupported `schemaVersion`. |
+| `duplicate_id` | error | Two phases, tasks, criteria or checks with the same id. |
+| `unknown_reference` | error | A task naming a phase that is not in the document; `coversCriteria` naming a criterion that is not on the same task; a dependency on a task that is not in the document. |
+| `self_dependency` | error | A task listing its own id in `dependencies`. |
+| `dependency_cycle` | error | A cycle in the task graph, or a dependency pointing into a **later** phase (which can never become ready, since phases run in order). |
+| `phase_order` | error | `order` values that are not a dense `0..n-1` sequence. |
+| `check_shape` | error | An executable check (`command`/`lint`/`typecheck`) whose `command` is prose rather than a command line. |
+| `path_shape` | error | An absolute path or `..` traversal in `ownership.paths`, `cwd` or an artifact path. |
+| `no_checks` | **warning** | A task with `checks: []`. Persisted `proposed` + blocker `no_checks`. |
+| `criterion_coverage` | warning | An acceptance criterion no check covers. |
+| `ownership_conflict` | warning | Two tasks in one phase owning the same path; they cannot run in parallel. |
+
+Validation collects **every** finding rather than stopping at the first, so one retry
+can fix everything at once.
+
+### Why `check_shape` is an error
+
+The most common way a model satisfies PLAN §2.3 in appearance only is to emit
+`{"kind": "command", "command": "run the tests and confirm they pass"}`. The
+deterministic gate cannot run that, so it would pass the plan and then block forever at
+execution. The check is rejected at planning time instead.
