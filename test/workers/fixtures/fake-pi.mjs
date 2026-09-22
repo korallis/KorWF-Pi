@@ -16,6 +16,7 @@
 import { spawn } from "node:child_process";
 
 let honourAbort = true;
+let honourSigterm = true;
 const children = [];
 
 function send(message) {
@@ -73,7 +74,7 @@ function handle(command) {
       send({ type: "response", id: command.id, command: "ignore_abort", success: true });
       return;
     case "ignore_sigterm":
-      process.on("SIGTERM", () => {});
+      honourSigterm = false;
       send({ type: "response", id: command.id, command: "ignore_sigterm", success: true });
       return;
     case "abort":
@@ -97,6 +98,7 @@ function handle(command) {
 }
 
 process.on("SIGTERM", () => {
+  if (!honourSigterm) return; // forces the supervisor to escalate to tier 3
   for (const pid of children) {
     try {
       process.kill(pid, "SIGKILL");
