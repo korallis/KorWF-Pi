@@ -33,6 +33,7 @@ export * from "./attempt-budget.ts";
 export * from "./attempt-controller.ts";
 export * from "./evaluate-plan.ts";
 export * from "./failure.ts";
+export * from "./failure-classify.ts";
 export * from "./stall.ts";
 export * from "./graph.ts";
 export * from "./blockers.ts";

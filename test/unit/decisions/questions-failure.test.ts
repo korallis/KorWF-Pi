@@ -14,6 +14,13 @@ import {
   type RepeatedApproachState,
 } from "../../../src/decisions/questions/failure.ts";
 import { FAILURE_CATEGORIES } from "../../../src/workflow/failure.ts";
+import {
+  CLASSIFY_TAIL_BYTES,
+  classifyFailureWithJev,
+  failureClassifyState,
+} from "../../../src/workflow/failure-classify.ts";
+import { DisabledJevTransport } from "../../../src/jev/disabled.ts";
+import { MockJevTransport } from "../../../src/jev/mock.ts";
 
 const FAILURE_STATE: FailureClassifyState = {
   command: "npm test",
@@ -87,5 +94,80 @@ describe("AC2 stall.repeated_approach@1", () => {
       APPROACH_STATE,
     );
     expect(interpreted?.value).toBe("unknown");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composition with the deterministic layer (src/workflow/failure-classify.ts)
+// ---------------------------------------------------------------------------
+
+describe("AC1 classifyFailureWithJev: rules first, unknown never a guess", () => {
+  const MODEL = "jev-test";
+
+  function respond(choice: string, confidence: number): MockJevTransport {
+    return new MockJevTransport({ responder: (request) => ({
+      kind: "ok",
+      response: {
+        model: MODEL,
+        answers: Object.fromEntries(
+          Object.entries(request.questions).map(([key, q]) => {
+            const options = Object.keys((q as { criteria: Record<string, string> }).criteria);
+            const rest = (1 - confidence) / (options.length - 1);
+            const probabilities = Object.fromEntries(options.map((o) => [o, o === choice ? confidence : rest]));
+            return [key, { type: "choice", choice, probabilities, confidence }];
+          }),
+        ),
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+      requestId: "req-1",
+      attempts: 1,
+      elapsedMs: 1,
+    }) });
+  }
+
+  it("AC1 a deterministic match never reaches Jev", async () => {
+    let called = false;
+    const transport = new MockJevTransport({
+      responder: () => {
+        called = true;
+        throw new Error("should not be asked");
+      },
+    });
+    const result = await classifyFailureWithJev({ transport, model: MODEL }, { httpStatus: 429 });
+    expect(result.category).toBe("quota");
+    expect(result.source).toBe("rule");
+    expect(called).toBe(false);
+  });
+
+  it("AC1 with no key the residue is unknown and asks for evidence", async () => {
+    const ctx = { transport: new DisabledJevTransport("Jev is disabled: no key configured."), model: MODEL };
+    const result = await classifyFailureWithJev(ctx, { exitCode: 1, stderr: "it broke" });
+    expect(result.category).toBe("unknown");
+    expect(result.needsEvidence).toBe(true);
+    expect(result.evidenceRequests.length).toBeGreaterThan(0);
+  });
+
+  it("AC1 a confident Jev answer classifies the residue", async () => {
+    const result = await classifyFailureWithJev(
+      { transport: respond("implementation", 0.92), model: MODEL },
+      { exitCode: 1, stderr: "assertion failed somewhere" },
+    );
+    expect(result.category).toBe("implementation");
+    expect(result.source).toBe("jev");
+  });
+
+  it("AC1 a Jev unknown stays unknown and still asks for evidence", async () => {
+    const result = await classifyFailureWithJev(
+      { transport: respond("unknown", 0.95), model: MODEL },
+      { exitCode: 1, stderr: "it broke" },
+    );
+    expect(result.category).toBe("unknown");
+    expect(result.needsEvidence).toBe(true);
+  });
+
+  it("AC1 outbound state carries only truncated tails of the captured streams", () => {
+    const state = failureClassifyState({ stderr: "x".repeat(5000), command: "npm test" }, "goal");
+    expect(state.stderrTail.length).toBe(CLASSIFY_TAIL_BYTES);
+    expect(state.command).toBe("npm test");
   });
 });
