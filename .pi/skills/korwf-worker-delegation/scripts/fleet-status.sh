@@ -7,8 +7,24 @@
 set -uo pipefail
 ROOT=${1:-$(git rev-parse --show-toplevel 2>/dev/null || echo .)}
 
-agents=$(herdr agent list 2>/dev/null | jq -r '.result.agents[]|select(.name)|"\(.name) \(.agent_status)"')
-[ -z "$agents" ] && { echo "no named agents"; exit 0; }
+# Only agents whose Space is a worktree of THIS repo. Herdr is machine-wide, so a plain
+# `agent list` also returns workers belonging to other projects — they showed up here as
+# "issue-200..204 / no worktree" from a sibling repo, which is both noise and a hazard:
+# nothing in this script may ever touch another project's agents.
+repo_key=$(git -C "$ROOT" rev-parse --git-common-dir 2>/dev/null)
+case "$repo_key" in /*) ;; *) repo_key="$ROOT/$repo_key" ;; esac
+agents=$(herdr agent list 2>/dev/null | jq -r --arg rk "$repo_key" '
+  .result.agents[] | select(.name) | select((.workspace.worktree.repo_key // "") == $rk)
+  | "\(.name) \(.agent_status)"')
+if [ -z "$agents" ]; then
+  # Fall back to path matching when the agent record carries no workspace detail.
+  agents=$(herdr agent list 2>/dev/null | jq -r '.result.agents[]|select(.name)|"\(.name) \(.agent_status)"' \
+    | while read -r n s; do
+        git -C "$ROOT" worktree list --porcelain 2>/dev/null \
+          | grep -q "/issue-${n#issue-}-" && echo "$n $s"
+      done)
+fi
+[ -z "$agents" ] && { echo "no named agents for this repo"; exit 0; }
 
 printf '%-14s %-9s %-8s %-7s %s\n' AGENT STATE COMMITS DIRTY LAST-WRITE
 while read -r name state; do
