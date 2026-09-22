@@ -8,7 +8,7 @@ import type { IsoTimestamp, PhaseId, TaskId } from "../storage/records.ts";
 import type { TransitionActor } from "../storage/transition-log.ts";
 import type { FallbackDecision } from "./fallback.ts";
 import { transitionPhase, transitionTask, type TransitionResult } from "../workflow/state.ts";
-import type { Phase, RouteId, Task } from "../storage/records.ts";
+import type { Attempt, AttemptId, Phase, RouteId, Task } from "../storage/records.ts";
 import type { RouteAvailabilityTable } from "./availability.ts";
 import { resolveBlockersOfKind } from "../workflow/blockers.ts";
 
@@ -162,5 +162,25 @@ export function resumeIfCapCleared(
       guards: resumeGuards,
     });
     return { task, phase };
+  });
+}
+
+/**
+ * Record a `chooseFallback` `switch` decision on the Attempt: `requestedModel`
+ * stays the original request, `usedModel` becomes the substitute, and
+ * `fallbackReason` names the cap kind that caused it (docs/records.md §4;
+ * PLAN §3.D "Every switch is recorded on the Attempt"). Goes through
+ * `store.attempts.update`, the only writer of an Attempt row — not called
+ * after `outcome` is set, since the store freezes the row at that point
+ * (docs/records.md §4); callers apply the switch before settling the turn.
+ */
+export function recordFallbackSwitch(
+  store: Store,
+  attemptId: AttemptId,
+  decision: Extract<FallbackDecision, { kind: "switch" }>,
+): Attempt {
+  return store.attempts.update(attemptId, {
+    usedModel: decision.usedModel,
+    fallbackReason: decision.fallbackReason,
   });
 }
