@@ -136,6 +136,12 @@ export class WorkerHandle {
   private waiters: { match: (m: RpcMessage) => boolean; resolve: (m: RpcMessage) => void }[] = [];
   private readonly ops: ProcessOps;
   private readonly onMessage: ((m: RpcMessage) => void) | undefined;
+  /**
+   * Additional message subscribers (#71). `onMessage` stays the spawn-time
+   * hook; `subscribe` lets a supervisor attach after the fact without
+   * displacing it, so progress capture and a caller's own listener coexist.
+   */
+  private readonly listeners = new Set<(m: RpcMessage) => void>();
 
   constructor(params: {
     contract: WorkerContract;
@@ -181,10 +187,29 @@ export class WorkerHandle {
     }
   }
 
+  /**
+   * Add a message listener. Returns an unsubscribe function. A listener that
+   * throws is isolated: progress capture must never be able to kill the RPC
+   * reader and hang the worker.
+   */
+  subscribe(listener: (message: RpcMessage) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
   private deliver(message: RpcMessage): void {
     this.messages.push(message);
     this.accumulateUsage(message);
     this.onMessage?.(message);
+    for (const listener of this.listeners) {
+      try {
+        listener(message);
+      } catch {
+        /* a subscriber's failure is never the worker's failure */
+      }
+    }
     const i = this.waiters.findIndex((w) => w.match(message));
     if (i >= 0) this.waiters.splice(i, 1)[0]!.resolve(message);
   }
@@ -206,6 +231,15 @@ export class WorkerHandle {
     // nothing hangs on a dead worker.
     this.exit = { code, signal, crashed: !this.cancelled && (code !== 0 || signal !== null) };
     for (const w of this.waiters.splice(0)) w.resolve({ type: "worker_exit", code, signal });
+    // Subscribers (#71) see the same synthetic exit message, so a supervisor
+    // learns the run is over without polling.
+    for (const listener of this.listeners) {
+      try {
+        listener({ type: "worker_exit", code, signal });
+      } catch {
+        /* never propagate out of an exit handler */
+      }
+    }
   }
 
   /** Wait for a matching message, the worker's exit, or the timeout. */
