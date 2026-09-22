@@ -113,10 +113,13 @@ function defaultOpenStore(cwd: string, writable: boolean): Store | null {
 }
 
 /**
- * Reconcile every active workflow for a session event and produce the notice.
+ * Reconcile every active workflow for a session event, surface the result and
+ * return it.
  *
- * Pure with respect to Pi: takes a context and returns a result. The Pi hook
- * registration below is a thin wrapper that calls this and notifies.
+ * Independent of Pi: takes a context and returns a result, so the whole
+ * behaviour is testable without a session. The notice goes out through
+ * `ctx.ui` here rather than in the Pi wrapper, so there is exactly one place
+ * that decides whether the user hears about a reconciliation.
  */
 export function runReconciliation(
   event: SessionEvent,
@@ -158,12 +161,11 @@ export function runReconciliation(
       dryRun: !store.writable,
     });
     const interesting = reports.filter((report) => report.findings.length > 0);
-    return {
-      event,
-      reports,
-      message: interesting.map(describeReconciliation).join("\n"),
-      degraded: false,
-    };
+    const message = interesting.map(describeReconciliation).join("\n");
+    // Silence is the correct output when the repository matches the plan:
+    // a notice on every session start would train the user to ignore it.
+    if (message !== "") redactedUi(ctx.ui).notify(message, "warning");
+    return { event, reports, message, degraded: false };
   } finally {
     store.close();
   }
@@ -203,11 +205,5 @@ interface PiHandlerContext {
 }
 
 function notify(ctx: PiHandlerContext, event: SessionEvent, deps: RunReconciliationDeps): void {
-  const ui = redactedUi(ctx.ui);
-  const result = runReconciliation(
-    event,
-    { cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), ui },
-    deps,
-  );
-  if (result.message !== "") ui.notify(result.message, "warning");
+  runReconciliation(event, { cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), ui: ctx.ui }, deps);
 }
