@@ -179,3 +179,13 @@ export type {
   SemanticResult,
   TaskEvaluation,
 } from "./evaluate-plan.ts";
+export {
+  GREENFIELD_PHASE0_ROLES,
+  MISSING_PHASE0_ROLE,
+  featurePhasesDependOnPhase0,
+  greenfieldPromptAddendum,
+  isValidGreenfieldPlan,
+  phase0Coverage,
+  validateGreenfieldPlan,
+} from "./greenfield.ts";
+export type { GreenfieldPhase0Coverage, GreenfieldPhase0Role, GreenfieldRuleId } from "./greenfield.ts";
