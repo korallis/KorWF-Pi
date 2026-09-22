@@ -46,7 +46,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 
 ## 3. Context, planning, phases, durable tasks (Stage 3)
 
-- [ ] `plan` command; intake for existing-repo and greenfield; clarification questions.
+- [x] `plan` command; intake for existing-repo and greenfield; clarification questions. (#33)
 - [ ] Free-text intake classification with unknown/clarify outcomes; deterministic fast paths.
 - [ ] Candidate retrieval; bounded context-evaluation tool; relevance/staleness/contradiction evaluators; provenance; shortlist expansion; pinned context.
 - [ ] Optional skill/tool discovery and ranking; mandatory skill triggers preserved.
