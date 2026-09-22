@@ -400,6 +400,34 @@ export type AttemptOutcome =
   | "abandoned"
   | "paused_cap";
 
+/**
+ * How the worker's last turn ended (issue #124; docs/PRD.md §3.3).
+ *
+ * Recorded separately from `outcome` because it answers a different
+ * question: `outcome` is what became of the attempt, `termination` is *why
+ * the turn stopped*. Dropping the stop reason is what made six identical
+ * `stopReason: "length"` failures on #14 indistinguishable from ordinary
+ * under-performance, so it is a first-class field, not a log line.
+ *
+ * `failureClass` is `harness` when the execution environment failed (the
+ * output-token ceiling, a timeout, a dead process, a quota cap) and
+ * `quality` when the work itself was judged and found wanting. Only
+ * `quality` may consume the task's attempt budget
+ * (`src/workflow/attempt-budget.ts`).
+ */
+export interface AttemptTermination {
+  /** Stop reason from the worker's last assistant message, verbatim; `null` when unreported. */
+  readonly stopReason: string | null;
+  /** `true` exactly when `stopReason === "length"`. */
+  readonly truncated: boolean;
+  readonly failureKind: "truncated" | "timeout" | "transport_error" | "capped" | "gap" | "none";
+  readonly failureClass: "harness" | "quality" | "none";
+  /** `true` when this turn consumed one of the task's attempt-budget slots. */
+  readonly consumedAttemptBudget: boolean;
+  /** Output tokens the turn emitted, when reported. */
+  readonly outputTokens: number | null;
+}
+
 /** Input set given to the worker; content is referenced by provenance, not copied. */
 export interface AttemptInputs {
   readonly taskRevision: Revision;
@@ -437,6 +465,12 @@ export interface Attempt extends MutableRecord<AttemptId> {
     readonly lastActivityAt: IsoTimestamp;
   };
   readonly usage: Usage;
+  /**
+   * How the worker's last turn ended (#124). `null` while running or when
+   * the controller recorded nothing; a `null` here is "not observed", never
+   * "ended cleanly".
+   */
+  readonly termination: AttemptTermination | null;
   /** `null` while running. Once non-null the store rejects further patches. */
   readonly outcome: AttemptOutcome | null;
   readonly artifacts: readonly ArtifactRef[];

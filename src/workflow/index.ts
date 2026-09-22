@@ -47,5 +47,5 @@ export type {
   TerminalFailure,
 } from "./attempt-budget.ts";
 
-export { settleTurn } from "./attempt-controller.ts";
+export { settleTurn, toAttemptTermination } from "./attempt-controller.ts";
 export type { AttemptTelemetry, GateResult, SettleOptions, SettledTurn } from "./attempt-controller.ts";

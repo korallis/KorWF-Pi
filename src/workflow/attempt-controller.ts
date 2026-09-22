@@ -13,6 +13,7 @@ import type {
   WorkerTurnObservation,
 } from "../workers/truncation.ts";
 import { TRUNCATION_FEEDBACK, classifyTurn } from "../workers/truncation.ts";
+import type { AttemptTermination } from "../storage/records.ts";
 import type {
   AttemptBudgetLimits,
   AttemptBudgetState,
@@ -23,6 +24,22 @@ import {
   EMPTY_ATTEMPT_BUDGET,
   recordTurn,
 } from "./attempt-budget.ts";
+
+/**
+ * Project the settled turn onto the `Attempt.termination` record field, so
+ * the stop reason and its classification are persisted rather than logged
+ * (#124 AC2).
+ */
+export function toAttemptTermination(settled: SettledTurn, outputTokens: number | null = null): AttemptTermination {
+  return {
+    stopReason: settled.telemetry.stopReason,
+    truncated: settled.telemetry.truncated,
+    failureKind: settled.telemetry.failureKind,
+    failureClass: settled.telemetry.failureClass,
+    consumedAttemptBudget: settled.telemetry.consumedAttemptBudget,
+    outputTokens,
+  };
+}
 
 /** Gate outcome for a turn that actually produced work. */
 export interface GateResult {
