@@ -95,7 +95,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Attempt records requested/used model and reason; `status` and `models` surface switches and caps.
 - [ ] Opt-in main-session routing at safe boundaries only.
 - [x] Worker roles, contracts, launch with explicit model/profile/tools/cwd; resource inheritance control.
-- [ ] Read-only roles enforced across all mutation routes; sandbox boundaries where supported.
+- [x] Read-only roles enforced across all mutation routes; sandbox boundaries where supported.
 - [x] Dirty-tree preservation and repository identity check.
 - [ ] Progress, artifacts, usage capture; global/per-worker limits; pause/resume/cancel; process-tree termination.
 - [ ] Crash-interrupted attempt reconciliation.
