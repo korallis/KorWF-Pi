@@ -316,3 +316,159 @@ export function checkReasonCode(state: CheckRunStatus): TaskGateReasonCode {
       return "check_fail";
   }
 }
+
+// ---------------------------------------------------------------------------
+// C0 — the worker's claim is an input, never an authority
+// ---------------------------------------------------------------------------
+
+/**
+ * Attempt outcomes that constitute a completion claim.
+ *
+ * `succeeded` is a *request* to be gated, in exactly the sense docs/gates.md
+ * §3 means by `author(T).outcome = completion_requested`: the attempt finished
+ * and asked for its work to be assessed. Nothing about the claim's content is
+ * read — not a summary, not a self-report, not a "tests all pass" string. The
+ * only thing the gate learns from it is that there is something to gate.
+ */
+const CLAIM_OUTCOMES: readonly string[] = ["succeeded"];
+
+/** The attempt whose outcome produced the completion claim, if any. */
+export function claimingAttempt(input: Pick<TaskGateInput, "task" | "attempts">): Attempt | undefined {
+  const candidates = input.attempts
+    .filter(
+      (attempt) =>
+        attempt.taskId === input.task.id &&
+        attempt.taskRevision === input.task.revision &&
+        attempt.outcome !== null &&
+        CLAIM_OUTCOMES.includes(attempt.outcome),
+    )
+    .slice()
+    .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1));
+  return candidates[candidates.length - 1];
+}
+
+function evaluateC0(input: TaskGateInput): readonly TaskGateRejection[] {
+  const out: TaskGateRejection[] = [];
+  const { task } = input;
+  if (task.status !== "review") {
+    out.push({
+      condition: "C0",
+      reasonCode: "not_in_review",
+      detail: `task ${task.id} is "${task.status}"; the gate is entered from "review" only`,
+    });
+  }
+  if (task.blocker !== null || input.unresolvedBlockers.length > 0) {
+    out.push({
+      condition: "C0",
+      reasonCode: "blocker_present",
+      detail: `task ${task.id} has unresolved blocker(s): ${
+        input.unresolvedBlockers.length > 0 ? input.unresolvedBlockers.join(", ") : String(task.blocker)
+      }`,
+    });
+  }
+  if (claimingAttempt(input) === undefined) {
+    out.push({
+      condition: "C0",
+      reasonCode: "no_completion_claim",
+      detail: `no attempt at revision ${task.revision} requested completion for ${task.id}`,
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// C1 — deterministic checks pass at the exact revision. No Jev term.
+// ---------------------------------------------------------------------------
+
+/**
+ * Condition 1 of PLAN §2.4. Deliberately takes no `Decision` argument: there
+ * is no expressible way for a Jev answer to influence it, which is what
+ * "a Jev 'no gap' result cannot substitute for a failing check" means once it
+ * is code rather than a policy.
+ *
+ * Every failing check is reported, not just the first, so a refusal explains
+ * the whole picture and re-running the gate is not a bisection exercise.
+ */
+export function evaluateC1(
+  input: TaskGateInput,
+  fresh: readonly Evidence[],
+): {
+  readonly rejections: readonly TaskGateRejection[];
+  readonly checkStates: readonly { readonly checkId: string; readonly state: CheckRunStatus }[];
+} {
+  const out: TaskGateRejection[] = [];
+  const states: { checkId: string; state: CheckRunStatus }[] = [];
+  const { task } = input;
+
+  if (task.checks.length === 0) {
+    out.push({ condition: "C1", reasonCode: "no_checks", detail: `task ${task.id} has no registered checks` });
+  }
+
+  for (const check of task.checks) {
+    // A check that cannot fail is not a registered check for gate purposes
+    // (#44 `isVerifyingCheck` is the one definition of "real check"; this is
+    // its trivial-command half). Registration should have refused it at
+    // `task-ready`; if one was forced into the record, it is refused here.
+    if (isTrivialCheck(check)) {
+      out.push({
+        condition: "C1",
+        reasonCode: "check_trivial",
+        detail: `check ${check.id} (${JSON.stringify(check.command)}) passes unconditionally and verifies nothing`,
+      });
+      states.push({ checkId: check.id, state: "missing" });
+      continue;
+    }
+    const { state, identityMismatch } = checkState(check, fresh);
+    states.push({ checkId: check.id, state });
+    if (state === "pass") continue;
+    if (identityMismatch) {
+      out.push({
+        condition: "C1",
+        reasonCode: "command_identity_mismatch",
+        detail: `check ${check.id}: evidence was produced by a different command than the registered one`,
+      });
+      continue;
+    }
+    out.push({
+      condition: "C1",
+      reasonCode: checkReasonCode(state),
+      // The state name appears verbatim: docs/gates.md §4 forbids collapsing
+      // flaky/missing/unavailable/timeout into `fail` in the audit entry.
+      detail: `check ${check.id} is "${state}"${stalenessNote(check, input, fresh)}`,
+    });
+  }
+
+  for (const criterion of task.acceptanceCriteria) {
+    const covered = task.checks.some(
+      (check) => !isTrivialCheck(check) && check.coversCriteria.includes(criterion.id),
+    );
+    if (!covered) {
+      out.push({
+        condition: "C1",
+        reasonCode: "criterion_uncovered",
+        detail: criterion.id,
+      });
+    }
+  }
+
+  return { rejections: out, checkStates: states };
+}
+
+/**
+ * Why a check has no fresh result, when stale rows exist for it. This is what
+ * turns an opaque `check_missing` into "evidence was recorded at another
+ * revision", which is the difference between a user re-running a check and a
+ * user staring at a green terminal.
+ */
+function stalenessNote(check: CheckDefinition, input: TaskGateInput, fresh: readonly Evidence[]): string {
+  if (latestResultFor(check, fresh) !== undefined) return "";
+  const superseded = supersededIds(input.evidence);
+  const revision = input.revision;
+  const reasons = new Set<string>();
+  for (const row of input.evidence) {
+    if (row.checkId !== check.id || revision === null) continue;
+    const reason = stalenessReason(row, { taskRevision: input.task.revision, revision, superseded });
+    if (reason !== null) reasons.add(reason);
+  }
+  return reasons.size === 0 ? "" : ` (${[...reasons].sort().join(", ")})`;
+}
