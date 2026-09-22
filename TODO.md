@@ -53,7 +53,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Structured plan generation: architecture, phases, tasks, dependencies, ownership, acceptance criteria, per-task checks (PLAN §2.3).
 - [ ] Greenfield bootstrap: repo init, scaffolding phase, test infrastructure tasks first.
 - [ ] Atomicity/coverage/readiness evaluators; "no checks → not ready" rule.
-- [ ] Dependency validation and cycle detection.
+- [x] Dependency validation and cycle detection.
 - [ ] Task and phase transitions, blockers, revision tracking, reapproval, scope-change handling.
 - [ ] Session resume/reload/fork/tree reconciliation with live repo state.
 - [ ] `tasks` and `phases` boards; plan/TODO export.

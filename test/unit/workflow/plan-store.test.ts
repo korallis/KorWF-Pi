@@ -100,6 +100,22 @@ describe("AC: a plan persists into Phase and Task records", () => {
   });
 });
 
+describe("AC: an invalid dependency graph cannot be persisted (#40; PLAN §3.C)", () => {
+  it("rejects a plan whose tasks form a dependency cycle, even bypassing plan-schema validation", () => {
+    const store = freshStore();
+    const plan = minimalPlan({
+      tasks: [
+        planTask({ id: "t1", dependencies: ["t2"] }),
+        planTask({ id: "t2", goal: "Second", dependencies: ["t1"] }),
+      ],
+    });
+    expect(() => persistPlan({ store, workflowId: WF, plan, now: () => AT, newId: idFactory() })).toThrow(
+      PlanPersistError,
+    );
+    expect(store.tasks.findBy("workflowId", WF)).toHaveLength(0);
+  });
+});
+
 describe("AC: a task with checks: [] persists as proposed with the no_checks blocker (PLAN §2.3)", () => {
   it("stores status proposed and blocker no_checks", () => {
     const store = freshStore();

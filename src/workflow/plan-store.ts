@@ -43,6 +43,7 @@ import {
   type PlanDocument,
   type PlanTask,
 } from "./plan-schema.ts";
+import { validateGraph } from "./graph.ts";
 
 /** Branch name used when the planner declares no integration branch. */
 export function defaultIntegrationBranch(phaseOrder: number): string {
@@ -383,6 +384,19 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
     if (changed) revisedTasks.push(record.id);
     if (record.blocker === NO_CHECKS_BLOCKER) blockedForNoChecks.push(record.id);
     if (record.blocker === OUTPUT_BUDGET_BLOCKER) blockedForOutputBudget.push(record.id);
+  }
+
+  // Dependency-graph validation on the *persisted* records (#40; PLAN §3.C).
+  // `plan-schema.ts` already validated the planner-local graph before this
+  // point; this re-checks the graph as written — record ids, resolved
+  // phases — so an invalid graph can never reach the store regardless of
+  // caller. A throw here rolls back the whole transaction: nothing partial
+  // lands.
+  const graph = validateGraph(tasks, args.phases);
+  if (!graph.ok) {
+    throw new PlanPersistError(
+      `plan rejected: invalid task dependency graph:\n` + graph.issues.map((i) => `  ! ${i.message} [${i.rule}]`).join("\n"),
+    );
   }
 
   const supersededTasks = supersedeDroppedTasks(store, args.previousTasks, takenPrevious, now);

@@ -8,6 +8,9 @@
  * - `attempt-controller.ts` — settlement of one worker turn (#124).
  * - `plan-schema.ts` / `plan-parse.ts` / `planner.ts` / `plan-store.ts` —
  *   structured plan generation with per-task verification checks (#37).
+ * - `graph.ts` — dependency-graph validation, ready set and topological
+ *   order over persisted Task records; wired into `plan-store.ts` so an
+ *   invalid graph can never be saved (#40).
  */
 export {
   buildWorkflow,
@@ -149,3 +152,13 @@ export {
   summarisePersistedPlan,
 } from "./plan-store.ts";
 export type { IdMapping, PersistPlanOptions, PersistPlanResult, StoredPlan } from "./plan-store.ts";
+
+export { READINESS_GRAPH_PRECONDITION, findGraphCycles, readySet, topoOrder, validateGraph } from "./graph.ts";
+export type {
+  CycleSearchResult,
+  DependencyEdge,
+  GraphIssue,
+  GraphRuleId,
+  GraphValidationResult,
+  TopoOrderResult,
+} from "./graph.ts";
