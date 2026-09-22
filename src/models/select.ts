@@ -180,13 +180,13 @@ export type SelectionResult =
    * The user pinned a model but it is capped/ineligible or policy-rejects
    * it (PLAN §3.D "user pins are not overridden by fallback without
    * asking"). Never silently substituted; the caller must raise the
-   * `model-substitute-pinned` approval class and ask.
+   * `model_substitute_pinned` approval class and ask.
    */
   | {
       readonly kind: "pin_blocked";
       readonly ref: ModelRef;
       readonly reason: "capped" | "not_eligible" | "policy_rejected";
-      readonly approvalClass: "model-substitute-pinned";
+      readonly approvalClass: "model_substitute_pinned";
       readonly decisionId: string | null;
     };
 
@@ -336,7 +336,7 @@ export async function selectModel(params: SelectModelParams): Promise<SelectionR
         kind: "pin_blocked",
         ref: resolution.ref,
         reason: resolution.reason,
-        approvalClass: "model-substitute-pinned",
+        approvalClass: "model_substitute_pinned",
         decisionId: null,
       };
     }

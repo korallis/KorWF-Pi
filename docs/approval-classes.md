@@ -87,6 +87,7 @@ Bold rows are fixed. This table is generated from `APPROVAL_CLASS_TABLE`; the te
 | `spawn_worker` | configurable | low | stop | stop | queue | auto | Start a worker attempt for a ready task within the allowlist and budgets. | Spends budget; bounded by budgets.*.maxConcurrency and the caps; visible in the task board. |
 | `model_fallback` | configurable | low | auto | auto | queue | auto | Switch a running or next attempt to another allowlisted model at equal or lower estimated cost. | Within the allowlist, recorded on the Attempt, visible; cost cannot rise. |
 | `model_substitute_more_expensive` | configurable | medium | auto | auto | queue | queue | Switch to an allowlisted model whose estimated cost for the attempt exceeds the primary's. | Within the allowlist but spends more than the plan assumed; budgets still hard-stop. |
+| `model_substitute_pinned` | never auto | medium | queue | queue | queue | queue | Switch away from a user-pinned model (PLAN §3.D) because the pin is capped, ineligible, or policy-rejects it. | Within the allowlist, but a pin is the user's explicit instruction; fallback from it is never silent — always asked, never auto in any mode. |
 | `spend_over_estimate` | configurable | medium | auto | auto | queue | queue | Continue a phase whose projected spend exceeds the pre-run estimate by budgets' tolerance (never past a hard cap). | Money; a hard cap is still a hard stop regardless of this class (PLAN §2.6). |
 | `complete_task` | configurable | low | stop | stop | queue | auto | Mark a task done after the task gate (docs/gates.md C1–C5) has passed. | The gate is the guard; this class decides only whether a human confirms the transition. |
 | `scope_change` | never auto | medium | stop | stop | queue | queue | Change a task's goal, acceptance criteria or exclusions, or add/remove tasks in the running phase. | Reversible, but PLAN §3.C forbids silent scope expansion; invalidates approvals (plan_revision_changed). |
@@ -147,6 +148,7 @@ Class-specific fields:
 | `spawn_worker` | `role`, `modelRef`, `estimatedCost` |
 | `model_fallback` | `fromModelRef`, `toModelRef`, `reason` |
 | `model_substitute_more_expensive` | `fromModelRef`, `toModelRef`, `estimatedCostDelta` |
+| `model_substitute_pinned` | `pinnedModelRef`, `reason`, `candidateModelRef` |
 | `spend_over_estimate` | `estimateUsd`, `projectedUsd`, `capUsd` |
 | `complete_task` | `gateReceiptId` |
 | `scope_change` | `planRevisionFrom`, `planRevisionTo`, `diffSummary` |

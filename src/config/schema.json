@@ -501,6 +501,15 @@
                 "bounded_autonomous": "queue"
               }
             },
+            "model_substitute_pinned": {
+              "$ref": "#/$defs/NoAutoPolicy",
+              "default": {
+                "shadow": "queue",
+                "advisory": "queue",
+                "supervised": "queue",
+                "bounded_autonomous": "queue"
+              }
+            },
             "spend_over_estimate": {
               "$ref": "#/$defs/ApprovalPolicyPerMode",
               "default": {

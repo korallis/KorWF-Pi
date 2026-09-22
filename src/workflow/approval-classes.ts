@@ -57,8 +57,11 @@ export const CONFIGURABLE_CLASSES = [
  * Never-auto classes: PLAN §3.C forbids *silent* scope expansion and replanning,
  * so these may be `queue` or `stop` but never `auto`. They are not PLAN §7
  * high-risk acts (a plan change is reversible), hence not pinned to `stop`.
+ * `model_substitute_pinned` joins them for a distinct reason (PLAN §3.D):
+ * a pin is the user's explicit instruction, so falling back from it always
+ * asks, in every mode — never pre-approved, but reversible, so not `stop`.
  */
-export const NO_AUTO_CLASSES = ["scope_change", "replan"] as const;
+export const NO_AUTO_CLASSES = ["scope_change", "replan", "model_substitute_pinned"] as const;
 
 /**
  * High-risk classes (PLAN §7): `stop` in every mode. The schema pins each mode
@@ -180,6 +183,10 @@ export const APPROVAL_CLASS_TABLE = [
     act: "Switch to an allowlisted model whose estimated cost for the attempt exceeds the primary's.",
     why: "Within the allowlist but spends more than the plan assumed; budgets still hard-stop.",
     defaults: pm(A, A, Q, Q), payload: ["fromModelRef", "toModelRef", "estimatedCostDelta"] },
+  { id: "model_substitute_pinned", tier: "no_auto", risk: "medium",
+    act: "Switch away from a user-pinned model (PLAN \u00a73.D) because the pin is capped, ineligible, or policy-rejects it.",
+    why: "Within the allowlist, but a pin is the user's explicit instruction; fallback from it is never silent \u2014 always asked, never auto in any mode.",
+    defaults: pm(Q, Q, Q, Q), payload: ["pinnedModelRef", "reason", "candidateModelRef"] },
   { id: "spend_over_estimate", tier: "configurable", risk: "medium",
     act: "Continue a phase whose projected spend exceeds the pre-run estimate by budgets' tolerance (never past a hard cap).",
     why: "Money; a hard cap is still a hard stop regardless of this class (PLAN §2.6).",
