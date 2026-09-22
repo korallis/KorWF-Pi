@@ -300,6 +300,225 @@ export function isMapped(input: EvidenceGapInput, criterion: CriterionRef): bool
   return mappingReasons(input, criterion).length === 0;
 }
 
+// ---------------------------------------------------------------------------
+// Per-criterion evaluation: three bounded questions, conjunction in code
+// ---------------------------------------------------------------------------
+
+const NOT_ASKED = Object.freeze({ evaluated: false, reason: "not_asked" } as const);
+const DISABLED = Object.freeze({ evaluated: false, reason: "jev_disabled" } as const);
+const ABSTAINED = Object.freeze({ evaluated: false, reason: "abstained" } as const);
+
+/**
+ * A fallback result is never a semantic answer.
+ *
+ * `ask()` always returns a value (PLAN §2.4), but a value produced by the
+ * deterministic fallback is not Jev's judgement, and presenting it as one is
+ * how a "no gap" gets manufactured out of a missing key. `reason === null`
+ * cannot occur on a fallback path, so `"jev_disabled"` covers disabled,
+ * transport error and cancellation alike; an abstention keeps its own reason
+ * because a caller may want to retry it and a disabled key is not retryable.
+ */
+function notEvaluated(result: DecisionResult<unknown>): Extract<Evaluated<never>, { evaluated: false }> {
+  return result.reason === "abstained" ? ABSTAINED : DISABLED;
+}
+
+/** Options shared by every entry point here. */
+export interface EvaluateOptions {
+  /** Omit to run the deterministic mapping rule only (no key, no transport). */
+  readonly ctx?: AskContext;
+  /** Per-risk-class threshold overrides; may only make a floor stricter. */
+  readonly thresholds?: Partial<Record<RiskClass, Partial<EvaluatorThresholds>>>;
+  /** Recorded on every Decision this evaluation writes. */
+  readonly subject?: { readonly taskId: string; readonly taskRevision: number };
+}
+
+/** Sort a reason set into the canonical `GAP_REASONS` order. */
+function orderReasons(reasons: Iterable<GapReason>): readonly GapReason[] {
+  const present = new Set(reasons);
+  return GAP_REASONS.filter((r) => present.has(r));
+}
+
+/**
+ * Evaluate ONE acceptance criterion. Never throws: every failure path is a
+ * gap with a named reason.
+ *
+ * The conjunction is explicit and total — no early return skips a dimension,
+ * so a criterion that is both unmapped and semantically unsupported reports
+ * both, and `/korwf why` can say which.
+ */
+export async function evaluateCriterion(
+  input: EvidenceGapInput,
+  criterion: CriterionRef,
+  options: EvaluateOptions = {},
+): Promise<CriterionFinding> {
+  const thresholds = thresholdsFor(input.riskClass, options.thresholds);
+  const reasons = new Set<GapReason>(mappingReasons(input, criterion));
+  const mapped = reasons.size === 0;
+  const decisionIds: string[] = [];
+
+  let claim: Evaluated<ClaimVerdict> = NOT_ASKED;
+  let semanticGap: Evaluated<boolean> = NOT_ASKED;
+  const tests: TestExercisesFinding[] = [];
+
+  if (options.ctx !== undefined) {
+    const answers = await askCriterionQuestions(options.ctx, input, criterion, options.subject);
+    for (const id of answers.decisionIds) decisionIds.push(id);
+    claim = answers.claim;
+    semanticGap = answers.semanticGap;
+    tests.push(...answers.tests.map((t) => creditTest(t, thresholds)));
+
+    if (claim.evaluated) {
+      if (claim.value === "unsupported") reasons.add("claim_unsupported");
+      if (claim.value === "unknown") reasons.add("claim_unknown");
+    } else if (claim.reason === "abstained") {
+      // "Abstention/unknown is treated as a gap, never as pass" (issue #47 AC2).
+      reasons.add("jev_abstained");
+    }
+
+    if (semanticGap.evaluated) {
+      if (semanticGap.value) reasons.add("jev_reports_gap");
+    } else if (semanticGap.reason === "abstained") {
+      reasons.add("jev_abstained");
+    }
+
+    if (thresholds.requireExercisingTest && tests.length > 0 && !tests.some((t) => t.exercises)) {
+      reasons.add("no_exercising_test");
+    }
+  } else {
+    claim = DISABLED;
+    semanticGap = DISABLED;
+    for (const test of testsFor(input, criterion.id)) {
+      tests.push({
+        criterionId: criterion.id,
+        checkId: test.checkId,
+        testPath: test.testPath,
+        level: DISABLED,
+        exercises: false,
+      });
+    }
+  }
+
+  return {
+    criterionId: criterion.id,
+    criterionText: criterion.text,
+    gap: reasons.size > 0,
+    reasons: orderReasons(reasons),
+    mapped,
+    claim,
+    semanticGap,
+    tests,
+    decisionIds,
+  };
+}
+
+/**
+ * Ask the three questions for one criterion.
+ *
+ * They are asked with `ask()` per question rather than one bulk request
+ * because each has a *different* minimal state (PLAN §6 "minimal relevant
+ * state per evaluation"): the claim question must see the claim, the gap
+ * question must not be anchored by it, and the test question sees one test
+ * file at a time. `askAll` would batch only states that are identical, so
+ * nothing is lost and the independence is explicit.
+ *
+ * Every call writes a `Decision` — that is `ask()`'s contract, on every path
+ * including disabled mode (issue #47 AC3: "every evaluation writes Decision
+ * records with raw distributions").
+ */
+async function askCriterionQuestions(
+  ctx: AskContext,
+  input: EvidenceGapInput,
+  criterion: CriterionRef,
+  subject: EvaluateOptions["subject"],
+): Promise<{
+  readonly claim: Evaluated<ClaimVerdict>;
+  readonly semanticGap: Evaluated<boolean>;
+  readonly tests: readonly TestExercisesFinding[];
+  readonly decisionIds: readonly string[];
+}> {
+  const thresholds = thresholdsFor(input.riskClass);
+  const where = subject === undefined ? {} : { subject: { taskId: subject.taskId as never, taskRevision: subject.taskRevision } };
+  const summaries = evidenceFor(input, criterion.id);
+  const linkedTests = testsFor(input, criterion.id);
+
+  const [claimResult, gapResult, ...testResults] = await Promise.all([
+    ask(
+      ctx,
+      claimSupportedQuestion,
+      {
+        criterionId: criterion.id,
+        criterionText: criterion.text,
+        claim: input.claim,
+        evidence: summaries,
+      },
+      where,
+    ),
+    ask(ctx, evidenceGapQuestion, gapStateFor(input, criterion), where),
+    ...linkedTests.map((test) =>
+      ask(
+        ctx,
+        testExercisesQuestion,
+        {
+          criterionId: criterion.id,
+          criterionText: criterion.text,
+          checkId: test.checkId,
+          command: test.command,
+          testPath: test.testPath,
+          testExcerpt: test.excerpt,
+        },
+        where,
+      ),
+    ),
+  ]);
+
+  const decisionIds: string[] = [];
+  for (const result of [claimResult, gapResult, ...testResults]) {
+    if (result.decisionId !== null) decisionIds.push(result.decisionId);
+  }
+
+  // A `supported` below this risk class's floor is not `supported`. The
+  // question's own `minConfidence` is the shipped floor; this is the
+  // per-risk-class one on top of it, and it can only be stricter.
+  const claimConfident = (claimResult.confidence ?? 0) >= thresholds.claimConfidence;
+  const claim: Evaluated<ClaimVerdict> =
+    claimResult.source !== "jev"
+      ? notEvaluated(claimResult)
+      : claimResult.value === "supported" && !claimConfident
+        ? ABSTAINED
+        : { evaluated: true, value: claimResult.value, source: "jev" };
+
+  // The noul is recorded as `{true: p, false: 1-p}`; `true` is "there is a
+  // gap". A `no_gap` answer must clear the *gap ceiling*, not merely 0.5.
+  const gapProbability = Number(gapResult.distribution["true"] ?? (gapResult.value ? 1 : 0));
+  const semanticGap: Evaluated<boolean> =
+    gapResult.source !== "jev"
+      ? notEvaluated(gapResult)
+      : gapResult.value
+        ? { evaluated: true, value: true, source: "jev" }
+        : gapProbability <= thresholds.gapCeiling
+          ? { evaluated: true, value: false, source: "jev" }
+          : ABSTAINED;
+
+  const tests: TestExercisesFinding[] = linkedTests.map((test, index) => {
+    const result = testResults[index];
+    const level: Evaluated<number> =
+      result === undefined
+        ? NOT_ASKED
+        : result.source === "jev"
+          ? { evaluated: true, value: result.value, source: "jev" }
+          : notEvaluated(result);
+    return { criterionId: criterion.id, checkId: test.checkId, testPath: test.testPath, level, exercises: false };
+  });
+
+  return { claim, semanticGap, tests, decisionIds };
+}
+
+/** Apply the risk class's level floor. The comparison is code, never Jev. */
+function creditTest(finding: TestExercisesFinding, thresholds: EvaluatorThresholds): TestExercisesFinding {
+  const exercises = finding.level.evaluated && finding.level.value >= thresholds.testExercisesMinLevel;
+  return { ...finding, exercises };
+}
+
 export { TEST_EXERCISES_MIN_LEVEL };
 export type { ClaimVerdict, CriterionRef, EvidenceGapState, EvidenceSummary, RiskClass };
 export { ask, claimSupportedQuestion, evidenceGapFallback, evidenceGapQuestion, testExercisesQuestion };
