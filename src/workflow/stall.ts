@@ -136,3 +136,75 @@ export interface StallEvent {
   /** Attempts involved, oldest first. */
   readonly attemptIds: readonly string[];
 }
+
+// ---------------------------------------------------------------------------
+// measurable progress
+// ---------------------------------------------------------------------------
+
+/**
+ * Did this attempt make measurable progress?
+ *
+ * Measurable means one of: a file actually changed, or a **verifying** check
+ * that was failing now passes. `isVerifyingCheck` (#44) is the only judge of
+ * "verifying" — a `true`/`echo ok` check flipping to pass is not evidence of
+ * anything, and treating it as progress is how a stalled task looks busy.
+ */
+export function attemptMadeProgress(
+  attempt: AttemptObservation,
+  previous: AttemptObservation | null,
+): { readonly progressed: boolean; readonly reason: string } {
+  if (attempt.filesChanged > 0) {
+    return { progressed: true, reason: `${attempt.filesChanged} file(s) changed.` };
+  }
+  const previouslyFailing = new Set(
+    (previous?.checks ?? []).filter((c) => c.status !== "pass").map((c) => c.checkId),
+  );
+  for (const check of attempt.checks) {
+    if (check.status !== "pass") continue;
+    if (!previouslyFailing.has(check.checkId)) continue;
+    if (!isVerifyingCheck(check.check)) continue;
+    return { progressed: true, reason: `Verifying check ${check.checkId} went from failing to passing.` };
+  }
+  const weakFlips = attempt.checks.filter(
+    (c) => c.status === "pass" && previouslyFailing.has(c.checkId) && !isVerifyingCheck(c.check),
+  );
+  if (weakFlips.length > 0) {
+    return {
+      progressed: false,
+      reason:
+        `No file changed; the only check(s) that started passing (${weakFlips.map((c) => c.checkId).join(", ")}) ` +
+        `cannot fail, so they are not verification (isVerifyingCheck, #44).`,
+    };
+  }
+  return { progressed: false, reason: "No file changed and no failing verifying check began to pass." };
+}
+
+// ---------------------------------------------------------------------------
+// ownership / drift
+// ---------------------------------------------------------------------------
+
+function normalisePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+}
+
+/**
+ * `true` when `path` falls under one of the ownership entries. An entry is a
+ * prefix: `src/workflow/` owns `src/workflow/stall.ts`. `src/workflow` (no
+ * slash) owns the directory, not the sibling `src/workflow-extra.ts`.
+ */
+export function pathInOwnership(path: string, ownership: Ownership): boolean {
+  const target = normalisePath(path);
+  return ownership.paths.some((raw) => {
+    const owned = normalisePath(raw).replace(/\/+$/, "");
+    if (owned === "" || owned === ".") return true;
+    return target === owned || target.startsWith(`${owned}/`);
+  });
+}
+
+/** Writes in this attempt that landed outside the task's declared ownership. */
+export function driftingWrites(
+  attempt: AttemptObservation,
+  ownership: Ownership,
+): readonly WriteObservation[] {
+  return attempt.writes.filter((write) => !pathInOwnership(write.path, ownership));
+}
