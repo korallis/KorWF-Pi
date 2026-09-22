@@ -181,6 +181,122 @@ export const claimSupportedQuestion: QuestionDefinition<ClaimSupportedState, Cla
   ],
 });
 
+// ---------------------------------------------------------------------------
+// verify.evidence_gap@1 — one criterion, noul
+// ---------------------------------------------------------------------------
+
+/**
+ * State for the gap question about ONE criterion. The issue's scope names a
+ * Noul returning "the list of criteria ids without supporting evidence"; a
+ * list is exactly the existential shape the decomposition lesson warns
+ * about, so the list is *assembled in code* (`evaluate.ts`) from one bounded
+ * noul per criterion. The answer set is identical; the probability of each
+ * part no longer depends on how many criteria the task happens to have.
+ */
+export interface EvidenceGapState {
+  readonly criterionId: string;
+  readonly criterionText: string;
+  /** Commands of the checks that *claim* to cover this criterion. */
+  readonly linkedChecks: readonly { readonly checkId: string; readonly command: string; readonly state: string }[];
+  readonly evidence: readonly EvidenceSummary[];
+}
+
+function gapState(input: EvidenceGapState): JevState {
+  return {
+    criterionId: input.criterionId,
+    criterionText: input.criterionText,
+    linkedChecks: input.linkedChecks.map((c) => ({ checkId: c.checkId, command: c.command, state: c.state })),
+    evidence: input.evidence.map((e) => ({
+      checkId: e.checkId,
+      command: e.command,
+      state: e.state,
+      paths: [...e.paths],
+      excerpt: clampExcerpt(e.excerpt),
+    })),
+  };
+}
+
+/**
+ * Deterministic fallback: **the mapping rule**, and nothing more (issue #47
+ * Scope, "Disabled fallback: mapping-only — each criterion must have ≥1
+ * linked passing check"). `true` means "there is a gap", so the safe answer
+ * with no key is `true` unless the structure positively rules it out: at
+ * least one linked check in state `pass` AND at least one passing evidence
+ * row attributed to this criterion.
+ */
+export function evidenceGapFallback(input: EvidenceGapState): boolean {
+  const linkedPassing = input.linkedChecks.some((c) => c.state === "pass");
+  const evidencePassing = input.evidence.some((e) => e.state === "pass");
+  return !(linkedPassing && evidencePassing);
+}
+
+export const evidenceGapQuestion: QuestionDefinition<EvidenceGapState, boolean> = defineNoul<
+  EvidenceGapState,
+  boolean
+>({
+  id: "verify.evidence_gap",
+  version: "1",
+  prompt:
+    "For ONE acceptance criterion, is there an evidence gap? A gap exists when nothing in `linkedChecks`/" +
+    "`evidence` would have detected this criterion being unimplemented — including when a check passes but " +
+    "observes something else entirely. Do not reward volume of evidence: one check that would fail if the " +
+    "criterion were violated closes the gap, ten that would not does not.",
+  criteria: {
+    true: "There is a gap: no presented check or evidence item actually demonstrates this criterion",
+    false: "No gap: at least one presented item would fail if this criterion were not met",
+  },
+  abstainBand: [0.35, 0.65],
+  revisionSensitive: true,
+  state: gapState,
+  decide: (noul) => ({
+    value: noul >= 0.5,
+    rule: noul >= 0.5 ? "verify.evidence_gap:gap" : "verify.evidence_gap:no_gap",
+    action: noul >= 0.5 ? "gap" : "no_gap",
+  }),
+  fallback: (input) => {
+    const value = evidenceGapFallback(input);
+    return { value, rule: "criterion_mapping", action: value ? "gap" : "no_gap" };
+  },
+  replay: (action) => (action === "gap" ? true : action === "no_gap" ? false : null),
+  boundaries: [
+    {
+      name: "no linked check is a gap",
+      state: { criterionId: "ac1", criterionText: "empty items => 400", linkedChecks: [], evidence: [] },
+      expectFallback: true,
+    },
+    {
+      name: "linked check passing but no passing evidence row is still a gap",
+      state: {
+        criterionId: "ac1",
+        criterionText: "empty items => 400",
+        linkedChecks: [{ checkId: "chk1", command: "npm test", state: "pass" }],
+        evidence: [],
+      },
+      expectFallback: true,
+    },
+    {
+      name: "linked passing check plus passing evidence closes the structural gap",
+      state: {
+        criterionId: "ac1",
+        criterionText: "empty items => 400",
+        linkedChecks: [{ checkId: "chk1", command: "npm test", state: "pass" }],
+        evidence: [{ checkId: "chk1", command: "npm test", state: "pass", paths: ["test/a.test.ts"], excerpt: "" }],
+      },
+      expectFallback: false,
+    },
+    {
+      name: "a flaky linked check does not close the gap (#51: flaky is not success)",
+      state: {
+        criterionId: "ac1",
+        criterionText: "empty items => 400",
+        linkedChecks: [{ checkId: "chk1", command: "npm test", state: "flaky" }],
+        evidence: [{ checkId: "chk1", command: "npm test", state: "flaky", paths: [], excerpt: "" }],
+      },
+      expectFallback: true,
+    },
+  ],
+});
+
 /** Hashes as reviewed; editing prompt/options/levels without a version bump fails registration. */
 export const VERIFY_QUESTION_HASHES: Readonly<Record<string, string>> = Object.freeze({});
 
