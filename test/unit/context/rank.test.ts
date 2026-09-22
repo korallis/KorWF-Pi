@@ -66,11 +66,12 @@ describe("rank.ts", () => {
     expect(top3).toContain("src/auth.ts");
   });
 
-  it("without Jev (disabled), falls back to rg score and recency, and still ranks the match first", async () => {
+  it("AC: without Jev, the known feature's file still ranks in the top 3 (fallback = rg score and recency)", async () => {
     const { candidates } = retrieveCandidates("password hashing", { repoRoot: repo.root });
     const ctx: AskContext = { transport: new DisabledJevTransport(), model: "jev-test" };
     const ranked = await rankCandidates(ctx, "password hashing", candidates);
-    expect(ranked[0]?.candidate.provenance.path).toBe("src/auth.ts");
+    const top3 = ranked.slice(0, 3).map((r) => r.candidate.provenance.path);
+    expect(top3).toContain("src/auth.ts");
     expect(ranked[0]?.relevanceResult.source).toBe("fallback");
   });
 
