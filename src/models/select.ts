@@ -170,6 +170,143 @@ export type SelectionResult =
     }
   | { readonly kind: "none"; readonly reason: "inadequate" | "insufficient_info"; readonly decisionId: string | null };
 
+/** Order candidates by `staticOrder` position (present entries first, in that order), then input order. */
+function orderByStatic(
+  candidates: readonly SelectionCandidate[],
+  staticOrder: readonly ModelRef[],
+): readonly SelectionCandidate[] {
+  const position = new Map<ModelRef, number>();
+  staticOrder.forEach((ref, i) => {
+    if (!position.has(ref)) position.set(ref, i);
+  });
+  const pinned: SelectionCandidate[] = [];
+  const rest: SelectionCandidate[] = [];
+  for (const c of candidates) (position.has(c.ref) ? pinned : rest).push(c);
+  pinned.sort((a, b) => position.get(a.ref)! - position.get(b.ref)!);
+  return [...pinned, ...rest];
+}
+
+function recordStatic(recorder: DecisionRecorder | undefined, ref: ModelRef): string | null {
+  if (recorder === undefined) return null;
+  return recorder.record({
+    stateHash: `static:${ref}`,
+    questionId: "models.rank",
+    questionVersion: "1",
+    jevModelVersion: null,
+    rawDistribution: {},
+    confidence: null,
+    policyRule: "static",
+    action: ref,
+    latencyMs: null,
+    usage: { inputTokens: 0, outputTokens: 0, requests: 0, spendUsd: 0, costBasis: "known" },
+  }).id;
+}
+
+function recordPolicyRejection(recorder: DecisionRecorder | undefined, ref: ModelRef, reason: PolicyRejection): void {
+  if (recorder === undefined) return;
+  recorder.record({
+    stateHash: `policy_reject:${ref}`,
+    questionId: "models.rank",
+    questionVersion: "1",
+    jevModelVersion: null,
+    rawDistribution: {},
+    confidence: null,
+    policyRule: `policy_rejected:${reason}`,
+    action: ref,
+    latencyMs: null,
+    usage: { inputTokens: 0, outputTokens: 0, requests: 0, spendUsd: 0, costBasis: "known" },
+  });
+}
+
+/**
+ * Pick the first candidate (in `order`) that also passes `enforcePolicy`,
+ * auditing every rejection along the way. Shared by the static-order path
+ * and the Jev-adequate path: both are "walk a ranked list, enforce policy,
+ * move on" — the only difference is how the list was ranked.
+ */
+function firstPolicyPassing(
+  order: readonly SelectionCandidate[],
+  eligible: ReadonlySet<ModelRef>,
+  allowlist: ModelAllowlist,
+  checkBudget: ((ref: ModelRef) => boolean) | undefined,
+  recorder: DecisionRecorder | undefined,
+): SelectionCandidate | null {
+  for (const candidate of order) {
+    const check = enforcePolicy(candidate.ref, eligible, allowlist, checkBudget);
+    if (check.ok) return candidate;
+    recordPolicyRejection(recorder, candidate.ref, check.reason!);
+  }
+  return null;
+}
+
+/**
+ * Compose the three steps (PLAN §3.D "Selection", non-negotiable order):
+ * 1. `params.candidates` is the eligible set (already computed by the
+ *    caller via `eligibleCandidates`).
+ * 2. No Jev context (`ctx === null`) or every Jev answer fell back →
+ *    `fallback.staticOrder`, recorded with `policyRule: "static"` (works
+ *    with no Jev key at all).
+ * 3. Otherwise, ask `models.rank@1` per candidate and walk the
+ *    Jev-adequate ones in the order Jev was asked; every winner —
+ *    Jev's or the static order's — is re-checked by `enforcePolicy`
+ *    before it is accepted, so a Jev answer naming a model outside the
+ *    allowlist is rejected and audited, never honoured.
+ * Jev explicitly finding nothing adequate ("none adequate" for a hard
+ * task) returns `{ kind: "none", reason: "inadequate" }` — a pause, never a
+ * silent degrade.
+ */
 export async function selectModel(params: SelectModelParams): Promise<SelectionResult> {
-  throw new Error("todo");
+  const { profile, candidates, allowlist, staticOrder, checkBudget, recorder } = params;
+  const eligible = new Set(candidates.map((c) => c.ref));
+
+  const runStatic = (): SelectionResult => {
+    const ordered = orderByStatic(candidates, staticOrder);
+    const requested = ordered[0];
+    if (requested === undefined) {
+      return { kind: "none", reason: "insufficient_info", decisionId: null };
+    }
+    const used = firstPolicyPassing(ordered, eligible, allowlist, checkBudget, recorder);
+    if (used === null) {
+      return { kind: "none", reason: "insufficient_info", decisionId: null };
+    }
+    const decisionId = recordStatic(recorder, used.ref);
+    return {
+      kind: "selected",
+      requestedModel: requested.ref,
+      usedModel: used.ref,
+      fallbackReason: used.ref === requested.ref ? null : "static_fallback_order",
+      rationale: "jev disabled or unavailable; used fallback.staticOrder",
+      decisionId,
+    };
+  };
+
+  if (params.ctx === null || candidates.length === 0) {
+    return runStatic();
+  }
+
+  const rankResult = await rankWithJev(params.ctx, profile, candidates);
+  if (rankResult.allFellBack) {
+    return runStatic();
+  }
+
+  const adequate = rankResult.ranked.filter((r) => r.adequate);
+  if (adequate.length === 0) {
+    return { kind: "none", reason: "inadequate", decisionId: null };
+  }
+
+  const requested = adequate[0]!.candidate;
+  const orderedAdequate = adequate.map((r) => r.candidate);
+  const used = firstPolicyPassing(orderedAdequate, eligible, allowlist, checkBudget, recorder);
+  if (used === null) {
+    return { kind: "none", reason: "inadequate", decisionId: adequate[0]!.decisionId };
+  }
+  const winner = adequate.find((r) => r.candidate.ref === used.ref)!;
+  return {
+    kind: "selected",
+    requestedModel: requested.ref,
+    usedModel: used.ref,
+    fallbackReason: used.ref === requested.ref ? null : "jev_selected_substitute",
+    rationale: `jev ranked ${used.ref} adequate for profile domain=${profile.domain}`,
+    decisionId: winner.decisionId,
+  };
 }
