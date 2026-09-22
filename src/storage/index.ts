@@ -5,86 +5,21 @@
  * This is the only module in the package that imports a SQLite driver
  * (`node:sqlite`). Domain modules use the typed repositories on `Store`;
  * they never hold a raw connection.
+ *
+ * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
+ * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
+ * `src/workflow/index.ts` and each had to be resolved by hand, always by keeping both.
+ * `export *` is additive, so modules added in parallel do not conflict; a genuine
+ * duplicate-name clash still fails the build, which is what we want to hear about.
  */
-export {
-  DEFAULT_STORAGE_DIR_NAME,
-  resolveStorageRoot,
-  resolveDatabasePath,
-  resolveLockfilePath,
-  resolveArtifactDir,
-} from "./paths.ts";
-
-export { Store, openStore, openStoreReadOnly, STORE_DRIVER, latestSchemaVersion } from "./db.ts";
-export type { OpenStoreOptions, OpenStoreReport } from "./db.ts";
-
-export {
-  acquireLock,
-  hashHost,
-  isProcessAlive,
-  readLockfile,
-  DEFAULT_LOCK_TIMEOUT_MS,
-} from "./lock.ts";
-export type { LockHandle, LockfileContents, AcquireLockOptions } from "./lock.ts";
-
-export {
-  appliedMigrations,
-  currentSchemaVersion,
-  loadMigrations,
-  migrate,
-  MIGRATIONS_DIR,
-} from "./migrations.ts";
-export type { Migration, AppliedMigration, MigrateResult } from "./migrations.ts";
-
-export { ArtifactStore, artifactRelativePath, MANIFEST_NAME, sha256 } from "./artifacts.ts";
-export { DecisionCacheStore } from "./decision-cache.ts";
-export type { DecisionCacheRow } from "./decision-cache.ts";
-export { DecisionTraceStore } from "./trace-store.ts";
-export type { ArtifactManifest, ArtifactManifestEntry } from "./artifacts.ts";
-
-export {
-  ABANDONED_OUTCOME,
-  LEDGER_ABANDONED_REASON,
-  assumeWorkersGone,
-  reconcileAbandonedAttempts,
-  reconcileOpenReservations,
-} from "./reconcile.ts";
-export type {
-  AbandonedReservationRow,
-  ReconcileOptions,
-  ReconcileReservationsOptions,
-  ReconciledAttempt,
-  ReconciliationReport,
-  WorkerLiveness,
-  WorkerProbe,
-} from "./reconcile.ts";
-
-export {
-  LockfileCorruptError,
-  MigrationFailedError,
-  ReadOnlyStoreError,
-  RecordNotFoundError,
-  RecordRuleError,
-  SchemaTooNewError,
-  StoreError,
-  StoreLockedError,
-} from "./errors.ts";
-
-export { TABLE_SPECS } from "./repos/specs.ts";
-export {
-  ApprovalRepository,
-  AttemptRepository,
-  AuditRepository,
-  DecisionRepository,
-  EvidenceRepository,
-  LedgerRepository,
-  MemoryRepository,
-  ModelAvailabilityRepository,
-  ModelOutcomeRepository,
-  PhaseRepository,
-  TaskRepository,
-  WorkflowRepository,
-} from "./repos/index.ts";
-
-export type { LedgerScopeColumn, LedgerTotals } from "./repos/index.ts";
-
-export type { RecordTypes, RecordTable, AnyRecord } from "./records.ts";
+export * from "./artifacts.ts";
+export * from "./db.ts";
+export * from "./decision-cache.ts";
+export * from "./errors.ts";
+export * from "./lock.ts";
+export * from "./migrations.ts";
+export * from "./paths.ts";
+export * from "./reconcile.ts";
+export * from "./records.ts";
+export * from "./sqlite.ts";
+export * from "./trace-store.ts";

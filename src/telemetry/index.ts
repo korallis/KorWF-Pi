@@ -5,76 +5,14 @@
  * (`ledger.ts`). Issue #31 added decision traces (`trace.ts`) and the
  * opt-in raw-payload logging path with retention (`retention.ts`) beside
  * it, sharing the same store rather than forming a parallel system.
+ *
+ * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
+ * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
+ * `src/workflow/index.ts` and each had to be resolved by hand, always by keeping both.
+ * `export *` is additive, so modules added in parallel do not conflict; a genuine
+ * duplicate-name clash still fails the build, which is what we want to hear about.
  */
-export {
-  Ledger,
-  openLedger,
-  reconcileAbandonedReservations,
-  BudgetExceededError,
-  BudgetExceeded,
-  UsageIntegrityError,
-  classifyCost,
-  hasUsablePrice,
-  unknownUsage,
-  noUsage,
-  assertHonestUsage,
-  UNKNOWN_COST,
-  SCOPE_ORDER,
-  LEDGER_ABANDONED_REASON,
-} from "./ledger.ts";
-export type {
-  AbandonedReservation,
-  CapStatus,
-  ChargeScope,
-  LedgerOptions,
-  LedgerReconcileOptions,
-  LedgerReconciliationReport,
-  LedgerStatus,
-  PriceMetadata,
-  Reservation,
-  ScopeStatus,
-  TokenCounts,
-} from "./ledger.ts";
-
-export {
-  MemoryTraceSink,
-  TraceRecorder,
-  TraceVersionError,
-  REQUIRED_TRACE_VERSIONS,
-  assertTraceVersions,
-  explainDecision,
-  missingTraceVersions,
-  requestHashOf,
-  schemaVersionString,
-  summariseRequest,
-} from "./trace.ts";
-export type {
-  DecisionTrace,
-  Explanation,
-  ExplanationLine,
-  RawPayloadSink,
-  TraceDraft,
-  TraceOutcome,
-  TraceOutcomeDetail,
-  TraceQuestion,
-  TraceRawPayloadRef,
-  TraceRecorderOptions,
-  TraceRequestSummary,
-  TraceSink,
-  TraceVersions,
-} from "./trace.ts";
-
-export {
-  ArtifactRawPayloadSink,
-  RawPayloadRefusedError,
-  RAW_LOG_ATTEMPT_DIR,
-  createRawPayloadSink,
-  expiryOf,
-  prepareRawPayload,
-  purgeExpiredRawPayloads,
-  purgeRawPayloadsNow,
-  retentionSummary,
-  runRetentionSweep,
-  wouldRefusePayload,
-} from "./retention.ts";
-export type { PreparedRawPayload, RawPayloadSinkOptions, RetentionOptions, RetentionReport } from "./retention.ts";
+export * from "./ledger.ts";
+export * from "./retention.ts";
+export * from "./trace.ts";
+export * from "./trace-types.ts";

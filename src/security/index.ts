@@ -8,77 +8,14 @@
  * Import from this index rather than the files directly: the redactor is only
  * effective if every log sink and every error passes through it, and keeping
  * one entry point makes that reviewable.
+ *
+ * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
+ * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
+ * `src/workflow/index.ts` and each had to be resolved by hand, always by keeping both.
+ * `export *` is additive, so modules added in parallel do not conflict; a genuine
+ * duplicate-name clash still fails the build, which is what we want to hear about.
  */
-export {
-  REDACTED,
-  MIN_REGISTERED_SECRET_LENGTH,
-  SECRET_PATTERNS,
-  registerSecretValue,
-  redactedValues,
-  clearRegisteredSecrets,
-  redactString,
-  containsSecret,
-  assertRedacted,
-  redactValue,
-  redactedStringify,
-  redactError,
-  formatError,
-  redactingSink,
-  consoleSink,
-  memorySink,
-  createLogger,
-} from "./redact.ts";
-export type { LogLevel, LogSink, Logger } from "./redact.ts";
-
-export {
-  DEFAULT_KEY_ENV_VAR,
-  FALLBACK_KEY_ENV_VARS,
-  Secret,
-  resolveJevKey,
-  applyKeyResolution,
-  keyDiagnostics,
-  authorizationHeader,
-} from "./secrets.ts";
-export type {
-  SecretOrigin,
-  SecretsPort,
-  ResolveOptions,
-  KeyResolution,
-  KeyResolutionStatus,
-  KeyDiagnostics,
-} from "./secrets.ts";
-
-// Default-deny outbound filtering (issue #28; PLAN §7). `OutboundPolicy` is
-// the single enforcement point: nothing leaves for TypeSafe or a model
-// provider without passing through it.
-export type { DenyRule, DenyVerdict, DenyMatcherOptions } from "./deny-list.ts";
-export {
-  DenyMatcher,
-  SHIPPED_DENY_PATH_NOTES,
-  assertDenyListDocumented,
-  globToRegExp,
-  normalisePath,
-} from "./deny-list.ts";
-
-export type {
-  FilteredPayload,
-  FilteredRequest,
-  FilterOptions,
-  OutboundPayload,
-  OutboundPolicyOptions,
-  OutboundPurpose,
-  OutboundReport,
-  RemovedItem,
-  Snippet,
-  TruncationItem,
-} from "./outbound.ts";
-export {
-  OutboundPolicy,
-  TRUNCATION_MARKER,
-  byteLength,
-  compileDenyPatterns,
-  defaultOutboundPolicy,
-  outboundReportOf,
-  pick,
-  truncateToBytes,
-} from "./outbound.ts";
+export * from "./deny-list.ts";
+export * from "./outbound.ts";
+export * from "./redact.ts";
+export * from "./secrets.ts";

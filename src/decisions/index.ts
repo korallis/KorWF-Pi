@@ -14,49 +14,17 @@
  * 3. **Composition** — `ask` / `askAll` / `askStaged` batch independent
  *    questions and stage dependent ones, recording a Decision on every path,
  *    plus `compose.ts` for combining narrow answers in code.
+ *
+ * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
+ * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
+ * `src/workflow/index.ts` and each had to be resolved by hand, always by keeping both.
+ * `export *` is additive, so modules added in parallel do not conflict; a genuine
+ * duplicate-name clash still fails the build, which is what we want to hear about.
  */
-export type {
-  AbstainBand,
-  AnyQuestionDefinition,
-  BoundaryExample,
-  ChoiceSpec,
-  FallbackOutcome,
-  FallbackReason,
-  NoulSpec,
-  Outcome,
-  QuestionDefinition,
-  QuestionType,
-  ScoreSpec,
-} from "./question.ts";
-export {
-  abstentionOf,
-  assertBoundaries,
-  assertQuestionNaming,
-  defineChoice,
-  defineNoul,
-  defineScore,
-  QuestionDefinitionError,
-  questionContentHash,
-  questionKey,
-} from "./question.ts";
-
-export type { RegisteredQuestion } from "./registry.ts";
-export { QuestionRegistry, questionRegistry } from "./registry.ts";
-
-export type {
-  DecisionDraft,
-  DecisionLookup,
-  DecisionRecorderOptions,
-  DecisionSink,
-  DecisionSubject,
-} from "./record.ts";
-export { DecisionRecorder, FALLBACK_USAGE, MemoryDecisionSink, UNPRICED_JEV_USAGE } from "./record.ts";
-
-export type { AskAllOptions, AskContext, AskItem, DecisionResult, Stage, StagedRun } from "./ask.ts";
-export { ask, askAll, askStaged, DEFAULT_CONCURRENCY, distributionOf, hashState, resolveAnswer } from "./ask.ts";
-
-export type { Composed } from "./compose.ts";
-export { allTrue, anyTrue, conservative, majority, rankBy } from "./compose.ts";
-
-export type { CacheConfig, CacheKeyParts, DecisionCacheDeps } from "./cache.ts";
-export { cacheKeyOf, cacheLookup, cacheStore, invalidateQuestion, isApprovalQuestion } from "./cache.ts";
+export * from "./ask.ts";
+export * from "./cache.ts";
+export * from "./compose.ts";
+export * from "./examples.ts";
+export * from "./question.ts";
+export * from "./record.ts";
+export * from "./registry.ts";

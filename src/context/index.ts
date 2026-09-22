@@ -6,46 +6,18 @@
  * the versioned questions in `src/decisions/questions/context.ts`. Every
  * excerpt carries the shared `Provenance` record. Pins (`pins.ts`) are
  * preserved regardless of ranking.
+ *
+ * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
+ * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
+ * `src/workflow/index.ts` and each had to be resolved by hand, always by keeping both.
+ * `export *` is additive, so modules added in parallel do not conflict; a genuine
+ * duplicate-name clash still fails the build, which is what we want to hear about.
  */
-export type { Candidate, Provenance, RawToolOutput, RetrievalMethod, SearchTool } from "./types.ts";
-
-export {
-  hasCompleteProvenance,
-  hashSlice,
-  provenanceOf,
-  UNVERSIONED_REVISION,
-  verifyProvenance,
-} from "./provenance.ts";
-
-export type { RetrieveOptions, RetrieveResult } from "./retrieve.ts";
-export {
-  ageDaysOf,
-  currentRevision,
-  relPath,
-  retrieveCandidates,
-  searchContent,
-  searchFilenames,
-} from "./retrieve.ts";
-
-export type { RankedCandidate, RankOptions } from "./rank.ts";
-export { combinedScore, DEFAULT_MAX_CANDIDATES, expandShortlist, rankCandidates } from "./rank.ts";
-
-export { allPinsPresent, mergeWithPins, PinDeniedError, pinFile, pinFiles } from "./pins.ts";
-
-export type { ShortlistEntry } from "./artifacts.ts";
-export { toShortlistEntry, writeRawToolOutput, writeShortlist } from "./artifacts.ts";
-
-export type { Capability, CapabilitySuggestions, RankCapabilitiesOptions, RankedCapability } from "./capabilities.ts";
-export {
-  DEFAULT_MAX_CAPABILITIES,
-  DEFAULT_SUGGEST_THRESHOLD,
-  detectMandatoryTrigger,
-  rankCapabilities,
-} from "./capabilities.ts";
-
-export type { PlanDocumentOptions } from "./plan-document.ts";
-export {
-  PLAN_DOCUMENT_CHUNK_LINES,
-  planDocumentCandidates,
-  retrieveWithPlanDocumentFallback,
-} from "./plan-document.ts";
+export * from "./artifacts.ts";
+export * from "./capabilities.ts";
+export * from "./pins.ts";
+export * from "./plan-document.ts";
+export * from "./provenance.ts";
+export * from "./rank.ts";
+export * from "./retrieve.ts";
+export * from "./types.ts";

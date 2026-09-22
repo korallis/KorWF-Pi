@@ -9,20 +9,13 @@
  *
  * Catalog/cards (#10 follow-ups), Jev selection and cap detection (#62),
  * health/breakers (#123) build on these and key on `RouteId`.
+ *
+ * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
+ * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
+ * `src/workflow/index.ts` and each had to be resolved by hand, always by keeping both.
+ * `export *` is additive, so modules added in parallel do not conflict; a genuine
+ * duplicate-name clash still fails the build, which is what we want to hear about.
  */
-export {
-  ROUTE_ID_PREFIX,
-  deriveRouteId,
-  toModelRef,
-  makeRoute,
-  routeFromRegistryModel,
-  routesFromRegistry,
-  routesForModel,
-  hasMultiRouteModels,
-  routeLabel,
-} from "./route.ts";
-export type { Route, RouteId, RegistryModelLike } from "./route.ts";
-export { RouteAvailabilityTable, selectRoute, rankRoutes } from "./availability.ts";
-export type { RouteAvailability, CapObservation, RouteSelection } from "./availability.ts";
-export { attributeOutcome, summariseOutcomesByRoute } from "./outcomes.ts";
-export type { OutcomeAttribution, RouteOutcomeSummary } from "./outcomes.ts";
+export * from "./availability.ts";
+export * from "./outcomes.ts";
+export * from "./route.ts";
