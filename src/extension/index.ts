@@ -23,6 +23,7 @@ import { jevStatusMessage } from "./commands/jev-status.ts";
 import { purgeMessage, whyMessage } from "./commands/why.ts";
 import { runPlanIntake } from "./commands/plan.ts";
 import { openStore, resolveStorageRoot } from "../storage/index.ts";
+import { registerSessionHooks } from "./session-hooks.ts";
 
 const SUBCOMMANDS = ["version", "models", "status", "config", "disclosure", "jev", "why", "purge", "plan"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
@@ -35,6 +36,11 @@ export default function korwfExtension(pi: ExtensionAPI): void {
   // In-memory until the SQLite store (#23) persists ModelAvailability rows.
   // Cap detection (#62) writes into this table; listings read from it.
   const availability = new RouteAvailabilityTable();
+
+  // Session resume/reload/fork/tree reconciliation (#42). Registered before
+  // any command so a rewound conversation is reconciled against live
+  // repository state before it can ask for anything.
+  registerSessionHooks(pi);
 
   pi.registerCommand("korwf", {
     description: `KorWF workflow commands: /korwf <${SUBCOMMANDS.join("|")}>`,
