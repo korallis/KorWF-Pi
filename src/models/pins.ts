@@ -58,5 +58,22 @@ export function applyPin(
   allowlist: ModelAllowlist,
   checkBudget?: (ref: ModelRef) => boolean,
 ): PinResolution {
-  return { kind: "no_pin" };
+  if (pinRef === null) return { kind: "no_pin" };
+
+  const eligible = new Set(candidates.map((c) => c.ref));
+  const candidate = candidates.find((c) => c.ref === pinRef);
+
+  // Not in the code-computed eligible set (e.g. capped route, or never in
+  // the catalog at all): ask, never silently substitute.
+  if (candidate === undefined) {
+    return { kind: "needs_ask", ref: pinRef, reason: "capped", check: null };
+  }
+
+  // Still policy: allowlist/budget are never widened by a pin.
+  const check = enforcePolicy(pinRef, eligible, allowlist, checkBudget);
+  if (!check.ok) {
+    return { kind: "needs_ask", ref: pinRef, reason: "policy_rejected", check };
+  }
+
+  return { kind: "pinned", ref: pinRef, candidate };
 }
