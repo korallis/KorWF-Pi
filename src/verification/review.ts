@@ -475,3 +475,191 @@ export const DEFAULT_REVIEW_POLICY: ReviewPolicy = Object.freeze({
     Object.freeze({ id: "medium_risk_any", changeClasses: [], paths: [], minRiskClass: "medium" }),
   ]) as readonly ReviewPolicyRule[],
 });
+
+// ---------------------------------------------------------------------------
+// The review record
+// ---------------------------------------------------------------------------
+
+/** Which model produced a review, and which family it belongs to. */
+export interface ReviewerIdentity {
+  /** `provider/model` reference exactly as the allowlist spells it. */
+  readonly model: string;
+  /**
+   * Model family, as declared by the model card — never parsed out of an id
+   * here, because `src/models/` owns that mapping and two providers may
+   * expose the same family under different ids (#125).
+   */
+  readonly family: string;
+  /** Attempt the review ran in; must differ from the authoring attempt. */
+  readonly attemptId: string;
+}
+
+/** A completed review at one revision. */
+export interface ReviewRecord {
+  readonly id: string;
+  readonly taskId: string;
+  readonly taskRevision: Revision;
+  /** Exact revision reviewed. A recheck must be at a strictly newer one. */
+  readonly revision: GitSha;
+  readonly reviewer: ReviewerIdentity;
+  /** Hash of the prompt actually sent; proves what the reviewer saw. */
+  readonly promptHash: string;
+  readonly findings: readonly ReviewFinding[];
+  /** `id` of the earlier review this one rechecks, or `null`. */
+  readonly rechecksReviewId: string | null;
+}
+
+/**
+ * Did this review come from a different model family than the author's?
+ *
+ * `.pi/skills/jev-orchestration/SKILL.md` §4: the fabricated transcript was
+ * caught by "an independent audit by a different model". A same-family
+ * reviewer shares the author's blind spots, so this is *preferred* — it is
+ * reported as a caveat on the evidence rather than a hard refusal, because a
+ * single-family configuration must still be able to review at all.
+ */
+export function isDifferentFamily(reviewer: ReviewerIdentity, authorFamily: string | null): boolean {
+  if (authorFamily === null) return true;
+  return reviewer.family !== authorFamily;
+}
+
+/** Caveats recorded on the review evidence row. Facts, not opinions. */
+export function reviewCaveats(review: ReviewRecord, authorFamily: string | null): readonly string[] {
+  const caveats: string[] = [];
+  if (!isDifferentFamily(review.reviewer, authorFamily)) {
+    caveats.push(
+      `reviewer family ${review.reviewer.family} matches the author's; ` +
+        "an independent review is preferred from a different model family (PLAN §3.F)",
+    );
+  }
+  const blocking = blockingFindings(review.findings);
+  if (blocking.length > 0) {
+    caveats.push(`${blocking.length} unresolved blocking finding(s): ${blocking.map((f) => f.id).join(", ")}`);
+  }
+  return caveats;
+}
+
+// ---------------------------------------------------------------------------
+// Recheck at a newer revision
+// ---------------------------------------------------------------------------
+
+/** Why a recheck did or did not clear the blockers. Closed set. */
+export type RecheckReason =
+  | "cleared"
+  | "not_a_recheck"
+  | "same_revision"
+  | "older_revision"
+  | "still_blocking"
+  | "no_blockers";
+
+export interface RecheckOutcome {
+  readonly cleared: boolean;
+  readonly reason: RecheckReason;
+  /** Finding ids still blocking after the recheck. */
+  readonly stillBlocking: readonly string[];
+}
+
+/**
+ * Does `recheck` clear the blocking findings of `original`?
+ *
+ * The revision comparison is the whole point of the function. A recheck at
+ * the **same** revision is a second opinion on identical bytes; PLAN §2.4's
+ * "at the exact revision" rule means only a *newer* revision can represent a
+ * fix. Revisions are compared by the caller-supplied ordering, since a SHA
+ * has none of its own: `isNewer(a, b)` must answer "is `a` a descendant of
+ * `b`?", which only `src/git/` can know.
+ */
+export function recheckOutcome(
+  original: ReviewRecord,
+  recheck: ReviewRecord,
+  isNewer: (candidate: GitSha, base: GitSha) => boolean,
+): RecheckOutcome {
+  const blockers = blockingFindings(original.findings);
+  if (blockers.length === 0) return { cleared: true, reason: "no_blockers", stillBlocking: [] };
+  if (recheck.rechecksReviewId !== original.id) {
+    return { cleared: false, reason: "not_a_recheck", stillBlocking: blockers.map((f) => f.id) };
+  }
+  if (recheck.revision === original.revision) {
+    return { cleared: false, reason: "same_revision", stillBlocking: blockers.map((f) => f.id) };
+  }
+  if (!isNewer(recheck.revision, original.revision)) {
+    return { cleared: false, reason: "older_revision", stillBlocking: blockers.map((f) => f.id) };
+  }
+  const stillBlocking = blockingFindings(recheck.findings).map((f) => f.id);
+  if (stillBlocking.length > 0) return { cleared: false, reason: "still_blocking", stillBlocking };
+  return { cleared: true, reason: "cleared", stillBlocking: [] };
+}
+
+// ---------------------------------------------------------------------------
+// The one predicate the task gate reads
+// ---------------------------------------------------------------------------
+
+/** Why review evidence does not satisfy condition 3. Closed set. */
+export type ReviewGateReason =
+  | "review_missing"
+  | "review_stale_revision"
+  | "review_not_independent"
+  | "blocking_finding_unresolved";
+
+export interface ReviewGateVerdict {
+  readonly satisfied: boolean;
+  readonly reasons: readonly ReviewGateReason[];
+  /** Ids of findings still blocking; empty when satisfied. */
+  readonly blocking: readonly string[];
+}
+
+/**
+ * Condition-3 view of the reviews for one task.
+ *
+ * A **review is evidence, not authority**: this returns a verdict the gate
+ * reads alongside its own checks. It cannot set `done`, it never returns a
+ * `Task`, and a `satisfied: true` here means only "review does not refuse",
+ * which the gate then conjoins with C0–C2.
+ *
+ * The chain is evaluated newest-first over rechecks, so a blocker raised at
+ * revision A and cleared by a recheck at revision B is resolved, while the
+ * same blocker "fixed" at revision A is not.
+ */
+export function reviewGateVerdict(args: {
+  readonly required: boolean;
+  readonly revision: GitSha;
+  readonly taskRevision: Revision;
+  readonly reviews: readonly ReviewRecord[];
+  readonly authorAttemptId: string | null;
+  readonly isNewer: (candidate: GitSha, base: GitSha) => boolean;
+}): ReviewGateVerdict {
+  if (!args.required) return { satisfied: true, reasons: [], blocking: [] };
+
+  const atRevision = args.reviews.filter(
+    (r) => r.revision === args.revision && r.taskRevision === args.taskRevision,
+  );
+  if (atRevision.length === 0) {
+    const reason: ReviewGateReason = args.reviews.length === 0 ? "review_missing" : "review_stale_revision";
+    return { satisfied: false, reasons: [reason], blocking: [] };
+  }
+
+  const independent = atRevision.filter(
+    (r) => args.authorAttemptId === null || r.reviewer.attemptId !== args.authorAttemptId,
+  );
+  if (independent.length === 0) {
+    return { satisfied: false, reasons: ["review_not_independent"], blocking: [] };
+  }
+
+  // Blockers from *any* review in the chain must be cleared, including ones
+  // raised at an earlier revision: a fix that moved the revision forward is
+  // only a fix if a recheck said so.
+  const blocking = new Set<string>();
+  for (const earlier of args.reviews) {
+    const open = blockingFindings(earlier.findings);
+    if (open.length === 0) continue;
+    const rechecks = args.reviews.filter((r) => r.rechecksReviewId === earlier.id);
+    const anyCleared = rechecks.some((r) => recheckOutcome(earlier, r, args.isNewer).cleared);
+    if (!anyCleared) for (const f of open) blocking.add(f.id);
+  }
+  for (const review of independent) for (const f of blockingFindings(review.findings)) blocking.add(f.id);
+
+  if (blocking.size > 0) {
+    return { satisfied: false, reasons: ["blocking_finding_unresolved"], blocking: [...blocking].sort() };
+  }
+  return { satisfied: true, reasons: [], blocking: [] };
+}
