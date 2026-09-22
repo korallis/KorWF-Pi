@@ -38,6 +38,7 @@ import { canonicalJson } from "../storage/repos/base.ts";
 import {
   NO_CHECKS_BLOCKER,
   OUTPUT_BUDGET_BLOCKER,
+  WEAK_CHECK_BLOCKER,
   SUPERSEDED_BLOCKER,
   taskReadiness,
   type PlanDocument,
@@ -69,6 +70,8 @@ export interface PersistPlanResult {
   readonly blockedForNoChecks: readonly TaskId[];
   /** Task ids persisted `proposed` with the `output_budget` blocker (#124). */
   readonly blockedForOutputBudget: readonly TaskId[];
+  /** Task ids persisted `proposed` with the `weak_check` blocker (#44). */
+  readonly blockedForWeakChecks: readonly TaskId[];
   /** Tasks present in the previous revision and absent from this one. */
   readonly supersededTasks: readonly TaskId[];
   /** Tasks whose revision was bumped because their definition of done changed. */
@@ -336,6 +339,7 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
   const tasks: Task[] = [];
   const blockedForNoChecks: TaskId[] = [];
   const blockedForOutputBudget: TaskId[] = [];
+  const blockedForWeakChecks: TaskId[] = [];
   const revisedTasks: TaskId[] = [];
 
   for (const planTask of plan.tasks) {
@@ -358,6 +362,7 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
       tasks.push(record);
       if (record.blocker === NO_CHECKS_BLOCKER) blockedForNoChecks.push(record.id);
       if (record.blocker === OUTPUT_BUDGET_BLOCKER) blockedForOutputBudget.push(record.id);
+      if (record.blocker === WEAK_CHECK_BLOCKER) blockedForWeakChecks.push(record.id);
       continue;
     }
 
@@ -384,6 +389,7 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
     if (changed) revisedTasks.push(record.id);
     if (record.blocker === NO_CHECKS_BLOCKER) blockedForNoChecks.push(record.id);
     if (record.blocker === OUTPUT_BUDGET_BLOCKER) blockedForOutputBudget.push(record.id);
+    if (record.blocker === WEAK_CHECK_BLOCKER) blockedForWeakChecks.push(record.id);
   }
 
   // Dependency-graph validation on the *persisted* records (#40; PLAN §3.C).
@@ -417,6 +423,7 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
     tasks,
     blockedForNoChecks,
     blockedForOutputBudget,
+    blockedForWeakChecks,
     supersededTasks,
     revisedTasks,
     invalidatedApprovals,
@@ -573,6 +580,13 @@ export function summarisePersistedPlan(result: PersistPlanResult): string {
     lines.push(
       `  ${result.blockedForNoChecks.length} task(s) have no verification checks and stay "proposed" with ` +
         `blocker "${NO_CHECKS_BLOCKER}" until checks are added (PLAN \u00a72.3): ${result.blockedForNoChecks.join(", ")}`,
+    );
+  }
+  if (result.blockedForWeakChecks.length > 0) {
+    lines.push(
+      `  ${result.blockedForWeakChecks.length} task(s) register only checks that cannot fail and stay "proposed" ` +
+        `with blocker "${WEAK_CHECK_BLOCKER}" until a real check is added (PLAN §2.3, §7): ` +
+        `${result.blockedForWeakChecks.join(", ")}`,
     );
   }
   if (result.blockedForOutputBudget.length > 0) {
