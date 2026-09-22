@@ -858,7 +858,8 @@ function commitPhaseEdge(args: CommitPhaseArgs): TransitionResult<Phase> {
     });
   }
 
-  const updated = store.phases.update(phase.id, { gateStatus: phaseGateStatusFor(request, edge) });
+  const unresolved = store.blockers.unresolvedForSubject("phase", phase.id).map((b) => b.kind);
+  const updated = store.phases.update(phase.id, { gateStatus: phaseGateStatusFor(request, edge, unresolved) });
   const event = appendEvent(
     store,
     { ...base, afterHash: hashRecord(updated), disposition: "accepted", reasonCode: null, failedGuards: [] },
@@ -877,10 +878,16 @@ function commitPhaseEdge(args: CommitPhaseArgs): TransitionResult<Phase> {
  * `phase-stale-evidence` returns the substage to `verifying` rather than
  * leaving it where it was.
  */
-function phaseGateStatusFor(request: PhaseTransitionRequest, edge: Transition<PhaseState>): PhaseGateStatus {
+function phaseGateStatusFor(
+  request: PhaseTransitionRequest,
+  edge: Transition<PhaseState>,
+  unresolvedBlockerKinds: readonly string[],
+): PhaseGateStatus {
   if (edge.id === "phase-stale-evidence") return "verifying";
   if (request.to === "paused") {
-    const capLike = edge.trigger === "all_candidates_capped" || CAP_BLOCKER_KINDS.includes(request.blocker?.kind ?? "");
+    const capLike =
+      edge.trigger === "all_candidates_capped" ||
+      unresolvedBlockerKinds.some((kind) => CAP_BLOCKER_KINDS.includes(kind));
     return capLike ? "paused_cap" : "paused_approval";
   }
   return phaseStorageStatus(request.to);
