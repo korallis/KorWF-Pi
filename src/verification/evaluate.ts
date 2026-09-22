@@ -233,6 +233,73 @@ export interface EvidenceGapEvaluation {
   readonly thresholds: EvaluatorThresholds;
 }
 
+// ---------------------------------------------------------------------------
+// The deterministic mapping rule — the whole of condition 2 with no Jev key
+// ---------------------------------------------------------------------------
+
+/** Checks that claim to cover this criterion. */
+export function checksFor(input: EvidenceGapInput, criterionId: string): readonly LinkedCheck[] {
+  return input.checks.filter((c) => c.coversCriteria.includes(criterionId));
+}
+
+/** Tests linked to this criterion. */
+export function testsFor(input: EvidenceGapInput, criterionId: string): readonly LinkedTest[] {
+  return input.tests.filter((t) => t.coversCriteria.includes(criterionId));
+}
+
+/** Evidence items attributed to this criterion. */
+export function evidenceFor(
+  input: EvidenceGapInput,
+  criterionId: string,
+): readonly (EvidenceSummary & { readonly requirementId: string })[] {
+  return input.evidence.filter((e) => e.requirementId === criterionId);
+}
+
+/** The `EvidenceGapState` for one criterion. One place builds it, so the
+ *  question and the fallback always see the same facts. */
+export function gapStateFor(input: EvidenceGapInput, criterion: CriterionRef): EvidenceGapState {
+  return {
+    criterionId: criterion.id,
+    criterionText: criterion.text,
+    linkedChecks: checksFor(input, criterion.id).map((c) => ({
+      checkId: c.checkId,
+      command: c.command,
+      state: c.state,
+    })),
+    evidence: evidenceFor(input, criterion.id).map((e) => ({
+      checkId: e.checkId,
+      command: e.command,
+      state: e.state,
+      paths: e.paths,
+      excerpt: e.excerpt,
+    })),
+  };
+}
+
+/**
+ * The mapping rule, per criterion. This is what "meaningful with Jev
+ * disabled" means concretely (issue #47 Scope: "each criterion must have ≥1
+ * linked passing check"; and a passing evidence item, because a check
+ * definition is a promise and an evidence row is an observation).
+ *
+ * It is deliberately the *same predicate* the question's fallback uses
+ * (`evidenceGapFallback`), called on the *same state*, so disabled mode and
+ * an abstaining Jev cannot disagree about structure.
+ */
+export function mappingReasons(input: EvidenceGapInput, criterion: CriterionRef): readonly GapReason[] {
+  const out: GapReason[] = [];
+  const linked = checksFor(input, criterion.id);
+  if (linked.length === 0) out.push("no_linked_check");
+  else if (!linked.some((c) => c.state === "pass")) out.push("no_passing_check");
+  if (!evidenceFor(input, criterion.id).some((e) => e.state === "pass")) out.push("no_passing_evidence");
+  return out;
+}
+
+/** `true` when the criterion satisfies the mapping rule outright. */
+export function isMapped(input: EvidenceGapInput, criterion: CriterionRef): boolean {
+  return mappingReasons(input, criterion).length === 0;
+}
+
 export { TEST_EXERCISES_MIN_LEVEL };
 export type { ClaimVerdict, CriterionRef, EvidenceGapState, EvidenceSummary, RiskClass };
 export { ask, claimSupportedQuestion, evidenceGapFallback, evidenceGapQuestion, testExercisesQuestion };
