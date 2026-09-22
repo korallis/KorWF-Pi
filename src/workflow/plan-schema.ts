@@ -464,3 +464,129 @@ function validateArtifacts(bag: IssueBag, raw: unknown, path: string): PlanArtif
   });
   return out;
 }
+
+function validateTasks(bag: IssueBag, raw: unknown, phaseIds: ReadonlySet<string>): PlanTask[] {
+  const items = requireArray(bag, raw, "tasks");
+  if (items === null) return [];
+  if (items.length === 0) {
+    bag.error("range", "tasks", `a plan must contain at least one task`);
+    return [];
+  }
+  const seen = new Set<string>();
+  const out: PlanTask[] = [];
+  items.forEach((item, i) => {
+    const at = `tasks[${i}]`;
+    if (!isRecord(item)) {
+      bag.error("type", at, `expected object, got ${typeName(item)}`);
+      return;
+    }
+    const id = requireString(bag, item["id"], `${at}.id`);
+    const phaseId = requireString(bag, item["phaseId"], `${at}.phaseId`);
+    const goal = requireString(bag, item["goal"], `${at}.goal`);
+    const criteria = validateCriteria(bag, item["acceptanceCriteria"], `${at}.acceptanceCriteria`);
+    const criterionIds = new Set(criteria.map((c) => c.id));
+    const checks = validateChecks(bag, item["checks"], `${at}.checks`, criterionIds);
+    const riskRaw = item["riskClass"];
+    if (typeof riskRaw !== "string" || !(PLAN_RISK_CLASSES as readonly string[]).includes(riskRaw)) {
+      bag.error("enum", `${at}.riskClass`, `expected one of ${PLAN_RISK_CLASSES.join(", ")}, got ${JSON.stringify(riskRaw)}`);
+      return;
+    }
+    const ownershipRaw = item["ownership"];
+    const ownership = validateOwnership(bag, ownershipRaw, `${at}.ownership`);
+    const depsRaw = item["dependencies"];
+    const deps = depsRaw === undefined ? [] : requireArray(bag, depsRaw, `${at}.dependencies`);
+    const artifacts = validateArtifacts(bag, item["expectedArtifacts"], `${at}.expectedArtifacts`);
+    if (id === null || phaseId === null || goal === null || ownership === null || deps === null) return;
+    if (seen.has(id)) {
+      bag.error("duplicate_id", `${at}.id`, `duplicate task id "${id}"`);
+      return;
+    }
+    seen.add(id);
+    if (!phaseIds.has(phaseId)) {
+      bag.error("unknown_reference", `${at}.phaseId`, `no phase with id "${phaseId}" in this plan`);
+      return;
+    }
+
+    const dependencies: string[] = [];
+    deps.forEach((d, j) => {
+      if (typeof d !== "string") {
+        bag.error("type", `${at}.dependencies[${j}]`, `expected string, got ${typeName(d)}`);
+        return;
+      }
+      if (d === id) {
+        bag.error("self_dependency", `${at}.dependencies[${j}]`, `task "${id}" depends on itself`);
+        return;
+      }
+      dependencies.push(d);
+    });
+
+    // PLAN §2.3, enforced here rather than in the prompt. The plan is still
+    // accepted; `taskReadiness` reports the blocker and plan-store.ts persists
+    // the task as `proposed` with `no_checks`.
+    if (checks.length === 0) {
+      bag.warn(
+        "no_checks",
+        `${at}.checks`,
+        `task "${id}" has no verification checks; it will be persisted as proposed with blocker ` +
+          `"${NO_CHECKS_BLOCKER}" and can never become ready (PLAN §2.3)`,
+      );
+    } else {
+      const covered = new Set(checks.flatMap((c) => c.coversCriteria));
+      for (const criterion of criteria) {
+        if (!covered.has(criterion.id)) {
+          bag.warn(
+            "criterion_coverage",
+            `${at}.acceptanceCriteria`,
+            `acceptance criterion "${criterion.id}" on task "${id}" is not covered by any check`,
+          );
+        }
+      }
+    }
+
+    out.push({
+      id,
+      phaseId,
+      goal,
+      acceptanceCriteria: criteria,
+      checks,
+      ownership,
+      dependencies,
+      riskClass: riskRaw as RiskClass,
+      ...(artifacts === undefined ? {} : { expectedArtifacts: artifacts }),
+    });
+  });
+  return out;
+}
+
+function validateOwnership(bag: IssueBag, raw: unknown, path: string): PlanTask["ownership"] | null {
+  if (raw === undefined) {
+    bag.error("required", path, `missing required object with paths[] and components[]`);
+    return null;
+  }
+  if (!isRecord(raw)) {
+    bag.error("type", path, `expected object, got ${typeName(raw)}`);
+    return null;
+  }
+  const paths = requireArray(bag, raw["paths"], `${path}.paths`);
+  const componentsRaw = raw["components"];
+  const components = componentsRaw === undefined ? [] : requireArray(bag, componentsRaw, `${path}.components`);
+  if (paths === null || components === null) return null;
+  const outPaths: string[] = [];
+  paths.forEach((p, i) => {
+    if (typeof p !== "string") {
+      bag.error("type", `${path}.paths[${i}]`, `expected string, got ${typeName(p)}`);
+      return;
+    }
+    checkRelativePath(bag, p, `${path}.paths[${i}]`);
+    outPaths.push(p);
+  });
+  const outComponents: string[] = [];
+  components.forEach((c, i) => {
+    if (typeof c !== "string") {
+      bag.error("type", `${path}.components[${i}]`, `expected string, got ${typeName(c)}`);
+      return;
+    }
+    outComponents.push(c);
+  });
+  return { paths: outPaths, components: outComponents };
+}
