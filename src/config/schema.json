@@ -54,6 +54,10 @@
     "recovery": {
       "$ref": "#/$defs/Recovery",
       "default": {}
+    },
+    "verification": {
+      "$ref": "#/$defs/Verification",
+      "default": {}
     }
   },
   "$defs": {
@@ -1454,6 +1458,118 @@
           ],
           "default": "ask_user",
           "description": "Response once the ladder is exhausted. Both options are terminal; unattended runs that must not queue a question set `stop`."
+        }
+      }
+    },
+    "Verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Evidence-gap evaluators (PLAN §2.4 (2), §3.F; issue #47). Condition 2 of the task gate. Defaults are conservative and an override may only make a threshold stricter — a config that tries to lower a floor is ignored on that field, so a bad value can never open the gate. With Jev disabled the mapping rule still applies: every acceptance criterion needs at least one linked passing check and one passing evidence item.",
+      "properties": {
+        "thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "Per-risk-class threshold overrides. Omitted classes use the shipped defaults in `src/verification/evaluate.ts`.",
+          "properties": {
+            "low": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Thresholds for one risk class. Every value is a floor or a ceiling; `src/verification/evaluate.ts` may only tighten them, never loosen them.",
+              "properties": {
+                "claimConfidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Minimum confidence for a `supported` completion-claim answer to count. Below it the answer is an abstention, and an abstention is a gap."
+                },
+                "gapCeiling": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Highest probability-of-gap that still counts as `no gap`. A noul near the middle is not evidence of absence."
+                },
+                "testExercisesMinLevel": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3,
+                  "description": "Lowest `verify.test_exercises@1` level that credits a test as exercising the criterion."
+                },
+                "requireExercisingTest": {
+                  "type": "boolean",
+                  "description": "Whether a criterion whose linked tests are all below the level floor is a gap on its own."
+                }
+              }
+            },
+            "medium": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Thresholds for one risk class. Every value is a floor or a ceiling; `src/verification/evaluate.ts` may only tighten them, never loosen them.",
+              "properties": {
+                "claimConfidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Minimum confidence for a `supported` completion-claim answer to count. Below it the answer is an abstention, and an abstention is a gap."
+                },
+                "gapCeiling": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Highest probability-of-gap that still counts as `no gap`. A noul near the middle is not evidence of absence."
+                },
+                "testExercisesMinLevel": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3,
+                  "description": "Lowest `verify.test_exercises@1` level that credits a test as exercising the criterion."
+                },
+                "requireExercisingTest": {
+                  "type": "boolean",
+                  "description": "Whether a criterion whose linked tests are all below the level floor is a gap on its own."
+                }
+              }
+            },
+            "high": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Thresholds for one risk class. Every value is a floor or a ceiling; `src/verification/evaluate.ts` may only tighten them, never loosen them.",
+              "properties": {
+                "claimConfidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Minimum confidence for a `supported` completion-claim answer to count. Below it the answer is an abstention, and an abstention is a gap."
+                },
+                "gapCeiling": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Highest probability-of-gap that still counts as `no gap`. A noul near the middle is not evidence of absence."
+                },
+                "testExercisesMinLevel": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3,
+                  "description": "Lowest `verify.test_exercises@1` level that credits a test as exercising the criterion."
+                },
+                "requireExercisingTest": {
+                  "type": "boolean",
+                  "description": "Whether a criterion whose linked tests are all below the level floor is a gap on its own."
+                }
+              }
+            }
+          }
+        },
+        "maxExcerptBytes": {
+          "type": "integer",
+          "minimum": 200,
+          "maximum": 20000,
+          "default": 2000,
+          "description": "Largest test-file or evidence excerpt put into a question state. `privacy.outbound` caps again afterwards; this is the evaluator's own ceiling so the full diff is never the input."
         }
       }
     }

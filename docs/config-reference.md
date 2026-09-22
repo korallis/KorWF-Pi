@@ -36,6 +36,7 @@ Table columns: **Key** · **Type** · **Default** · **Why the default is safe**
 9. [`notifications`](#9-notifications)
 10. [`storage`](#10-storage)
 10a. [`recovery`](#10a-recovery)
+10b. [`verification`](#10b-verification)
 11. [Validation rules beyond types](#11-validation-rules-beyond-types)
 12. [Worked examples](#12-worked-examples)
 13. [Loading, layered merge, and environment overrides](#13-loading-layered-merge-and-environment-overrides)
@@ -58,6 +59,7 @@ Table columns: **Key** · **Type** · **Default** · **Why the default is safe**
 | `notifications` | object | `{}` | See §9. |
 | `storage` | object | `{}` | See §10. |
 | `recovery` | object | `{}` | See §10a. |
+| `verification` | object | `{}` | See §10b. |
 
 ## 2. `models`
 
@@ -309,6 +311,32 @@ retry loop.
 | `requireReconciliationBeforeRetry` | `const true` | `true` | A step that may have had side effects is never retried until its outcome is reconciled (PLAN §3.G). *Fixed* — a switch here would be a supported way to cause a double effect. |
 | `unreconcilableSideEffect` | `ask_user \| stop` | `"ask_user"` | When a side-effecting step has no reconciliation probe, or the probe itself failed, the outcome is unknown. Both options are terminal; `retry` is not an option at all. |
 | `finalResponse` | `ask_user \| stop` | `"ask_user"` | What the exhausted ladder returns. Unattended runs that must not queue a question set `stop`. |
+
+## 10b. `verification`
+
+Condition 2 of the task gate (PLAN §2.4 (2), §3.F; issue #47): the completion-claim,
+evidence-gap and test-exercises-requirement evaluators in
+`src/verification/evaluate.ts`, backed by the versioned questions in
+`src/decisions/questions/verify.ts`.
+
+Three properties hold whatever is configured here, and none of them is a key:
+
+- **Nothing here waives a deterministic check.** Conditions 1 and 3 of the gate are
+  computed from `Evidence`, `Approval` and `CheckDefinition` rows and read no `Decision`
+  at all, so no value in this section can reach them.
+- **An override may only tighten a threshold.** A config that tries to lower a floor is
+  ignored on that field; the shipped default stands. A bad value can never open the gate.
+- **With Jev disabled the mapping rule still applies.** Every acceptance criterion needs
+  at least one *linked passing check* and at least one *passing evidence item* attributed
+  to it. The semantic dimensions then report `not_evaluated` — visible, never a silent pass.
+
+| Key | Type | Default | Why the default is safe |
+|---|---|---|---|
+| `thresholds.<low\|medium\|high>.claimConfidence` | number 0–1 | `0.6` / `0.7` / `0.8` | Minimum confidence for a `supported` completion-claim answer. Below it the answer is an abstention, and an abstention is a gap. Higher risk demands more confidence. |
+| `thresholds.<class>.gapCeiling` | number 0–1 | `0.35` / `0.25` / `0.15` | Highest probability-of-gap that still counts as "no gap". Expressed as a ceiling on the *gap* side on purpose: a noul near the middle is not evidence of absence. |
+| `thresholds.<class>.testExercisesMinLevel` | integer 0–3 | `2` / `2` / `3` | Lowest `verify.test_exercises@1` level that credits a test as exercising its criterion. Level 0 is "would still pass if the criterion were unimplemented". |
+| `thresholds.<class>.requireExercisingTest` | boolean | `false` / `true` / `true` | Whether a criterion whose linked tests are all below the level floor is a gap on its own. Off for `low` so a task with no tests at all is judged by the mapping rule rather than blocked twice. |
+| `maxExcerptBytes` | integer 200–20000 | `2000` | Largest test-file or evidence excerpt put into a question state. The evaluator's own ceiling, so the full diff is never the input; `privacy.outbound` caps again afterwards. |
 
 ## 11. Validation rules beyond types
 
