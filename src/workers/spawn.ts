@@ -116,3 +116,143 @@ export function buildWorkerArgv(contract: WorkerContract): readonly string[] {
   argv.push("--name", `korwf-${contract.role}-${contract.workerId}`);
   return argv;
 }
+
+/**
+ * A running worker. Owns the RPC framing, progress forwarding, usage
+ * accumulation and the three-tier cancellation ladder.
+ */
+export class WorkerHandle {
+  readonly contract: WorkerContract;
+  readonly proc: ChildProcess;
+  readonly env: Readonly<Record<string, string>>;
+  readonly argv: readonly string[];
+  readonly usage: WorkerUsage = { inputTokens: 0, outputTokens: 0, requests: 0, spendUsd: 0 };
+  readonly messages: RpcMessage[] = [];
+  exit: WorkerExit | undefined;
+  /** Set when we asked for the exit, so it is not reported as a crash. */
+  private cancelled = false;
+  private buffer = "";
+  private nextId = 1;
+  private waiters: { match: (m: RpcMessage) => boolean; resolve: (m: RpcMessage) => void }[] = [];
+  private readonly ops: ProcessOps;
+  private readonly onMessage: ((m: RpcMessage) => void) | undefined;
+
+  constructor(params: {
+    contract: WorkerContract;
+    proc: ChildProcess;
+    env: Readonly<Record<string, string>>;
+    argv: readonly string[];
+    ops: ProcessOps;
+    onMessage?: (m: RpcMessage) => void;
+  }) {
+    this.contract = params.contract;
+    this.proc = params.proc;
+    this.env = params.env;
+    this.argv = params.argv;
+    this.ops = params.ops;
+    this.onMessage = params.onMessage;
+    this.proc.stdout?.setEncoding("utf8");
+    // LF-only framing: Pi's rpc.md states readline is non-compliant because it
+    // also splits on U+2028/U+2029, which may occur inside a JSON string.
+    this.proc.stdout?.on("data", (chunk: string) => this.onChunk(chunk));
+    this.proc.on("exit", (code, signal) => this.onExit(code, signal));
+  }
+
+  /** The worker's pid, or -1 if the process never started. */
+  get pid(): number {
+    return this.proc.pid ?? -1;
+  }
+
+  private onChunk(chunk: string): void {
+    this.buffer += chunk;
+    for (;;) {
+      const nl = this.buffer.indexOf("\n");
+      if (nl < 0) break;
+      const line = this.buffer.slice(0, nl);
+      this.buffer = this.buffer.slice(nl + 1);
+      if (line.trim() === "") continue;
+      let message: RpcMessage;
+      try {
+        message = JSON.parse(line) as RpcMessage;
+      } catch {
+        continue; // a non-JSON line is noise, never a protocol error we escalate
+      }
+      this.deliver(message);
+    }
+  }
+
+  private deliver(message: RpcMessage): void {
+    this.messages.push(message);
+    this.accumulateUsage(message);
+    this.onMessage?.(message);
+    const i = this.waiters.findIndex((w) => w.match(message));
+    if (i >= 0) this.waiters.splice(i, 1)[0]!.resolve(message);
+  }
+
+  private accumulateUsage(message: RpcMessage): void {
+    const data = message.data as { usage?: Record<string, unknown> } | undefined;
+    const usage = data?.usage;
+    if (usage === undefined) return;
+    const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+    this.usage.inputTokens += num(usage.inputTokens ?? usage.input_tokens);
+    this.usage.outputTokens += num(usage.outputTokens ?? usage.output_tokens);
+    this.usage.spendUsd += num(usage.costUsd ?? usage.cost);
+    this.usage.requests += 1;
+  }
+
+  private onExit(code: number | null, signal: NodeJS.Signals | null): void {
+    // Crash detection (ADR 0004): a non-zero code or a signal we did not ask
+    // for is a crash. Pending waiters resolve with a synthetic message so
+    // nothing hangs on a dead worker.
+    this.exit = { code, signal, crashed: !this.cancelled && (code !== 0 || signal !== null) };
+    for (const w of this.waiters.splice(0)) w.resolve({ type: "worker_exit", code, signal });
+  }
+
+  /** Wait for a matching message, the worker's exit, or the timeout. */
+  expect(match: (m: RpcMessage) => boolean, timeoutMs = 30_000): Promise<RpcMessage> {
+    if (this.exit !== undefined) {
+      return Promise.resolve({ type: "worker_exit", code: this.exit.code, signal: this.exit.signal });
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((w) => w.resolve !== wrapped);
+        reject(new Error("timed out waiting for worker RPC message"));
+      }, timeoutMs);
+      const wrapped = (m: RpcMessage): void => {
+        clearTimeout(timer);
+        resolve(m);
+      };
+      this.waiters.push({ match, resolve: wrapped });
+    });
+  }
+
+  /** Write one JSONL command to the worker's stdin. */
+  send(command: Record<string, unknown>): void {
+    this.proc.stdin?.write(`${JSON.stringify(command)}\n`);
+  }
+
+  /** Send a command and await its correlated response. */
+  call(command: Record<string, unknown>, timeoutMs?: number): Promise<RpcMessage> {
+    const id = (command.id as string | undefined) ?? `korwf-${this.nextId++}`;
+    const full = { ...command, id };
+    const pending = this.expect(
+      (m) => (m.type === "response" && m.id === id) || m.type === "worker_exit",
+      timeoutMs,
+    );
+    this.send(full);
+    return pending;
+  }
+
+  /**
+   * Hand the worker its task. The role contract and termination criteria go
+   * in the prompt body, not on the command line, so the task text never
+   * appears in `ps` (ADR 0004 "Invocation shape").
+   */
+  prompt(text: string = composePrompt(this.contract)): void {
+    this.send({ id: `korwf-prompt-${this.nextId++}`, type: "prompt", message: text });
+  }
+
+  waitForExit(timeoutMs: number): Promise<boolean> {
+    return waitUntil(() => this.exit !== undefined, timeoutMs);
+  }
+}
