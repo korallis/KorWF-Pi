@@ -158,3 +158,93 @@ export interface PlanDocument {
 export type PlanValidation =
   | { readonly ok: true; readonly plan: PlanDocument; readonly warnings: readonly PlanIssue[] }
   | { readonly ok: false; readonly errors: readonly PlanIssue[]; readonly warnings: readonly PlanIssue[] };
+
+// ---------------------------------------------------------------------------
+// Small structural helpers
+// ---------------------------------------------------------------------------
+
+/** Accumulates path-qualified findings so a caller sees every problem at once. */
+class IssueBag {
+  readonly errors: PlanIssue[] = [];
+  readonly warnings: PlanIssue[] = [];
+
+  error(rule: PlanRuleId, path: string, message: string): void {
+    this.errors.push({ rule, path, message, severity: "error" });
+  }
+
+  warn(rule: PlanRuleId, path: string, message: string): void {
+    this.warnings.push({ rule, path, message, severity: "warning" });
+  }
+
+  get ok(): boolean {
+    return this.errors.length === 0;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function typeName(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/** Require a non-empty trimmed string at `path`. Returns `null` when invalid. */
+function requireString(bag: IssueBag, value: unknown, path: string, opts: { allowEmpty?: boolean } = {}): string | null {
+  if (value === undefined) {
+    bag.error("required", path, `missing required string`);
+    return null;
+  }
+  if (typeof value !== "string") {
+    bag.error("type", path, `expected string, got ${typeName(value)}`);
+    return null;
+  }
+  if (opts.allowEmpty !== true && value.trim().length === 0) {
+    bag.error("range", path, `must not be empty or whitespace only`);
+    return null;
+  }
+  return value;
+}
+
+/** Require an array at `path`. Returns `null` when invalid. */
+function requireArray(bag: IssueBag, value: unknown, path: string): readonly unknown[] | null {
+  if (value === undefined) {
+    bag.error("required", path, `missing required array`);
+    return null;
+  }
+  if (!Array.isArray(value)) {
+    bag.error("type", path, `expected array, got ${typeName(value)}`);
+    return null;
+  }
+  return value;
+}
+
+function requireInteger(bag: IssueBag, value: unknown, path: string): number | null {
+  if (value === undefined) {
+    bag.error("required", path, `missing required integer`);
+    return null;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    bag.error("type", path, `expected integer, got ${typeName(value)}`);
+    return null;
+  }
+  return value;
+}
+
+/**
+ * Repository-relative path check (PLAN §7: nothing machine-specific is ever
+ * persisted). Absolute paths and `..` traversal are structural refusals, not
+ * warnings: a plan that owns `/etc` or `../../secrets` is not a plan.
+ */
+function checkRelativePath(bag: IssueBag, value: string, path: string): void {
+  if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\")) {
+    bag.error("path_shape", path, `must be repository-relative, got an absolute path "${value}"`);
+    return;
+  }
+  const segments = value.split(/[\\/]+/);
+  if (segments.includes("..")) {
+    bag.error("path_shape", path, `must not traverse outside the repository ("..") : "${value}"`);
+  }
+}
