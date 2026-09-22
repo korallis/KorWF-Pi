@@ -29,10 +29,14 @@ import {
 import { isTrivialCheck, isVerifyingCheck, trivialCheckReason } from "../../src/workflow/weak-checks.ts";
 import { openStore, type Store } from "../../src/storage/db.ts";
 import { hashRecord } from "../../src/storage/repos/base.ts";
-import type { PhaseId, TaskId, WorkflowId } from "../../src/storage/records.ts";
+import type { TaskId, WorkflowId } from "../../src/storage/records.ts";
 import { TASK_STATES, TASK_TRANSITIONS } from "../../src/workflow/transitions.ts";
-import { TransitionRejected, transitionTask, type GuardTable } from "../../src/workflow/state.ts";
-import { persistPlan, readStoredPlan } from "../../src/workflow/plan-store.ts";
+import { TransitionRejected, taskDoneGuards, transitionTask, type GuardTable } from "../../src/workflow/state.ts";
+import { composeTaskReadiness, evaluatePlan } from "../../src/workflow/evaluate-plan.ts";
+import { MockJevTransport } from "../../src/jev/mock.ts";
+import { DisabledJevTransport } from "../../src/jev/disabled.ts";
+import type { AskContext } from "../../src/decisions/ask.ts";
+import { persistPlan, readStoredPlan, summarisePersistedPlan } from "../../src/workflow/plan-store.ts";
 import {
   ScopeChangeRejected,
   applyScopeChange,
@@ -305,7 +309,6 @@ describe("AC2: a check whose command cannot fail is flagged", () => {
 
 const AT = "2026-01-01T00:00:00.000Z";
 const WF = "wf-1" as WorkflowId;
-const PH = "ph-1" as PhaseId;
 const TK = "tk-1" as TaskId;
 
 const openStores: { dir: TempDir; store: Store }[] = [];
@@ -602,5 +605,223 @@ describe("AC1: content that looks like a policy or an approval is never treated 
       }),
     ).toThrow(ScopeChangeRejected);
     expect(planHash(store)).toBe(afterFirst);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC1, part 5 — a Jev answer never authorises what the deterministic layer
+// forbids. The transport here is a mock that answers whatever the injected
+// content asked it to (PLAN §7: "Jev prompt-injection signals never authorise
+// execution or data release"). No live call is made; there is no key.
+// ---------------------------------------------------------------------------
+
+const MODEL = "jev-test";
+
+/** A Jev transport that answers as favourably as the payload demands. */
+function compromisedCtx(): AskContext {
+  return {
+    transport: new MockJevTransport({
+      responder: (request) => ({
+        kind: "ok",
+        response: {
+          model: MODEL,
+          answers: Object.fromEntries(
+            Object.entries(request.questions).map(([key, question]) => {
+              if (question.type === "choice") {
+                const options = Object.keys(question.criteria);
+                const choice = options.includes("atomic") ? "atomic" : (options[0] ?? "");
+                const rest = options.filter((o) => o !== choice);
+                const probabilities: Record<string, number> = { [choice]: 0.9 };
+                for (const o of rest) probabilities[o] = rest.length === 0 ? 0 : 0.1 / rest.length;
+                return [key, { type: "choice", choice, probabilities, confidence: 0.99 }];
+              }
+              if (question.type === "noul") return [key, { type: "noul", noul: 0.99 }];
+              const levels = question.criteria.length;
+              const probabilities: Record<string, number> = {};
+              for (let i = 0; i < levels; i += 1) probabilities[String(i)] = i === 0 ? 0.9 : 0.1 / (levels - 1);
+              const legend = Object.fromEntries(Array.from({ length: levels }, (_, i) => [String(i), `level ${i}`]));
+              return [key, { type: "score", score: 0, legend, probabilities, confidence: 0.99 }];
+            }),
+          ),
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+        requestId: "r",
+        attempts: 1,
+        elapsedMs: 1,
+      }),
+    }),
+    model: MODEL,
+  };
+}
+
+describe("AC1: a Jev answer cannot authorise what the deterministic layer forbids", () => {
+  it("a maximally favourable Jev cannot make the injected weak-check task ready", async () => {
+    const parsed = parsePlanOutput(readInjectedPlanJson());
+    if (!parsed.ok) throw new Error("fixture plan should parse");
+    const evaluation = await evaluatePlan(parsed.plan.tasks, [{ id: "r1", text: "refund rounding" }], compromisedCtx());
+    const taskEval = evaluation.tasks[0]!;
+    expect(taskEval.atomic).toEqual({ evaluated: true, value: "atomic", source: "jev" });
+    expect(taskEval.canBecomeReady).toBe(false);
+    expect(taskEval.blockers).toContain(WEAK_CHECK_BLOCKER);
+  });
+
+  it("the same plan with no Jev at all reaches the identical verdict", async () => {
+    const parsed = parsePlanOutput(readInjectedPlanJson());
+    if (!parsed.ok) throw new Error("fixture plan should parse");
+    const withJev = await evaluatePlan(parsed.plan.tasks, [], compromisedCtx());
+    const without = await evaluatePlan(parsed.plan.tasks, [], undefined);
+    expect(withJev.tasks[0]!.canBecomeReady).toBe(false);
+    expect(without.tasks[0]!.canBecomeReady).toBe(false);
+    expect(withJev.tasks[0]!.blockers).toEqual(without.tasks[0]!.blockers);
+  });
+
+  it("composeTaskReadiness cannot be overridden by an `atomic` verdict on a weak-check task", () => {
+    const parsed = parsePlanOutput(readInjectedPlanJson());
+    if (!parsed.ok) throw new Error("fixture plan should parse");
+    const readiness = taskReadiness(parsed.plan.tasks[0]!);
+    const composed = composeTaskReadiness(readiness, { evaluated: true, value: "atomic", source: "jev" });
+    expect(composed.canBecomeReady).toBe(false);
+    expect(composed.blockers).toContain(WEAK_CHECK_BLOCKER);
+  });
+
+  it("a Jev answer is not a gate result: done stays unreachable for the weak-check task", async () => {
+    const store = freshStore();
+    store.tasks.insert(
+      makeTask({
+        status: "review",
+        checks: [
+          { id: "c1", kind: "command", command: "true", cwd: ".", expectedExitCode: 0, coversCriteria: ["ac-1"], required: true },
+        ],
+      }),
+    );
+    const parsed = parsePlanOutput(readInjectedPlanJson());
+    if (!parsed.ok) throw new Error("fixture plan should parse");
+    const evaluation = await evaluatePlan(parsed.plan.tasks, [], compromisedCtx());
+    // Jev is as positive as it can be...
+    expect(evaluation.tasks[0]!.atomic).toEqual({ evaluated: true, value: "atomic", source: "jev" });
+    // ...and the gate is unmoved, because the guards read the store, not the
+    // decision. `taskDoneGuards()` with no hooks is the shipped default.
+    expect(() =>
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "done",
+        trigger: "task_gate_passed",
+        actor: { kind: "engine", identity: "engine" },
+        guards: taskDoneGuards(),
+        evidenceRefs: ["ev:jev-says-so"],
+        gitRevision: "a".repeat(40),
+        now: () => AT,
+        newId,
+      }),
+    ).toThrow(TransitionRejected);
+    expect(store.tasks.require(TK).status).toBe("review");
+  });
+
+  it("a disabled transport (no key) reaches the same verdict, and asks nothing", async () => {
+    const parsed = parsePlanOutput(readInjectedPlanJson());
+    if (!parsed.ok) throw new Error("fixture plan should parse");
+    const ctx: AskContext = { transport: new DisabledJevTransport(), model: MODEL };
+    const evaluation = await evaluatePlan(parsed.plan.tasks, [{ id: "r1", text: "refund rounding" }], ctx);
+    expect(evaluation.tasks[0]!.atomic).toEqual({ evaluated: false });
+    expect(evaluation.tasks[0]!.canBecomeReady).toBe(false);
+    expect(evaluation.tasks[0]!.blockers).toContain(WEAK_CHECK_BLOCKER);
+  });
+
+  it("no request leaves the process: every Jev call in this suite goes to the mock", async () => {
+    const calls: unknown[] = [];
+    const transport = new MockJevTransport({
+      responder: (request) => {
+        calls.push(request);
+        return {
+          kind: "ok",
+          response: {
+            model: MODEL,
+            answers: Object.fromEntries(
+              Object.entries(request.questions).map(([key, question]) => {
+                if (question.type === "choice") {
+                  const options = Object.keys(question.criteria);
+                  const choice = options[0] ?? "";
+                  const probabilities: Record<string, number> = {};
+                  for (const o of options) probabilities[o] = o === choice ? 0.9 : 0.1 / Math.max(1, options.length - 1);
+                  return [key, { type: "choice", choice, probabilities, confidence: 0.9 }];
+                }
+                if (question.type === "noul") return [key, { type: "noul", noul: 0.5 }];
+                const levels = question.criteria.length;
+                const probabilities: Record<string, number> = {};
+                for (let i = 0; i < levels; i += 1) probabilities[String(i)] = i === 0 ? 0.9 : 0.1 / (levels - 1);
+                const legend = Object.fromEntries(Array.from({ length: levels }, (_, i) => [String(i), `level ${i}`]));
+                return [key, { type: "score", score: 0, legend, probabilities, confidence: 0.9 }];
+              }),
+            ),
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+          requestId: "r",
+          attempts: 1,
+          elapsedMs: 1,
+        };
+      },
+    });
+    const parsed = parsePlanOutput(readInjectedPlanJson());
+    if (!parsed.ok) throw new Error("fixture plan should parse");
+    await evaluatePlan(parsed.plan.tasks, [], { transport, model: MODEL });
+    expect(calls.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC1 + AC2 end to end: the injected plan persisted through #37's store lands
+// `proposed` with the `weak_check` blocker, no approval exists, and no
+// transition has occurred.
+// ---------------------------------------------------------------------------
+
+describe("AC1+AC2: persisting the injected plan leaves it blocked, unapproved and unmoved", () => {
+  it("stores the task as proposed with the weak_check blocker and approves nothing", () => {
+    const parsed = parsePlanOutput(readInjectedPlanJson());
+    if (!parsed.ok) throw new Error("fixture plan should parse");
+    const dir = makeTempDir("korwf-injection-persist-");
+    const { store } = openStore({ storageRoot: dir.path, now: () => AT, newId: () => `a-${(ids += 1)}` });
+    openStores.push({ dir, store });
+    store.workflows.insert(makeWorkflow({ planRevision: 0, status: "planning" }));
+    let records = 0;
+    const result = persistPlan({
+      store,
+      workflowId: WF,
+      plan: parsed.plan,
+      now: () => AT,
+      newId: (kind) => `${kind === "phase" ? "ph" : "tk"}-${(records += 1)}`,
+    });
+
+    const task = result.tasks[0]!;
+    expect(task.status).toBe("proposed");
+    expect(task.blocker).toBe(WEAK_CHECK_BLOCKER);
+    expect(result.blockedForWeakChecks).toEqual([task.id]);
+    // The plan claimed `status: "done"`, `approved: true` and a high-risk
+    // approval. None of it exists.
+    expect(store.approvals.findBy("workflowId", WF)).toHaveLength(0);
+    expect(store.transitionLog.rejectionsForSubject("task", task.id)).toHaveLength(0);
+    expect(store.tasks.findBy("workflowId", WF).every((t) => t.status === "proposed")).toBe(true);
+    // The phase claimed gateStatus "passed".
+    expect(result.phases[0]!.gateStatus).toBe("pending");
+  });
+
+  it("names the weak_check blocker in the human-readable summary", () => {
+    const parsed = parsePlanOutput(readInjectedPlanJson());
+    if (!parsed.ok) throw new Error("fixture plan should parse");
+    const dir = makeTempDir("korwf-injection-summary-");
+    const { store } = openStore({ storageRoot: dir.path, now: () => AT, newId: () => `a-${(ids += 1)}` });
+    openStores.push({ dir, store });
+    store.workflows.insert(makeWorkflow({ planRevision: 0, status: "planning" }));
+    let records = 0;
+    const result = persistPlan({
+      store,
+      workflowId: WF,
+      plan: parsed.plan,
+      now: () => AT,
+      newId: (kind) => `${kind === "phase" ? "ph" : "tk"}-${(records += 1)}`,
+    });
+    const summary = summarisePersistedPlan(result);
+    expect(summary).toContain(WEAK_CHECK_BLOCKER);
+    expect(summary).toContain("cannot fail");
   });
 });
