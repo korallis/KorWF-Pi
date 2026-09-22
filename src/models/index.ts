@@ -12,6 +12,10 @@
  *   material — only hints, overrides, and outcomes rank.
  * - `hints.ts` — bundled aptitude hints (#58): id-pattern matching against `resources/hints.json`,
  *   ignoring provider prefixes and cosmetic (date/quant) suffixes so proxied names still match.
+ * - `profile.ts` — task-profile evaluator, independent of model names (#59). Composes
+ *   `src/decisions/questions/profile.ts` (domain/reasoningDepth/contextSize) with
+ *   deterministic modality/risk signals into a `TaskProfile`; never imports this barrel's
+ *   own catalog/cards/cap-detect/route modules and never handles a `ModelRef`.
  *
  *
  * **Re-export style: `export *`, deliberately.** A barrel listing every symbol is a
@@ -25,4 +29,5 @@ export * from "./cards.ts";
 export * from "./catalog.ts";
 export * from "./hints.ts";
 export * from "./outcomes.ts";
+export * from "./profile.ts";
 export * from "./route.ts";

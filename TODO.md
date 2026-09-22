@@ -80,6 +80,8 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Model cards, four layers (PLAN §D): registry metadata → bundled aptitude hints → user overrides → outcome refinement with uncertainty.
 - [x] Bundled aptitude-hints file: id-pattern matching, versioned, "unrated" default for unknown models, update process documented.
 - [ ] Task-profile evaluator independent of model names.
+- [ ] Bundled aptitude-hints file: id-pattern matching, versioned, "unrated" default for unknown models, update process documented.
+- [x] Task-profile evaluator independent of model names.
 - [ ] Jev selection question against cards; code enforces allowlist/budget/policy after selection.
 - [ ] User pins and explicit overrides.
 - [x] Cap detection (429, quota, budget) → ModelAvailability with estimated reset (#62).
