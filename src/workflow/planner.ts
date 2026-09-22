@@ -212,3 +212,154 @@ function renderExcerpt(excerpt: PlannerContextExcerpt, maxChars: number): string
     "```",
   ];
 }
+
+// ---------------------------------------------------------------------------
+// Output-budget sizing of a generated plan (#124)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fallback limits used when the caller does not know which model will execute
+ * the tasks. `outputBudget` substitutes the conservative floor for a `null`
+ * ceiling, so sizing still happens rather than being skipped.
+ */
+export const UNKNOWN_WORKER_LIMITS: ModelOutputLimits = Object.freeze({ maxTokens: null, contextWindow: null });
+
+/** Size every task's declared artifacts against the worker model's output ceiling. */
+export function sizePlanTasks(
+  plan: PlanDocument,
+  limits: ModelOutputLimits = UNKNOWN_WORKER_LIMITS,
+  thinking: ThinkingLevel = "off",
+): readonly PlannedTaskSizing[] {
+  return sizePlan(
+    plan.tasks.map((task) => ({
+      taskId: task.id,
+      expectedArtifacts: (task.expectedArtifacts ?? []).map((a) => ({
+        path: a.path,
+        estimate: a.estimate,
+        ...(a.atomic === true ? { atomic: true } : {}),
+      })),
+    })),
+    limits,
+    thinking,
+  );
+}
+
+/** Tasks whose expected output cannot be produced in one turn as planned. */
+export function tasksNeedingDecomposition(sizing: readonly PlannedTaskSizing[]): readonly string[] {
+  return sizing.filter((s) => s.sizing.mustDecompose).map((s) => s.taskId);
+}
+
+// ---------------------------------------------------------------------------
+// Generation loop
+// ---------------------------------------------------------------------------
+
+/**
+ * The model call, supplied by the caller. Returns whatever the model produced:
+ * a parsed object from a structured-output tool call, or raw text.
+ * `src/workflow/` never imports Pi (ADR 0002), so this is a plain function.
+ */
+export type PlannerModel = (prompt: string, attempt: number) => Promise<unknown> | unknown;
+
+/** One planner attempt, kept for `/korwf why` and for tests. */
+export interface PlannerAttemptRecord {
+  readonly attempt: number;
+  readonly ok: boolean;
+  readonly errors: readonly PlanIssue[];
+  readonly warnings: readonly PlanIssue[];
+  /** The retry prompt this attempt produced, when it failed. */
+  readonly retryPrompt: string | null;
+}
+
+export interface GeneratePlanOptions {
+  readonly intake: PlannerIntake;
+  readonly context: readonly PlannerContextExcerpt[];
+  readonly model: PlannerModel;
+  readonly maxAttempts?: number;
+  readonly workerLimits?: ModelOutputLimits;
+  readonly workerThinking?: ThinkingLevel;
+  readonly maxExcerptChars?: number;
+}
+
+export type GeneratePlanResult =
+  | {
+      readonly ok: true;
+      readonly plan: PlanDocument;
+      readonly warnings: readonly PlanIssue[];
+      readonly attempts: readonly PlannerAttemptRecord[];
+      /** Output-budget sizing for every task (#124). */
+      readonly sizing: readonly PlannedTaskSizing[];
+    }
+  | {
+      readonly ok: false;
+      readonly errors: readonly PlanIssue[];
+      readonly attempts: readonly PlannerAttemptRecord[];
+      /** Message suitable for the user, summarising why planning failed. */
+      readonly message: string;
+    };
+
+/**
+ * Run the planner: prompt, parse, and on failure re-prompt with the actual
+ * findings, up to `maxAttempts`. A failed run returns errors and persists
+ * nothing — there is no partial-plan path out of this function.
+ */
+export async function generatePlan(options: GeneratePlanOptions): Promise<GeneratePlanResult> {
+  const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_PLAN_ATTEMPTS);
+  const basePrompt = buildPlannerPrompt({
+    intake: options.intake,
+    context: options.context,
+    ...(options.workerLimits === undefined ? {} : { workerLimits: options.workerLimits }),
+    ...(options.workerThinking === undefined ? {} : { workerThinking: options.workerThinking }),
+    ...(options.maxExcerptChars === undefined ? {} : { maxExcerptChars: options.maxExcerptChars }),
+  });
+
+  const attempts: PlannerAttemptRecord[] = [];
+  let prompt = basePrompt;
+  let lastErrors: readonly PlanIssue[] = [];
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let raw: unknown;
+    try {
+      raw = await options.model(prompt, attempt);
+    } catch (error) {
+      const issue: PlanIssue = {
+        rule: "type",
+        path: "",
+        severity: "error",
+        message: `planner model call failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+      attempts.push({ attempt, ok: false, errors: [issue], warnings: [], retryPrompt: null });
+      lastErrors = [issue];
+      continue;
+    }
+
+    const parsed: PlanParseResult = parsePlanOutput(raw);
+    if (parsed.ok) {
+      attempts.push({ attempt, ok: true, errors: [], warnings: parsed.warnings, retryPrompt: null });
+      return {
+        ok: true,
+        plan: parsed.plan,
+        warnings: parsed.warnings,
+        attempts,
+        sizing: sizePlanTasks(parsed.plan, options.workerLimits, options.workerThinking),
+      };
+    }
+    attempts.push({
+      attempt,
+      ok: false,
+      errors: parsed.errors,
+      warnings: parsed.warnings,
+      retryPrompt: parsed.retryPrompt,
+    });
+    lastErrors = parsed.errors;
+    prompt = `${basePrompt}\n\n---\n\n${parsed.retryPrompt}`;
+  }
+
+  return {
+    ok: false,
+    errors: lastErrors,
+    attempts,
+    message:
+      `Planning failed after ${maxAttempts} attempt(s); nothing was saved. Last findings:\n` +
+      lastErrors.map((e) => `  ! ${e.path === "" ? "<root>" : e.path}: ${e.message} [${e.rule}]`).join("\n"),
+  };
+}
