@@ -109,6 +109,48 @@ export interface ArtifactSink {
 
 const DEFAULT_ESTIMATE_REQUESTS = 1;
 
+/**
+ * Live runs, so `/korwf pause|resume|cancel` can address a worker by id and
+ * so shutdown can stop everything.
+ *
+ * This is a *handle* registry, not a limit. Global concurrency is a budget
+ * cap enforced by the ledger's atomic reservation (`budgets.*.maxConcurrency`
+ * via `Ledger.reserve`), because only a `BEGIN IMMEDIATE` transaction can
+ * stop two processes passing the same remaining budget. Counting entries in
+ * this map would be a per-process approximation of a cross-process rule.
+ */
+export class WorkerRegistry {
+  readonly #runs = new Map<string, WorkerRun>();
+
+  register(run: WorkerRun): void {
+    this.#runs.set(run.handle.contract.workerId, run);
+  }
+
+  get(workerId: string): WorkerRun | undefined {
+    return this.#runs.get(workerId);
+  }
+
+  /** Runs that have not finished, oldest first. */
+  active(): readonly WorkerRun[] {
+    return [...this.#runs.values()].filter((run) => run.state !== "finished");
+  }
+
+  list(): readonly WorkerRun[] {
+    return [...this.#runs.values()];
+  }
+
+  remove(workerId: string): void {
+    this.#runs.delete(workerId);
+  }
+
+  /** Cancel every active run. Used by shutdown and by `/korwf cancel --all`. */
+  async cancelAll(reason: string): Promise<readonly CancelResult[]> {
+    const results: CancelResult[] = [];
+    for (const run of this.active()) results.push(await run.cancel(reason));
+    return results;
+  }
+}
+
 /** Map a supervisor outcome to the Attempt outcome vocabulary. */
 export function toAttemptOutcome(outcome: WorkerRunOutcome): AttemptOutcome {
   switch (outcome) {
@@ -374,5 +416,158 @@ export class WorkerRun {
     this.#cancellation = result;
     this.#endedAt ??= this.#monotonic();
     return result;
+  }
+
+  // -------------------------------------------------------------------------
+  // settlement
+  // -------------------------------------------------------------------------
+
+  /**
+   * Wait for the worker to stop, then settle and report.
+   *
+   * `timeoutMs` bounds only this wait; the worker's own wall-clock limit is
+   * enforced by the timer armed in `start()`, so a sleeping worker is
+   * terminated by its budget rather than by whoever happens to be awaiting
+   * it.
+   */
+  async wait(timeoutMs = this.handle.contract.budget.wallClockMs + this.handle.contract.termination.graceMs + 5_000): Promise<WorkerRunResult> {
+    if (this.#result !== null) return this.#result;
+    await waitUntil(() => this.handle.exit !== undefined, timeoutMs);
+    if (this.handle.exit === undefined) {
+      // Neither the budget timer nor a caller stopped it: stop it now rather
+      // than return a result about a process that is still running.
+      await this.cancel("supervisor wait timed out");
+    }
+    return this.finish();
+  }
+
+  /**
+   * Close the run: settle the reservation with the actual usage, capture
+   * artifacts, and build the result. Idempotent — the ledger rejects a second
+   * settlement of the same reservation and so does this.
+   */
+  finish(): WorkerRunResult {
+    if (this.#result !== null) return this.#result;
+    this.#clearTimer();
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
+    this.#endedAt ??= this.#monotonic();
+    this.#state = "finished";
+
+    const usage = this.observedUsage;
+    const elapsedMs = this.elapsedMs;
+    if (this.#reservation !== null && !this.#settled) {
+      this.#settled = true;
+      assertHonestUsage(usage);
+      this.#options.ledger.settle(this.#reservation, usage, {
+        elapsedMs,
+        ...(this.#cancelReason === null ? {} : { reason: this.#cancelReason }),
+      });
+    }
+
+    const outcome = this.#classifyOutcome();
+    const result: WorkerRunResult = {
+      outcome,
+      attemptOutcome: toAttemptOutcome(outcome),
+      termination: this.#termination(outcome),
+      usage,
+      elapsedMs,
+      breach: this.#breach,
+      cancellation: this.#cancellation,
+      artifacts: this.#captureArtifacts(),
+      progress: this.timeline.snapshot(),
+    };
+    this.#result = result;
+    return result;
+  }
+
+  #classifyOutcome(): WorkerRunOutcome {
+    if (this.#breach !== null) return this.#breach.kind === "elapsed" ? "timeout" : "limit_exceeded";
+    if (this.#cancelReason !== null) return "cancelled";
+    const exit = this.handle.exit;
+    if (exit === undefined) return "failed";
+    if (exit.crashed) return "crashed";
+    return exit.code === 0 ? "completed" : "failed";
+  }
+
+  /**
+   * `Attempt.termination` (#124): *why the turn stopped*, kept distinct from
+   * the outcome. `consumedAttemptBudget` is false for every harness failure —
+   * a timeout or a cancellation says nothing about the quality of the work,
+   * and charging it to the task's attempt budget is how six identical
+   * harness failures once looked like six bad attempts.
+   */
+  #termination(outcome: WorkerRunOutcome): AttemptTermination {
+    const outputTokens = this.observedUsage.outputTokens;
+    const base = { stopReason: null as string | null, truncated: false, outputTokens };
+    switch (outcome) {
+      case "timeout":
+        return { ...base, stopReason: "timeout", failureKind: "timeout", failureClass: "harness", consumedAttemptBudget: false };
+      case "limit_exceeded":
+        return { ...base, stopReason: this.#breach?.kind ?? "limit", failureKind: "capped", failureClass: "harness", consumedAttemptBudget: false };
+      case "cancelled":
+        return { ...base, stopReason: "cancelled", failureKind: "none", failureClass: "harness", consumedAttemptBudget: false };
+      case "crashed":
+        return { ...base, stopReason: "crashed", failureKind: "transport_error", failureClass: "harness", consumedAttemptBudget: false };
+      case "failed":
+        return { ...base, stopReason: "error", failureKind: "gap", failureClass: "quality", consumedAttemptBudget: true };
+      case "completed":
+        return { ...base, stopReason: "end_turn", failureKind: "none", failureClass: "none", consumedAttemptBudget: true };
+    }
+  }
+
+  /**
+   * Copy each declared artifact out of the worker's worktree into the #23
+   * artifact store, hashed and manifested there.
+   *
+   * A declared artifact that the worker never produced is reported
+   * `missing: true` with no ref. It is never invented, and its absence is
+   * evidence the verification gate can act on.
+   */
+  #captureArtifacts(): readonly CapturedArtifact[] {
+    const sink = this.#options.artifacts;
+    const attemptId = this.#options.attemptId;
+    const declared = this.handle.contract.termination.artifacts;
+    if (declared.length === 0) return [];
+    if (sink === undefined || attemptId === undefined) {
+      return declared.map((declaredPath) => ({
+        declaredPath,
+        ref: null,
+        missing: false,
+        reason: "no artifact store configured for this run",
+      }));
+    }
+    return declared.map((declaredPath) => this.#captureOne(sink, attemptId, declaredPath));
+  }
+
+  #captureOne(sink: ArtifactSink, attemptId: AttemptId, declaredPath: string): CapturedArtifact {
+    const cwd = this.handle.contract.cwd;
+    const absolute = isAbsolute(declaredPath) ? declaredPath : join(cwd, declaredPath);
+    const rel = relative(cwd, absolute);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      return {
+        declaredPath,
+        ref: null,
+        missing: false,
+        reason: `artifact path escapes the worker's worktree (${cwd}); refusing to capture`,
+      };
+    }
+    if (!existsSync(absolute)) {
+      return { declaredPath, ref: null, missing: true, reason: "worker did not produce this artifact" };
+    }
+    try {
+      if (!statSync(absolute).isFile()) {
+        return { declaredPath, ref: null, missing: false, reason: "declared artifact is not a regular file" };
+      }
+      const ref = sink.write(String(attemptId), rel, readFileSync(absolute), "application/octet-stream");
+      return { declaredPath, ref, missing: false, reason: null };
+    } catch (error) {
+      return {
+        declaredPath,
+        ref: null,
+        missing: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
 }
