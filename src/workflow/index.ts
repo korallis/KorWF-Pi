@@ -17,6 +17,9 @@
  * - `state*.ts` / `invalidation.ts` / `blockers.ts` — runtime transitions (#41).
  * - `reconcile.ts` — session resume/reload/fork/tree reconciliation against live
  *   repository state, and the completed-action replay guard (#42).
+ * - `failure.ts` / `stall.ts` — the PLAN §3.G failure taxonomy (deterministic rules first,
+ *   `unknown` asks for evidence, truncation folded in from #124 as the `harness` category)
+ *   and stall/scope-drift detection over the attempt stream (#52).
  *
  * **Re-export style: `export *`, deliberately.** This barrel previously listed every symbol
  * explicitly, which made it a guaranteed merge conflict: four consecutive PRs (#37, #38,
@@ -29,6 +32,8 @@ export * from "./approval-classes.ts";
 export * from "./attempt-budget.ts";
 export * from "./attempt-controller.ts";
 export * from "./evaluate-plan.ts";
+export * from "./failure.ts";
+export * from "./stall.ts";
 export * from "./graph.ts";
 export * from "./blockers.ts";
 export * from "./boards.ts";

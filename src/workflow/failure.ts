@@ -452,11 +452,12 @@ export function signalFromError(error: unknown, extra: FailureSignal = {}): Fail
   if (error instanceof Error) {
     const code = (error as NodeJS.ErrnoException).code;
     const status = (error as { status?: unknown }).status;
+    const resolvedCode = typeof code === "string" ? code : extra.errorCode;
     return {
       ...extra,
       errorName: error.name,
       errorMessage: error.message,
-      errorCode: typeof code === "string" ? code : extra.errorCode,
+      ...(resolvedCode === undefined ? {} : { errorCode: resolvedCode }),
       httpStatus: typeof status === "number" ? status : (extra.httpStatus ?? null),
     };
   }
