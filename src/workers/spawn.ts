@@ -143,7 +143,7 @@ export class WorkerHandle {
     env: Readonly<Record<string, string>>;
     argv: readonly string[];
     ops: ProcessOps;
-    onMessage?: (m: RpcMessage) => void;
+    onMessage?: ((m: RpcMessage) => void) | undefined;
   }) {
     this.contract = params.contract;
     this.proc = params.proc;
@@ -324,4 +324,64 @@ export function composePrompt(contract: WorkerContract): string {
     "",
     `You are worker ${contract.workerId} in ${contract.cwd}. You may not start other agents.`,
   ].join("\n");
+}
+
+/**
+ * Validate the contract, then launch the worker.
+ *
+ * Ordering matters and mirrors #60's: policy is enforced **before** the
+ * process exists. A contract naming a model outside the allowlist, a tool
+ * outside its role, or an extension outside `permittedExtensions` throws
+ * {@link ContractRejectedError} and nothing is spawned — there is no code
+ * path that spawns first and checks after.
+ */
+export async function spawnWorker(
+  contract: WorkerContract,
+  options: SpawnOptions,
+): Promise<WorkerHandle> {
+  const validation = validateContract(contract, options.policy);
+  if (!validation.ok) throw new ContractRejectedError(validation.errors);
+
+  const argv = buildWorkerArgv(contract);
+  const parentEnv = options.parentEnv ?? process.env;
+  const env = buildWorkerEnv({
+    parentEnv,
+    workerId: contract.workerId,
+    role: contract.role,
+    depth: contract.depth,
+    offline: contract.offline,
+  });
+
+  const spawnFn = options.spawnFn ?? nodeSpawn;
+  const piBin = options.piBin ?? parentEnv.KORWF_PI_BIN ?? "pi";
+  const proc = spawnFn(piBin, [...argv], {
+    cwd: contract.cwd,
+    // Own process group on POSIX so tier 2/3 can address the group; Windows
+    // has no equivalent and uses `taskkill /T /F` instead.
+    detached: process.platform !== "win32",
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...env },
+  });
+
+  const handle = new WorkerHandle({
+    contract,
+    proc,
+    env,
+    argv,
+    ops: options.processOps ?? realProcessOps,
+    onMessage: options.onMessage,
+  });
+
+  // Visibility is pure observability: if the surface fails or Herdr is absent,
+  // the worker still runs (ADR 0004 "Worker visibility in Herdr" rule 3).
+  if (options.surface !== undefined) {
+    try {
+      await options.surface(contract);
+    } catch {
+      /* best effort only */
+    }
+  }
+
+  return handle;
 }

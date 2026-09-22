@@ -13,3 +13,8 @@
  */
 export * from "./roles.ts";
 export * from "./truncation.ts";
+export * from "./contract.ts";
+export * from "./env.ts";
+export * from "./process-tree.ts";
+export * from "./spawn.ts";
+export * from "./surface.ts";

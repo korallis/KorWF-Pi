@@ -45,14 +45,14 @@ export function readProcessTable(): Map<number, number> {
       );
       for (const line of out.split(/\r?\n/)) {
         const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-        if (pid) table.set(pid, ppid);
+        if (pid !== undefined && pid > 0 && ppid !== undefined) table.set(pid, ppid);
       }
       return table;
     }
     const out = execFileSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8" });
     for (const line of out.split("\n")) {
       const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-      if (pid) table.set(pid, ppid);
+      if (pid !== undefined && pid > 0 && ppid !== undefined) table.set(pid, ppid);
     }
   } catch {
     // An unreadable process table degrades to "no descendants known"; the
