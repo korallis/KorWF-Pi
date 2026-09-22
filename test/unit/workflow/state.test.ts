@@ -221,3 +221,218 @@ describe("AC1: the same, for every phase (from, to) pair", () => {
     });
   }
 });
+
+describe("AC2: done is unreachable without the gate preconditions", () => {
+  function reviewTask(store: Store): void {
+    store.tasks.insert(makeTask({ status: "review" }));
+  }
+
+  function requestDone(store: Store, guards: GuardTable) {
+    return transitionTask({
+      store,
+      taskId: TK,
+      to: "done",
+      trigger: "task_gate_passed",
+      actor: { kind: "engine", identity: "engine" },
+      guards,
+      evidenceRefs: ["ev:checks", "ev:coverage", "ev:review"],
+      gitRevision: "a".repeat(40),
+      now: () => AT,
+      newId,
+    });
+  }
+
+  it("rejects done when no gate hooks are supplied at all (the default)", () => {
+    const store = freshStore();
+    reviewTask(store);
+    expect(() => requestDone(store, taskDoneGuards())).toThrow(TransitionRejected);
+    expect(store.tasks.require(TK).status).toBe("review");
+  });
+
+  it("names every unsatisfied gate guard on the rejection and its audit row", () => {
+    const store = freshStore();
+    reviewTask(store);
+    let error: TransitionRejected | undefined;
+    try {
+      requestDone(store, taskDoneGuards());
+    } catch (caught) {
+      error = caught as TransitionRejected;
+    }
+    expect(error?.code).toBe("precondition_failed");
+    expect([...(error?.failedGuards ?? [])].sort()).toEqual([
+      "all_checks_pass_exact_revision",
+      "no_jev_gap_or_disabled",
+      "policy_review_satisfied",
+    ]);
+    const events = store.transitionLog.rejectionsForSubject("task", TK);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.failedGuards.length).toBe(3);
+    expect(events[0]?.beforeHash).toBe(events[0]?.afterHash);
+  });
+
+  for (const omitted of [
+    "allChecksPassAtExactRevision",
+    "noJevGapOrDisabled",
+    "policyReviewSatisfied",
+  ] as const) {
+    it(`rejects done when only ${omitted} is missing`, () => {
+      const store = freshStore();
+      reviewTask(store);
+      const full = {
+        allChecksPassAtExactRevision: () => true as const,
+        noJevGapOrDisabled: () => true as const,
+        policyReviewSatisfied: () => true as const,
+      };
+      const partial = { ...full };
+      delete (partial as Record<string, unknown>)[omitted];
+      expect(() => requestDone(store, taskDoneGuards(partial))).toThrow(TransitionRejected);
+      expect(store.tasks.require(TK).status).toBe("review");
+    });
+  }
+
+  it("rejects done when a gate evaluator answers \"unknown\" — unknown is not pass", () => {
+    const store = freshStore();
+    reviewTask(store);
+    expect(() =>
+      requestDone(
+        store,
+        taskDoneGuards({
+          allChecksPassAtExactRevision: () => "unknown",
+          noJevGapOrDisabled: () => true,
+          policyReviewSatisfied: () => true,
+        }),
+      ),
+    ).toThrow(TransitionRejected);
+    expect(store.tasks.require(TK).status).toBe("review");
+  });
+
+  it("rejects done when a gate evaluator throws", () => {
+    const store = freshStore();
+    reviewTask(store);
+    expect(() =>
+      requestDone(
+        store,
+        taskDoneGuards({
+          allChecksPassAtExactRevision: () => {
+            throw new Error("check runner unavailable");
+          },
+          noJevGapOrDisabled: () => true,
+          policyReviewSatisfied: () => true,
+        }),
+      ),
+    ).toThrow(TransitionRejected);
+    expect(store.tasks.require(TK).status).toBe("review");
+  });
+
+  it("rejects done for a task with no executable check, even with every hook passing", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "review", checks: [] }));
+    expect(() =>
+      requestDone(
+        store,
+        taskDoneGuards({
+          allChecksPassAtExactRevision: () => true,
+          noJevGapOrDisabled: () => true,
+          policyReviewSatisfied: () => true,
+        }),
+      ),
+    ).toThrow(/checks_registered/);
+    expect(store.tasks.require(TK).status).toBe("review");
+  });
+
+  it("a worker request can never set done, whatever it supplies", () => {
+    const store = freshStore();
+    reviewTask(store);
+    let error: TransitionRejected | undefined;
+    try {
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "done",
+        trigger: "task_gate_passed",
+        actor: { kind: "worker", identity: "worker-1" },
+        guards: taskDoneGuards({
+          allChecksPassAtExactRevision: () => true,
+          noJevGapOrDisabled: () => true,
+          policyReviewSatisfied: () => true,
+        }),
+        evidenceRefs: ["ev:claim"],
+        now: () => AT,
+        newId,
+      });
+    } catch (caught) {
+      error = caught as TransitionRejected;
+    }
+    expect(error?.code).toBe("unauthorized_actor");
+    expect(store.tasks.require(TK).status).toBe("review");
+  });
+
+  it("a user instruction can never set done", () => {
+    const store = freshStore();
+    reviewTask(store);
+    expect(() =>
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "done",
+        trigger: "task_gate_passed",
+        actor: { kind: "user", identity: "owner" },
+        guards: taskDoneGuards({
+          allChecksPassAtExactRevision: () => true,
+          noJevGapOrDisabled: () => true,
+          policyReviewSatisfied: () => true,
+        }),
+        evidenceRefs: ["ev:user"],
+        now: () => AT,
+        newId,
+      }),
+    ).toThrow(/may not trigger task-done/);
+  });
+
+  it("accepts done only from review with the full conjunction satisfied", () => {
+    const store = freshStore();
+    reviewTask(store);
+    const result = requestDone(
+      store,
+      taskDoneGuards({
+        allChecksPassAtExactRevision: () => true,
+        noJevGapOrDisabled: () => true,
+        policyReviewSatisfied: () => true,
+      }),
+    );
+    expect(result.subject.status).toBe("done");
+    expect(result.event.gitRevision).toBe("a".repeat(40));
+    expect(result.event.disposition).toBe("accepted");
+  });
+
+  it("a done task is terminal: no further transition is accepted", () => {
+    const store = freshStore();
+    reviewTask(store);
+    requestDone(
+      store,
+      taskDoneGuards({
+        allChecksPassAtExactRevision: () => true,
+        noJevGapOrDisabled: () => true,
+        policyReviewSatisfied: () => true,
+      }),
+    );
+    let error: TransitionRejected | undefined;
+    try {
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "cancelled",
+        trigger: "cancel",
+        actor: { kind: "user", identity: "owner" },
+        guards: allGuardsTrue(),
+        evidenceRefs: ["ev:1"],
+        now: () => AT,
+        newId,
+      });
+    } catch (caught) {
+      error = caught as TransitionRejected;
+    }
+    expect(error?.code).toBe("terminal_subject");
+    expect(store.tasks.require(TK).status).toBe("done");
+  });
+});
