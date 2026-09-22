@@ -519,6 +519,87 @@ function creditTest(finding: TestExercisesFinding, thresholds: EvaluatorThreshol
   return { ...finding, exercises };
 }
 
+// ---------------------------------------------------------------------------
+// Whole-task composition — the conjunction, in code
+// ---------------------------------------------------------------------------
+
+/**
+ * Evaluate every acceptance criterion and take the conjunction.
+ *
+ * This function is where the decomposition lesson pays off: there is no
+ * question anywhere that sees the whole task, so adding a criterion cannot
+ * lower the score of the others. The whole-task verdict is `AND` over the
+ * per-criterion verdicts, computed here — arithmetic and quantification in
+ * code (PLAN §6).
+ *
+ * **A task with no acceptance criteria is a gap.** `allTrue` over zero parts
+ * is false by design (docs/questions.md §4), and the same rule applies here:
+ * "nothing to check" is not "nothing wrong".
+ */
+export async function evaluateEvidenceGap(
+  input: EvidenceGapInput,
+  options: EvaluateOptions = {},
+): Promise<EvidenceGapEvaluation> {
+  const thresholds = thresholdsFor(input.riskClass, options.thresholds);
+  const findings: CriterionFinding[] = [];
+  for (const criterion of input.acceptanceCriteria) {
+    findings.push(await evaluateCriterion(input, criterion, options));
+  }
+
+  const gapCriterionIds = findings.filter((f) => f.gap).map((f) => f.criterionId);
+  const noGap = findings.length > 0 && gapCriterionIds.length === 0;
+  const degraded = findings.some(
+    (f) => !f.claim.evaluated || !f.semanticGap.evaluated || f.tests.some((t) => !t.level.evaluated),
+  );
+
+  const rule =
+    findings.length === 0
+      ? "verify.evidence_gap:no_criteria"
+      : options.ctx === undefined
+        ? `verify.evidence_gap:mapping_only:${noGap ? "no_gap" : "gap"}`
+        : `verify.evidence_gap:conjunction:${noGap ? "no_gap" : "gap"}`;
+
+  return {
+    taskId: input.taskId,
+    noGap,
+    action: noGap ? "no_gap" : "gap",
+    gapCriterionIds,
+    findings,
+    degraded,
+    rule,
+    confidence: null,
+    thresholds,
+  };
+}
+
+/**
+ * The mapping-only evaluation: no transport, no key, no questions asked.
+ *
+ * This is what condition 2 becomes with Jev disabled, and it is deliberately
+ * *meaningful*: every acceptance criterion still needs at least one linked
+ * passing check and one passing evidence item, so a criterion nobody checked
+ * is still a gap. What it cannot do is notice a passing test that observes
+ * the wrong thing — `test/scenarios/03-wrong-test.md` variant B documents
+ * that limitation and the independent model review (#48) that covers it.
+ */
+export async function evaluateMappingOnly(
+  input: EvidenceGapInput,
+  options: Omit<EvaluateOptions, "ctx"> = {},
+): Promise<EvidenceGapEvaluation> {
+  return evaluateEvidenceGap(input, options);
+}
+
+/**
+ * One-line explanation per gap, naming the criterion. Used for the
+ * `needs_changes` blocker detail so a worker is told *which* criterion and
+ * *why*, never just "evidence gap".
+ */
+export function explainEvidenceGap(evaluation: EvidenceGapEvaluation): readonly string[] {
+  return evaluation.findings
+    .filter((f) => f.gap)
+    .map((f) => `${f.criterionId}: ${f.reasons.join(", ")} — ${f.criterionText}`);
+}
+
 export { TEST_EXERCISES_MIN_LEVEL };
 export type { ClaimVerdict, CriterionRef, EvidenceGapState, EvidenceSummary, RiskClass };
 export { ask, claimSupportedQuestion, evidenceGapFallback, evidenceGapQuestion, testExercisesQuestion };
