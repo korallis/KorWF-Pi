@@ -10,7 +10,7 @@ import { buildPhaseBoard, type PhaseBoardFilter, type PhaseBoardRow } from "../.
 import { renderBoardTable, type BoardTable } from "../ui/board.ts";
 import { resolveBoardWorkflow, type WorkflowReadStore } from "./workflow-select.ts";
 
-export type PhasesCommandStore = WorkflowReadStore & Pick<Store, "phases" | "tasks" | "blockers">;
+export type PhasesCommandStore = WorkflowReadStore & Pick<Store, "phases" | "tasks" | "blockers" | "transitionLog">;
 
 export interface PhasesCommandArgs {
   readonly status?: string;
