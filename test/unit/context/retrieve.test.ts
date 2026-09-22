@@ -4,13 +4,25 @@
  * is already true of `retrieveCandidates` alone, since it is the only match).
  * AC: "A `.env` file in the fixture never appears in candidates."
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { retrieveCandidates, searchContent, searchFilenames, currentRevision } from "../../../src/context/retrieve.ts";
 import { verifyProvenance, hasCompleteProvenance } from "../../../src/context/provenance.ts";
 import { buildTestRepo, type TestRepo } from "./support.ts";
+
+/**
+ * A PATH containing only `git` (via a symlink), so `rg` genuinely ENOENTs —
+ * proves the fallback runs because the binary is absent, not by mocking.
+ */
+function gitOnlyPath(): { readonly dir: string; readonly cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), "korwf-norg-path-"));
+  const gitPath = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  symlinkSync(gitPath, join(dir, "git"));
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
 
 describe("retrieveCandidates", () => {
   let repo: TestRepo;
@@ -71,6 +83,37 @@ describe("retrieveCandidates", () => {
       expect(currentRevision(bare)).toBe("unversioned");
     } finally {
       rmSync(bare, { recursive: true, force: true });
+    }
+  });
+
+  it("AC: with no rg on PATH, falls back to git grep / git ls-files and still finds candidates", () => {
+    const { dir, cleanup } = gitOnlyPath();
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = dir;
+      const { candidates, raw } = retrieveCandidates("password hashing", { repoRoot: repo.root });
+      const top3 = candidates.slice(0, 3).map((c) => c.provenance.path);
+      expect(top3).toContain("src/auth.ts");
+      expect(candidates.every((c) => c.searchTool !== "rg")).toBe(true);
+      expect(candidates.some((c) => c.searchTool === "git-grep")).toBe(true);
+      expect(raw.some((r) => r.tool === "rg" && r.unavailable === true)).toBe(true);
+      expect(raw.some((r) => r.tool === "git" && r.args.includes("grep"))).toBe(true);
+    } finally {
+      process.env.PATH = originalPath;
+      cleanup();
+    }
+  });
+
+  it("AC: with no rg on PATH, .env still never appears in candidates", () => {
+    const { dir, cleanup } = gitOnlyPath();
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = dir;
+      const { candidates } = retrieveCandidates("SECRET_KEY", { repoRoot: repo.root });
+      expect(candidates.some((c) => c.provenance.path.endsWith(".env"))).toBe(false);
+    } finally {
+      process.env.PATH = originalPath;
+      cleanup();
     }
   });
 });
