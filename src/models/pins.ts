@@ -24,9 +24,22 @@ export interface PinScopes {
   readonly config?: ModelRef;
 }
 
-/** Resolve the effective pin for a task kind: the first scope set, in task > phase > workflow > config order. */
+/**
+ * Resolve the effective pin for a task kind: the first scope set, in
+ * task > phase > workflow > config order (PLAN §3.D). `allowlistPins` is
+ * `config.models.allowlist.pins` (per-task-kind); a task/phase/workflow
+ * scope pin — the user's most specific, most recent instruction — always
+ * wins over it.
+ */
 export function resolvePin(scopes: PinScopes, allowlistPins: ModelAllowlist["pins"], taskKind: TaskKind): ModelRef | null {
-  return null;
+  if (scopes.task !== undefined) return scopes.task;
+  if (scopes.phase !== undefined) return scopes.phase;
+  if (scopes.workflow !== undefined) return scopes.workflow;
+  if (scopes.config !== undefined) return scopes.config;
+  const byKind = allowlistPins[taskKind];
+  if (byKind !== undefined) return byKind;
+  const byDefault = allowlistPins.default;
+  return byDefault ?? null;
 }
 
 export type PinResolution =
