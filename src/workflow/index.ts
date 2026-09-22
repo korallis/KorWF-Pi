@@ -31,6 +31,7 @@ export * from "./attempt-controller.ts";
 export * from "./evaluate-plan.ts";
 export * from "./graph.ts";
 export * from "./blockers.ts";
+export * from "./boards.ts";
 export * from "./greenfield.ts";
 export * from "./invalidation.ts";
 export * from "./intake.ts";
