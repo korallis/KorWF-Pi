@@ -23,9 +23,12 @@
  * returns false for it. There is no flag that turns that off.
  */
 import type { CheckDefinition, RiskClass } from "../storage/records.ts";
+import { WEAK_CHECK_BLOCKER, isVerifyingCheck, trivialChecks } from "./weak-checks.ts";
 
 /** Blocker recorded on a task the planner gave no checks (PLAN §2.3). */
 export const NO_CHECKS_BLOCKER = "no_checks" as const;
+
+export { WEAK_CHECK_BLOCKER };
 
 /** Blocker recorded when a task's expected output cannot fit the model's turn ceiling (#124). */
 export const OUTPUT_BUDGET_BLOCKER = "output_budget" as const;
@@ -67,6 +70,7 @@ export type PlanRuleId =
   | "dependency_cycle"
   | "phase_order"
   | "no_checks"
+  | "weak_check"
   | "check_shape"
   | "criterion_coverage"
   | "ownership_conflict"
@@ -531,6 +535,22 @@ function validateTasks(bag: IssueBag, raw: unknown, phaseIds: ReadonlySet<string
           `"${NO_CHECKS_BLOCKER}" and can never become ready (PLAN §2.3)`,
       );
     } else {
+      // #44: a check whose command cannot fail verifies nothing, however its
+      // `rationale` describes it. Flagged per check, and — when *every* check
+      // on the task is like that — as the task-level `weak_check` blocker
+      // that `taskReadiness` will also refuse on.
+      for (const entry of trivialChecks(checks)) {
+        const index = checks.indexOf(entry.check as (typeof checks)[number]);
+        bag.warn("weak_check", `${at}.checks[${index}].command`, entry.reason);
+      }
+      if (!checks.some((check) => isVerifyingCheck(check))) {
+        bag.warn(
+          "weak_check",
+          `${at}.checks`,
+          `task "${id}" registers no check that can fail; it will be persisted as proposed with blocker ` +
+            `"${WEAK_CHECK_BLOCKER}" and can never become ready (PLAN §2.3, §7)`,
+        );
+      }
       const covered = new Set(checks.flatMap((c) => c.coversCriteria));
       for (const criterion of criteria) {
         if (!covered.has(criterion.id)) {
@@ -782,12 +802,33 @@ export function taskReadiness(task: Pick<PlanTask, "id" | "checks">): TaskReadin
       reason: `task "${task.id}" registers no verification checks (PLAN §2.3)`,
     };
   }
+  // A check that cannot fail is not verification (#44, gates.spec.md §B5).
+  // A task whose every check is trivially passing is in the same position as
+  // a task with no checks at all, and the rationale text claiming otherwise
+  // is untrusted description, not evidence.
+  if (!task.checks.some((check) => isVerifyingCheck(check))) {
+    const reasons = trivialChecks(task.checks).map((entry) => entry.reason);
+    return {
+      taskId: task.id,
+      canBecomeReady: false,
+      blocker: WEAK_CHECK_BLOCKER,
+      reason:
+        `task "${task.id}" registers no check that can fail` +
+        (reasons.length > 0 ? `: ${reasons.join("; ")}` : "") +
+        ` (PLAN §2.3, §7)`,
+    };
+  }
   return { taskId: task.id, canBecomeReady: true, blocker: null, reason: null };
 }
 
-/** The same rule expressed over persisted `CheckDefinition`s, for the gate. */
+/**
+ * The same rule expressed over persisted `CheckDefinition`s, for the gate.
+ * A list of only trivially-passing checks is not a registered means of
+ * verification (#44), so this is `checks.length > 0` *and* "at least one of
+ * them can fail".
+ */
 export function hasRegisteredChecks(checks: readonly CheckDefinition[]): boolean {
-  return checks.length > 0;
+  return checks.some((check) => isVerifyingCheck(check));
 }
 
 // ---------------------------------------------------------------------------

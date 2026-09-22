@@ -45,7 +45,7 @@ import type {
 } from "../storage/records.ts";
 import type { TransitionActor, TransitionEvent, TransitionSubjectKind } from "../storage/transition-log.ts";
 import { hashRecord } from "../storage/repos/base.ts";
-import { EXECUTABLE_CHECK_KINDS } from "./plan-schema.ts";
+import { isVerifyingCheck } from "./weak-checks.ts";
 import {
   PHASE_STATES,
   PHASE_STORAGE_STATES,
@@ -191,10 +191,17 @@ export function evaluateGuards(
  * optional human check is not on its own a registered means of verification:
  * a task whose only check is an unrequired human one has nothing that can be
  * run, so it cannot become ready.
+ *
+ * Neither is a check that *cannot fail* (#44, gates.spec.md §B5): `true`,
+ * `exit 0`, `:`, `echo ok` and an empty command are executable in the shell
+ * sense and verify nothing, so `isVerifyingCheck` — the one definition of
+ * "registered means of verification", shared with `plan-schema.ts` — excludes
+ * them. This is why a plan smuggled in with `checks: [{command: "true"}]`
+ * cannot reach `ready`, and therefore cannot reach `done`, whatever its
+ * description claims.
  */
 export function hasExecutableCheck(task: Pick<Task, "checks">): boolean {
-  const executable = new Set<string>(EXECUTABLE_CHECK_KINDS);
-  return task.checks.some((check) => executable.has(check.kind) || (check.kind === "human" && check.required));
+  return task.checks.some((check) => isVerifyingCheck(check));
 }
 
 /**

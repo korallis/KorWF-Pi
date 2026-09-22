@@ -40,3 +40,4 @@ export * from "./planner.ts";
 export * from "./scope-change.ts";
 export * from "./state.ts";
 export * from "./transitions.ts";
+export * from "./weak-checks.ts";
