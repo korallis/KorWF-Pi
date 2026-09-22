@@ -265,3 +265,109 @@ function writePlan(args: WriteArgs): PersistPlanResult {
   });
   return result;
 }
+
+interface WriteTasksArgs extends WriteArgs {
+  readonly now: IsoTimestamp;
+  readonly planRevision: number;
+  readonly phaseIds: ReadonlyMap<string, PhaseId>;
+  readonly phases: readonly Phase[];
+  readonly reusedPhaseIds: ReadonlySet<string>;
+}
+
+/**
+ * Write tasks, reusing the record id of a task that already exists under the
+ * same planner-local id (`externalId` is carried in the previous plan's
+ * mapping, supplied by the caller through `previousTasks`' goals — see
+ * `matchPreviousTask`). Dependencies are resolved after all ids exist, so a
+ * forward reference within the document resolves correctly.
+ */
+function writeTasks(args: WriteTasksArgs): PersistPlanResult {
+  const { store, workflowId, plan, now, planRevision, phaseIds } = args;
+
+  // Pass 1: decide the record id for every planner task, so dependencies can
+  // be resolved before anything is written.
+  const taskIds = new Map<string, TaskId>();
+  const matched = new Map<string, Task>();
+  const takenPrevious = new Set<string>();
+  for (const planTask of plan.tasks) {
+    const previous = matchPreviousTask(planTask, args.previousTasks, takenPrevious);
+    if (previous !== undefined) {
+      takenPrevious.add(previous.id);
+      matched.set(planTask.id, previous);
+      taskIds.set(planTask.id, previous.id as TaskId);
+      continue;
+    }
+    taskIds.set(planTask.id, args.newId("task") as TaskId);
+  }
+
+  const tasks: Task[] = [];
+  const blockedForNoChecks: TaskId[] = [];
+  const revisedTasks: TaskId[] = [];
+
+  for (const planTask of plan.tasks) {
+    const id = taskIds.get(planTask.id) as TaskId;
+    const phaseId = phaseIds.get(planTask.phaseId);
+    if (phaseId === undefined) {
+      throw new PlanPersistError(`task "${planTask.id}" references unknown phase "${planTask.phaseId}"`);
+    }
+    const dependencies = planTask.dependencies.map((dep) => {
+      const depId = taskIds.get(dep);
+      if (depId === undefined) throw new PlanPersistError(`task "${planTask.id}" depends on unknown task "${dep}"`);
+      return depId;
+    });
+
+    const previous = matched.get(planTask.id);
+    if (previous === undefined) {
+      const record = store.tasks.insert(buildTask({ id, workflowId, phaseId, plan: planTask, dependencies, now }));
+      tasks.push(record);
+      if (record.blocker === NO_CHECKS_BLOCKER) blockedForNoChecks.push(record.id);
+      continue;
+    }
+
+    const { status, blocker } = initialStatusFor(planTask);
+    const changed = definitionOfDoneChanged(previous, planTask);
+    const patch: Partial<Task> = {
+      phaseId,
+      dependencies,
+      ownership: { paths: planTask.ownership.paths, components: planTask.ownership.components },
+      riskClass: planTask.riskClass,
+      ...(changed
+        ? {
+            goal: planTask.goal,
+            acceptanceCriteria: toCriteria(planTask.acceptanceCriteria),
+            checks: toChecks(planTask),
+            revision: previous.revision + 1,
+            status,
+            blocker,
+          }
+        : { blocker }),
+    };
+    const record = store.tasks.update(previous.id, patch);
+    tasks.push(record);
+    if (changed) revisedTasks.push(record.id);
+    if (record.blocker === NO_CHECKS_BLOCKER) blockedForNoChecks.push(record.id);
+  }
+
+  const supersededTasks = supersedeDroppedTasks(store, args.previousTasks, takenPrevious, now);
+  const invalidatedApprovals = invalidateApprovals({
+    store,
+    workflowId,
+    now,
+    planRevision,
+    revisedTasks,
+    supersededTasks,
+    isRevision: args.previousTasks.length > 0 || args.previousPhases.length > 0,
+  });
+
+  return {
+    workflowId,
+    planRevision,
+    phases: args.phases,
+    tasks,
+    blockedForNoChecks,
+    supersededTasks,
+    revisedTasks,
+    invalidatedApprovals,
+    idMapping: { phases: phaseIds, tasks: taskIds },
+  };
+}
