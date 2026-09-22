@@ -332,8 +332,8 @@ export function executeCommand(args: {
   readonly cwd: string;
   readonly env: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs: number;
-  readonly signal?: AbortSignal;
-  readonly killGraceMs?: number;
+  readonly signal?: AbortSignal | undefined;
+  readonly killGraceMs?: number | undefined;
 }): Promise<CommandOutcome> {
   const startedAt = Date.now();
   return new Promise<CommandOutcome>((settle) => {
@@ -435,4 +435,183 @@ function spawnFailure(error: unknown, durationMs: number): CommandOutcome {
     durationMs,
     killedPids: [],
   };
+}
+
+/**
+ * A check that could not be executed at all, expressed as a result.
+ *
+ * Every early return in `runCheck` goes through here, which is how "absent
+ * tool is not a pass" is guaranteed structurally rather than by remembering
+ * to write the right literal at four call sites.
+ */
+function unavailableResult(args: {
+  readonly check: CheckDefinition;
+  readonly reason: UnavailableReason;
+  readonly detail: string;
+  readonly revision: GitSha | null;
+  readonly fingerprint: EnvironmentFingerprint;
+  readonly subject: EvidenceSubject;
+  readonly outputLimitBytes?: number | undefined;
+}): CheckRunResult {
+  const { check, reason, detail, revision, fingerprint, subject } = args;
+  const exitStatus: EvidenceExitStatus = { kind: "unavailable", reason };
+  const stderr = capturedOutput(detail, args.outputLimitBytes);
+  return {
+    checkId: check.id,
+    status: "unavailable",
+    exitStatus,
+    revision,
+    stdout: capturedOutput("", args.outputLimitBytes),
+    stderr,
+    durationMs: 0,
+    fingerprint,
+    killedPids: [],
+    // Without a revision there is nothing to pin evidence to; recording a row
+    // with a made-up revision would be worse than recording none, because a
+    // gate reads `revision` to decide freshness.
+    evidence:
+      revision === null
+        ? null
+        : buildEvidenceDraft({
+            subject,
+            check,
+            revision,
+            fingerprint,
+            exitStatus,
+            artifact: null,
+            caveats: [detail],
+          }),
+    caveats: [detail],
+  };
+}
+
+/**
+ * Run one registered check and produce evidence for it.
+ *
+ * The sequence is deliberate:
+ *
+ * 1. A `human` check is refused here — it has no command to run and is
+ *    satisfied only through an Approval (`requestHumanCheck`).
+ * 2. A check that cannot fail is refused as `unavailable` using
+ *    `isVerifyingCheck` (#44), the one definition of a real check.
+ * 3. The revision is read from the worktree **now** (`revisionAt`).
+ * 4. The command runs under a deadline with process-tree kill.
+ * 5. Output is redacted and bounded before it is stored.
+ *
+ * It never throws for a failing check: a failure is a result, and an
+ * exception would be indistinguishable from an engine bug.
+ */
+export async function runCheck(check: CheckDefinition, options: RunCheckOptions): Promise<CheckRunResult> {
+  const env = options.env ?? process.env;
+  const fingerprint = fingerprintEnvironment(env);
+  const revision = revisionAt(options.cwd, options.gitRunner ?? realGitRunner);
+
+  if (check.kind === "human") {
+    return unavailableResult({
+      check,
+      reason: "weak_check",
+      detail:
+        `check "${check.id}" is a human check: it is satisfied by an approval, not by running a command ` +
+        "(see requestHumanCheck)",
+      revision,
+      fingerprint,
+      subject: options.subject,
+      outputLimitBytes: options.outputLimitBytes,
+    });
+  }
+
+  // #44's definition, used and not re-derived: a command that cannot fail is
+  // not verification, so running it would manufacture a passing row.
+  if (!isVerifyingCheck(check)) {
+    return unavailableResult({
+      check,
+      reason: "weak_check",
+      detail: `check "${check.id}" cannot fail, so running it verifies nothing`,
+      revision,
+      fingerprint,
+      subject: options.subject,
+      outputLimitBytes: options.outputLimitBytes,
+    });
+  }
+
+  if (revision === null) {
+    return unavailableResult({
+      check,
+      reason: "no_revision",
+      detail: `no git revision available for worktree ${options.cwd}; evidence cannot be pinned`,
+      revision: null,
+      fingerprint,
+      subject: options.subject,
+      outputLimitBytes: options.outputLimitBytes,
+    });
+  }
+
+  const cwd = resolveCheckCwd(options.cwd, check.cwd);
+  if (!existsSync(cwd)) {
+    return unavailableResult({
+      check,
+      reason: "cwd_missing",
+      detail: `working directory "${check.cwd}" does not exist in the worktree`,
+      revision,
+      fingerprint,
+      subject: options.subject,
+      outputLimitBytes: options.outputLimitBytes,
+    });
+  }
+
+  const outcome = await executeCommand({
+    command: check.command,
+    cwd,
+    env,
+    timeoutMs: options.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+    signal: options.signal,
+    killGraceMs: options.killGraceMs,
+  });
+
+  const exitStatus = classifyOutcome(outcome);
+  const status = runStatusOf(exitStatus, check.expectedExitCode);
+  const stdout = capturedOutput(outcome.stdout, options.outputLimitBytes);
+  const stderr = capturedOutput(outcome.stderr, options.outputLimitBytes);
+  const caveats = resultCaveats(exitStatus, stdout, stderr, outcome);
+
+  return {
+    checkId: check.id,
+    status,
+    exitStatus,
+    revision,
+    stdout,
+    stderr,
+    durationMs: outcome.durationMs,
+    fingerprint,
+    killedPids: outcome.killedPids ?? [],
+    evidence: buildEvidenceDraft({
+      subject: options.subject,
+      check,
+      revision,
+      fingerprint,
+      exitStatus,
+      artifact: null,
+      caveats,
+    }),
+    caveats,
+  };
+}
+
+/** Facts a reader needs that the exit status alone does not carry. */
+function resultCaveats(
+  exitStatus: EvidenceExitStatus,
+  stdout: CapturedStream,
+  stderr: CapturedStream,
+  outcome: CommandOutcome,
+): readonly string[] {
+  const caveats: string[] = [];
+  if (stdout.truncated) caveats.push(`stdout truncated from ${stdout.originalBytes} bytes`);
+  if (stderr.truncated) caveats.push(`stderr truncated from ${stderr.originalBytes} bytes`);
+  if (exitStatus.kind === "timed_out") {
+    caveats.push(`killed on deadline after ${outcome.durationMs}ms`);
+    const killed = outcome.killedPids ?? [];
+    if (killed.length > 0) caveats.push(`process tree terminated: ${killed.length} pid(s)`);
+  }
+  if (exitStatus.kind === "unavailable") caveats.push(`unavailable: ${exitStatus.reason}`);
+  return caveats;
 }
