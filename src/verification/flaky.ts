@@ -21,7 +21,7 @@
  * option PLAN leaves configurable but defaults to `false`.
  */
 import type { AcceptanceCriterion, CheckDefinition, Evidence, GitSha, Revision } from "../storage/records.ts";
-import type { CheckRunStatus } from "./evidence.ts";
+import type { CheckRunStatus, EvidenceDraft } from "./evidence.ts";
 import { runCheck, type CheckRunResult, type RunCheckOptions } from "./checks.ts";
 
 /** Blocker kind for an acceptance criterion with no covering check. */
@@ -67,7 +67,7 @@ export interface FlakyAwareResult {
    *  reconciled draft for the flaky case — the caller inserts all of them,
    *  so a reader sees the disagreeing runs linked by identical
    *  `(checkId, revision, taskRevision)`. */
-  readonly evidence: readonly import("./evidence.ts").EvidenceDraft[];
+  readonly evidence: readonly EvidenceDraft[];
 }
 
 /**
