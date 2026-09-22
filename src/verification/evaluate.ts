@@ -122,6 +122,117 @@ export function thresholdsFor(
   });
 }
 
+// ---------------------------------------------------------------------------
+// Inputs: minimal, already-filtered material about one task
+// ---------------------------------------------------------------------------
+
+/** One check linked to a criterion, with the state #51 assigned it. */
+export interface LinkedCheck {
+  readonly checkId: string;
+  readonly command: string;
+  /** `pass` / `fail` / `flaky` / `missing` / `unavailable` / `timeout`. */
+  readonly state: string;
+  /** Criterion ids the check *claims* to cover (`CheckDefinition.coversCriteria`). */
+  readonly coversCriteria: readonly string[];
+}
+
+/** One test file linked to a criterion, with a filtered excerpt of its source. */
+export interface LinkedTest {
+  readonly checkId: string;
+  readonly command: string;
+  readonly testPath: string;
+  /** Already filtered and truncated by the caller; #28 filters again. */
+  readonly excerpt: string;
+  readonly coversCriteria: readonly string[];
+}
+
+/**
+ * Everything the evaluator reads. Assembled by the caller from the store and
+ * `src/git/`; deliberately **not** the `Task`/`Evidence` records themselves,
+ * so nothing that must not leave the machine can reach a question state by
+ * accident (issue #47 Scope: "never the full diff").
+ */
+export interface EvidenceGapInput {
+  readonly taskId: string;
+  readonly taskGoal: string;
+  readonly riskClass: RiskClass;
+  readonly acceptanceCriteria: readonly CriterionRef[];
+  readonly checks: readonly LinkedCheck[];
+  readonly tests: readonly LinkedTest[];
+  /** Evidence items, already summarised and attributed to a criterion. */
+  readonly evidence: readonly (EvidenceSummary & { readonly requirementId: string })[];
+  /** The worker's completion summary. Untrusted text, judged never trusted. */
+  readonly claim: string;
+}
+
+// ---------------------------------------------------------------------------
+// Outputs
+// ---------------------------------------------------------------------------
+
+/** A semantic dimension either has an answer, or explicitly has none. */
+export type Evaluated<TValue> =
+  | { readonly evaluated: true; readonly value: TValue; readonly source: "jev" }
+  | { readonly evaluated: false; readonly reason: "jev_disabled" | "abstained" | "not_asked" };
+
+/** Why a criterion was flagged. A closed set, so a refusal is machine-readable. */
+export const GAP_REASONS = [
+  "no_linked_check",
+  "no_passing_check",
+  "no_passing_evidence",
+  "claim_unsupported",
+  "claim_unknown",
+  "jev_reports_gap",
+  "jev_abstained",
+  "no_exercising_test",
+] as const;
+export type GapReason = (typeof GAP_REASONS)[number];
+
+/** Per-(test, criterion) verdict. */
+export interface TestExercisesFinding {
+  readonly criterionId: string;
+  readonly checkId: string;
+  readonly testPath: string;
+  readonly level: Evaluated<number>;
+  /** `true` only when a Jev level cleared this risk class's floor. */
+  readonly exercises: boolean;
+}
+
+/** Everything known about one acceptance criterion after evaluation. */
+export interface CriterionFinding {
+  readonly criterionId: string;
+  readonly criterionText: string;
+  /** `true` when this criterion is a gap. Conjunction of the parts, in code. */
+  readonly gap: boolean;
+  /** Every reason, in `GAP_REASONS` order; empty only when `gap` is false. */
+  readonly reasons: readonly GapReason[];
+  /** The mapping rule: ≥1 linked passing check AND ≥1 passing evidence row. */
+  readonly mapped: boolean;
+  readonly claim: Evaluated<ClaimVerdict>;
+  readonly semanticGap: Evaluated<boolean>;
+  readonly tests: readonly TestExercisesFinding[];
+  /** Decision ids written for this criterion, for `/korwf why`. */
+  readonly decisionIds: readonly string[];
+}
+
+/** The whole-task result. `action` is what the gate's C2 Decision records. */
+export interface EvidenceGapEvaluation {
+  readonly taskId: string;
+  /** `true` when no criterion is a gap AND there is at least one criterion. */
+  readonly noGap: boolean;
+  /** `"no_gap"` | `"gap"`; exactly the vocabulary task-gate.ts C2 matches on. */
+  readonly action: "no_gap" | "gap";
+  /** Criterion ids with a gap, in input order (issue #47 Scope). */
+  readonly gapCriterionIds: readonly string[];
+  readonly findings: readonly CriterionFinding[];
+  /** `true` when any part came from a deterministic fallback. */
+  readonly degraded: boolean;
+  /** Composition rule recorded alongside the parts. */
+  readonly rule: string;
+  /** Lowest confidence across the answers that decided the outcome; `null` with none. */
+  readonly confidence: number | null;
+  readonly thresholds: EvaluatorThresholds;
+}
+
 export { TEST_EXERCISES_MIN_LEVEL };
 export type { ClaimVerdict, CriterionRef, EvidenceGapState, EvidenceSummary, RiskClass };
 export { ask, claimSupportedQuestion, evidenceGapFallback, evidenceGapQuestion, testExercisesQuestion };
