@@ -48,7 +48,6 @@ import {
   type ApprovalScope,
   type IsoTimestamp,
   type Revision,
-  type RiskClass,
   type TaskId,
   type WorkflowId,
 } from "../storage/records.ts";
