@@ -89,6 +89,69 @@ describe("AC1: reconcileRuns detects flaky at the same revision", () => {
   it("DEFAULT_RERUN_POLICY never allows flaky to satisfy the gate", () => {
     expect(DEFAULT_RERUN_POLICY.allowFlakyToPass).toBe(false);
   });
+
+  it("the reconciled flaky row is the LAST draft, so 'latest result wins' lands on flaky (#55)", () => {
+    // Found by the Stage 4 adversarial suite: storing only the per-run drafts
+    // let a fail-then-pass sequence read back as `pass`, because the gate
+    // takes the newest fresh row for a check (docs/gates.md §2).
+    const draft = {
+      workflowId: "wf-1",
+      taskId: "tk-1",
+      taskRevision: 1,
+      attemptId: null,
+      requirementId: "ac-1",
+      checkId: "c1",
+      artifact: null,
+      revision: SHA,
+      commandIdentity: { command: "npm test", cwd: ".", environmentHash: "c".repeat(64) },
+      exitStatus: { kind: "exited", code: 0 },
+      reviewer: { kind: "deterministic" },
+      caveats: [],
+      provenance: [],
+      supersedesId: null,
+    } as unknown as CheckRunResult["evidence"];
+    const failRun = run({
+      status: "fail",
+      exitStatus: { kind: "exited", code: 1 },
+      evidence: { ...(draft as object), exitStatus: { kind: "exited", code: 1 } } as never,
+    });
+    const passRun = run({ status: "pass", evidence: draft });
+    const result = reconcileRuns("c1", [failRun, passRun]);
+    expect(result.status).toBe("flaky");
+    expect(result.evidence).toHaveLength(3);
+    expect(result.evidence.at(-1)?.exitStatus).toEqual({ kind: "flaky", runs: [1, 0] });
+    expect(result.evidence.at(-1)?.caveats.join(" ")).toContain("disagreed");
+    // The individual runs are retained, not replaced.
+    expect(result.evidence.slice(0, 2).map((e) => e.exitStatus)).toEqual([
+      { kind: "exited", code: 1 },
+      { kind: "exited", code: 0 },
+    ]);
+  });
+
+  it("a run with no exit code records -1 in the flaky run list, never a real code", () => {
+    const draft = {
+      workflowId: "wf-1",
+      taskId: "tk-1",
+      taskRevision: 1,
+      attemptId: null,
+      requirementId: "ac-1",
+      checkId: "c1",
+      artifact: null,
+      revision: SHA,
+      commandIdentity: { command: "npm test", cwd: ".", environmentHash: "c".repeat(64) },
+      exitStatus: { kind: "timed_out" },
+      reviewer: { kind: "deterministic" },
+      caveats: [],
+      provenance: [],
+      supersedesId: null,
+    } as unknown as CheckRunResult["evidence"];
+    const result = reconcileRuns("c1", [
+      run({ status: "timeout", exitStatus: { kind: "timed_out" }, evidence: draft }),
+      run({ status: "pass", evidence: draft }),
+    ]);
+    expect(result.status).toBe("flaky");
+    expect(result.evidence.at(-1)?.exitStatus).toEqual({ kind: "flaky", runs: [-1, 0] });
+  });
 });
 
 function check(overrides: Partial<CheckDefinition> = {}): CheckDefinition {
