@@ -14,6 +14,9 @@
  * - `graph.ts` — dependency-graph validation, ready set and topological order over persisted
  *   Task records; wired into `plan-store.ts` so an invalid graph can never be saved (#40).
  * - `greenfield.ts` — mandated phase 0 and plan-document retrieval fallback (#38).
+ * - `state*.ts` / `invalidation.ts` / `blockers.ts` — runtime transitions (#41).
+ * - `reconcile.ts` — session resume/reload/fork/tree reconciliation against live
+ *   repository state, and the completed-action replay guard (#42).
  *
  * **Re-export style: `export *`, deliberately.** This barrel previously listed every symbol
  * explicitly, which made it a guaranteed merge conflict: four consecutive PRs (#37, #38,
@@ -36,6 +39,7 @@ export * from "./output-budget.ts";
 export * from "./plan-parse.ts";
 export * from "./plan-schema.ts";
 export * from "./plan-store.ts";
+export * from "./reconcile.ts";
 export * from "./planner.ts";
 export * from "./scope-change.ts";
 export * from "./state.ts";
