@@ -6,6 +6,8 @@
  * - `output-budget.ts` — planner task sizing against the model's `maxTokens` (#124).
  * - `attempt-budget.ts` — attempt budget plus a separate bounded harness-retry budget (#124).
  * - `attempt-controller.ts` — settlement of one worker turn (#124).
+ * - `plan-schema.ts` / `plan-parse.ts` / `planner.ts` / `plan-store.ts` —
+ *   structured plan generation with per-task verification checks (#37).
  */
 export {
   buildWorkflow,
@@ -77,3 +79,72 @@ export type {
 
 export { settleTurn, toAttemptTermination } from "./attempt-controller.ts";
 export type { AttemptTelemetry, GateResult, SettleOptions, SettledTurn } from "./attempt-controller.ts";
+
+export {
+  EXECUTABLE_CHECK_KINDS,
+  NO_CHECKS_BLOCKER,
+  OUTPUT_BUDGET_BLOCKER,
+  PLAN_CHECK_KINDS,
+  PLAN_RISK_CLASSES,
+  PLAN_SCHEMA_VERSION,
+  SUPERSEDED_BLOCKER,
+  formatPlanIssues,
+  hasRegisteredChecks,
+  ownershipOverlaps,
+  taskReadiness,
+  validateDependencyGraph,
+  validatePlanDocument,
+} from "./plan-schema.ts";
+export type {
+  DependencyGraphResult,
+  PlanArtifact,
+  PlanCheck,
+  PlanCheckKind,
+  PlanCriterion,
+  PlanDocument,
+  PlanIssue,
+  PlanPhase,
+  PlanRuleId,
+  PlanTask,
+  PlanValidation,
+  TaskReadiness,
+} from "./plan-schema.ts";
+
+export { MAX_PLAN_BYTES, MAX_RETRY_FINDINGS, buildRetryPrompt, extractJson, parsePlanOutput } from "./plan-parse.ts";
+export type { PlanParseResult } from "./plan-parse.ts";
+
+export {
+  DEFAULT_MAX_EXCERPT_CHARS,
+  DEFAULT_PLAN_ATTEMPTS,
+  UNKNOWN_WORKER_LIMITS,
+  buildPlannerPrompt,
+  deterministicPlanSkeleton,
+  generatePlan,
+  planRulesText,
+  planSchemaText,
+  sizePlanTasks,
+  tasksNeedingDecomposition,
+} from "./planner.ts";
+export type {
+  GeneratePlanOptions,
+  GeneratePlanResult,
+  PlannerAttemptRecord,
+  PlannerContextExcerpt,
+  PlannerIntake,
+  PlannerModel,
+  PlannerPromptInput,
+} from "./planner.ts";
+
+export {
+  INITIAL_TASK_STATUS,
+  PlanPersistError,
+  defaultIntegrationBranch,
+  definitionOfDoneChanged,
+  initialStatusFor,
+  persistOrRevisePlan,
+  persistPlan,
+  readStoredPlan,
+  revisePlan,
+  summarisePersistedPlan,
+} from "./plan-store.ts";
+export type { IdMapping, PersistPlanOptions, PersistPlanResult, StoredPlan } from "./plan-store.ts";
