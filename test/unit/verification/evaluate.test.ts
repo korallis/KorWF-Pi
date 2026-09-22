@@ -324,3 +324,100 @@ describe("AC3 every evaluation writes Decision records with raw distributions", 
     expect(gapRow.policyRule).toBe("fallback:criterion_mapping");
   });
 });
+
+describe("AC2 the deterministic fallback is meaningful with Jev disabled", () => {
+  it("AC2 mapping-only: every criterion needs at least one linked passing check", async () => {
+    const result = await evaluateMappingOnly(scenario3());
+    // Scenario 3 patch #1 satisfies the mapping rule — the documented
+    // limitation of variant B (03-wrong-test.md §B1), covered by review (#48).
+    expect(result.action).toBe("no_gap");
+    expect(result.rule).toBe("verify.evidence_gap:mapping_only:no_gap");
+    expect(result.findings[0]!.mapped).toBe(true);
+  });
+
+  it("AC2 mapping-only: a criterion with no linked check is a gap", async () => {
+    const input = scenario3({
+      checks: [{ checkId: "chk2", command: "npm run typecheck", state: "pass", coversCriteria: ["other"] }],
+    });
+    const result = await evaluateMappingOnly(input);
+    expect(result.action).toBe("gap");
+    expect(result.findings[0]!.reasons).toContain("no_linked_check");
+    expect(result.gapCriterionIds).toEqual(["ac1"]);
+  });
+
+  it("AC2 mapping-only: a failing linked check is a gap", async () => {
+    const input = scenario3({
+      checks: [{ checkId: "chk1", command: "npm test", state: "fail", coversCriteria: ["ac1"] }],
+    });
+    const result = await evaluateMappingOnly(input);
+    expect(result.findings[0]!.reasons).toContain("no_passing_check");
+  });
+
+  it("AC2 mapping-only: flaky/missing/unavailable never satisfy the rule (#51)", async () => {
+    for (const state of ["flaky", "missing", "unavailable", "timeout"]) {
+      const input = scenario3({
+        checks: [{ checkId: "chk1", command: "npm test", state, coversCriteria: ["ac1"] }],
+        evidence: [
+          { requirementId: "ac1", checkId: "chk1", command: "npm test", state, paths: [], excerpt: "" },
+        ],
+      });
+      const result = await evaluateMappingOnly(input);
+      expect(result.action, `state ${state}`).toBe("gap");
+    }
+  });
+
+  it("AC2 mapping-only: a passing check with no passing evidence row is a gap", async () => {
+    const result = await evaluateMappingOnly(scenario3({ evidence: [] }));
+    expect(result.findings[0]!.reasons).toContain("no_passing_evidence");
+  });
+
+  it("AC2 mapping-only: semantic dimensions report not_evaluated, never a pass", async () => {
+    const result = await evaluateMappingOnly(scenario3());
+    const finding = result.findings[0]!;
+    expect(finding.claim).toEqual({ evaluated: false, reason: "jev_disabled" });
+    expect(finding.semanticGap).toEqual({ evaluated: false, reason: "jev_disabled" });
+    expect(finding.tests[0]!.level).toEqual({ evaluated: false, reason: "jev_disabled" });
+    expect(finding.tests[0]!.exercises).toBe(false);
+    expect(result.degraded).toBe(true);
+  });
+
+  it("AC2 evaluateCriterion is per-criterion: adding criteria cannot help the others", async () => {
+    const many = scenario3({
+      acceptanceCriteria: [
+        { id: "ac1", text: "empty items => 400 empty_order" },
+        { id: "ac2", text: "an unknown sku => 422" },
+      ],
+    });
+    const one = await evaluateCriterion(scenario3(), scenario3().acceptanceCriteria[0]!);
+    const first = await evaluateCriterion(many, many.acceptanceCriteria[0]!);
+    const second = await evaluateCriterion(many, many.acceptanceCriteria[1]!);
+    expect(first.reasons).toEqual(one.reasons);
+    expect(second.gap).toBe(true);
+    expect(second.reasons).toContain("no_linked_check");
+  });
+});
+
+describe("AC2 thresholds per risk class are conservative and cannot be weakened", () => {
+  it("AC2 higher risk is strictly stricter on every axis", () => {
+    const { low, medium, high } = DEFAULT_EVALUATOR_THRESHOLDS;
+    expect(medium.claimConfidence).toBeGreaterThan(low.claimConfidence);
+    expect(high.claimConfidence).toBeGreaterThan(medium.claimConfidence);
+    expect(medium.gapCeiling).toBeLessThan(low.gapCeiling);
+    expect(high.gapCeiling).toBeLessThan(medium.gapCeiling);
+    expect(high.testExercisesMinLevel).toBeGreaterThan(low.testExercisesMinLevel);
+    expect(low.requireExercisingTest).toBe(false);
+    expect(high.requireExercisingTest).toBe(true);
+  });
+
+  it("AC2 a config override may tighten a floor but never loosen it", () => {
+    const loosened = thresholdsFor("high", {
+      high: { claimConfidence: 0.1, gapCeiling: 0.99, testExercisesMinLevel: 0, requireExercisingTest: false },
+    });
+    expect(loosened).toEqual(DEFAULT_EVALUATOR_THRESHOLDS.high);
+
+    const tightened = thresholdsFor("low", { low: { claimConfidence: 0.99, gapCeiling: 0.01, requireExercisingTest: true } });
+    expect(tightened.claimConfidence).toBe(0.99);
+    expect(tightened.gapCeiling).toBe(0.01);
+    expect(tightened.requireExercisingTest).toBe(true);
+  });
+});
