@@ -375,3 +375,92 @@ function looksLikeCommand(command: string): boolean {
   // openers here cannot begin a command line in any toolchain.
   return !/^(please|ensure|confirm|review|the|a|an|it|we|you|this|that|someone)$/i.test(first);
 }
+
+function validatePhases(bag: IssueBag, raw: unknown): PlanPhase[] {
+  const items = requireArray(bag, raw, "phases");
+  if (items === null) return [];
+  if (items.length === 0) {
+    bag.error("range", "phases", `a plan must contain at least one phase`);
+    return [];
+  }
+  const seen = new Set<string>();
+  const out: PlanPhase[] = [];
+  items.forEach((item, i) => {
+    const at = `phases[${i}]`;
+    if (!isRecord(item)) {
+      bag.error("type", at, `expected object, got ${typeName(item)}`);
+      return;
+    }
+    const id = requireString(bag, item["id"], `${at}.id`);
+    const goal = requireString(bag, item["goal"], `${at}.goal`);
+    const order = requireInteger(bag, item["order"], `${at}.order`);
+    const criteria = validateCriteria(bag, item["acceptanceCriteria"], `${at}.acceptanceCriteria`);
+    if (id === null || goal === null || order === null) return;
+    if (order < 0) {
+      bag.error("range", `${at}.order`, `must be >= 0, got ${order}`);
+      return;
+    }
+    if (seen.has(id)) {
+      bag.error("duplicate_id", `${at}.id`, `duplicate phase id "${id}"`);
+      return;
+    }
+    seen.add(id);
+    const branch = item["integrationBranch"];
+    out.push({
+      id,
+      order,
+      goal,
+      acceptanceCriteria: criteria,
+      ...(typeof branch === "string" && branch.trim().length > 0 ? { integrationBranch: branch } : {}),
+    });
+  });
+
+  // Phase order must be a dense 0..n-1 sequence: a gap or a duplicate means
+  // the planner's ordering is ambiguous, and `run <phase>` would be too.
+  const orders = out.map((p) => p.order).sort((a, b) => a - b);
+  orders.forEach((value, index) => {
+    if (value !== index) {
+      bag.error(
+        "phase_order",
+        "phases",
+        `phase order must be a dense 0..${out.length - 1} sequence; got [${orders.join(", ")}]`,
+      );
+    }
+  });
+  return out;
+}
+
+function validateArtifacts(bag: IssueBag, raw: unknown, path: string): PlanArtifact[] | undefined {
+  if (raw === undefined) return undefined;
+  const items = requireArray(bag, raw, path);
+  if (items === null) return undefined;
+  const out: PlanArtifact[] = [];
+  items.forEach((item, i) => {
+    const at = `${path}[${i}]`;
+    if (!isRecord(item)) {
+      bag.error("type", at, `expected object, got ${typeName(item)}`);
+      return;
+    }
+    const p = requireString(bag, item["path"], `${at}.path`);
+    const estimate = item["estimate"];
+    if (p === null) return;
+    checkRelativePath(bag, p, `${at}.path`);
+    if (!isRecord(estimate)) {
+      bag.error("type", `${at}.estimate`, `expected object, got ${typeName(estimate)}`);
+      return;
+    }
+    const unit = estimate["unit"];
+    const value = estimate["value"];
+    if (unit !== "tokens" && unit !== "lines" && unit !== "bytes") {
+      bag.error("enum", `${at}.estimate.unit`, `expected tokens|lines|bytes, got ${JSON.stringify(unit)}`);
+      return;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      bag.error("range", `${at}.estimate.value`, `expected a non-negative finite number, got ${typeName(value)}`);
+      return;
+    }
+    const atomic = item["atomic"];
+    out.push({ path: p, estimate: { unit, value }, ...(atomic === true ? { atomic: true } : {}) });
+  });
+  return out;
+}
