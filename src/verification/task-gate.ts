@@ -337,6 +337,13 @@ export function checkReasonCode(state: CheckRunStatus): TaskGateReasonCode {
  */
 const CLAIM_OUTCOMES: readonly string[] = ["succeeded"];
 
+/**
+ * Roles that can *author* the work being gated. A reviewer's or verifier's
+ * successful attempt is not a completion claim — and, more importantly, must
+ * not be mistaken for the author when C3 checks review independence.
+ */
+const AUTHOR_ROLES: readonly Attempt["role"][] = ["implementer", "integrator"];
+
 /** The attempt whose outcome produced the completion claim, if any. */
 export function claimingAttempt(input: Pick<TaskGateInput, "task" | "attempts">): Attempt | undefined {
   const candidates = input.attempts
@@ -344,6 +351,7 @@ export function claimingAttempt(input: Pick<TaskGateInput, "task" | "attempts">)
       (attempt) =>
         attempt.taskId === input.task.id &&
         attempt.taskRevision === input.task.revision &&
+        AUTHOR_ROLES.includes(attempt.role) &&
         attempt.outcome !== null &&
         CLAIM_OUTCOMES.includes(attempt.outcome),
     )
