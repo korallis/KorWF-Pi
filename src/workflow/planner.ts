@@ -167,6 +167,36 @@ export function buildPlannerPrompt(input: PlannerPromptInput): string {
   return lines.join("\n");
 }
 
+/**
+ * The non-negotiable rules, restated for the model. Every one of these is
+ * also enforced by `validatePlanDocument`; a plan that breaks one is rejected
+ * with a path-qualified error, not quietly repaired.
+ */
+export function planRulesText(limits?: ModelOutputLimits, thinking: ThinkingLevel = "off"): readonly string[] {
+  const lines = [
+    "## Rules (enforced in code — a plan that breaks one is rejected)",
+    "",
+    "1. **Every task carries at least one verification check.** A check is a test command, an assertion, a lint or typecheck invocation, or an explicitly required human check. A task with no checks is stored as `proposed` with the blocker `no_checks` and can never become ready (PLAN \u00a72.3). This is the point of the plan: the deterministic gate needs something to gate on.",
+    "2. **Executable checks are command lines, not descriptions.** `npm test -- planner` is a check; \u201crun the tests and confirm they pass\u201d is not. Put the instruction in `command` for `kind: \"human\"` instead.",
+    "3. **Every acceptance criterion should be covered** by at least one check's `coversCriteria`. Criteria are observable outcomes, not activities.",
+    "4. **Tasks are atomic**: one observable outcome, one owner, one coherent set of files.",
+    "5. **`dependencies` name task ids in this document**, form no cycle, and never point into a later phase.",
+    "6. **Ownership paths are repository-relative.** Two tasks in the same phase that own the same path cannot run in parallel; prefer to merge or sequence them.",
+    "7. **Phases are ordered 0,1,2,\u2026 with no gaps.** For a greenfield repository, phase 0 creates the repository and the test scaffolding, so later phases have checks that can run at all.",
+  ];
+  if (limits !== undefined) {
+    lines.push(
+      `8. **Size each task against the worker model's per-turn output ceiling** (\`maxTokens\` = ${limits.maxTokens ?? "unreported"}${thinking === "off" ? "" : `, thinking ${thinking}`}), not its context window. Declare \`expectedArtifacts\` for every file a task produces. An artifact estimated above the documented fraction of that ceiling must be split across tasks or produced in explicit incremental steps: a turn that exceeds the ceiling is cut off before its tool call is emitted and writes nothing.`,
+    );
+  } else {
+    lines.push(
+      "8. **Declare `expectedArtifacts`** for every file a task produces, with a size estimate. Tasks are sized against the worker model's per-turn output ceiling, not its context window.",
+    );
+  }
+  lines.push("", "Return only the JSON document. No commentary before or after it.");
+  return lines;
+}
+
 function renderExcerpt(excerpt: PlannerContextExcerpt, maxChars: number): string[] {
   const p = excerpt.provenance;
   const range = p.range === null ? "whole file" : `lines ${p.range.startLine}-${p.range.endLine}`;
