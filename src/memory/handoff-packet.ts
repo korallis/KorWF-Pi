@@ -64,6 +64,41 @@ export interface BuildHandoffPacketInput {
   readonly now: () => IsoTimestamp;
 }
 
+/**
+ * Build the packet from records that already exist. This function performs
+ * no I/O and does not decide handoff-vs-restart (`src/workers/handoff.ts`
+ * does); it only assembles what a substitute model needs to continue.
+ */
 export function buildHandoffPacket(input: BuildHandoffPacketInput): HandoffPacket {
-  throw new Error("not implemented");
+  const { attempt } = input;
+  return {
+    taskId: attempt.taskId,
+    fromAttemptId: attempt.id,
+    task: input.task,
+    done: input.progressNotes,
+    remaining: input.remaining,
+    decisions: input.decisions,
+    openQuestions: input.openQuestions,
+    evidence: input.evidence.map((e) => ({
+      evidenceId: e.id,
+      requirementId: e.requirementId,
+      summary: describeEvidence(e),
+    })),
+    requestedModel: attempt.requestedModel,
+    substituteModel: input.substituteModel,
+    fallbackReason: attempt.fallbackReason,
+    builtAt: input.now(),
+  };
+}
+
+function describeEvidence(e: Evidence): string {
+  const status =
+    e.exitStatus.kind === "exited"
+      ? `exited ${e.exitStatus.code}`
+      : e.exitStatus.kind === "signalled"
+        ? `signalled ${e.exitStatus.signal}`
+        : e.exitStatus.kind === "unavailable"
+          ? `unavailable: ${e.exitStatus.reason}`
+          : e.exitStatus.kind;
+  return `${e.checkId ?? "review"} @ ${e.revision.slice(0, 12)}: ${status}`;
 }
