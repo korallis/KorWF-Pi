@@ -226,10 +226,22 @@ export async function chooseFallback(params: ChooseFallbackParams): Promise<Fall
   }
 
   // (5) Re-rank the still-available candidates for the same task profile.
+  // Primary preference (#65): at a task boundary, once the primary has
+  // cleared it is a candidate again like any other, but the recovery rule
+  // ("retry the primary at the next task boundary") means it gets first
+  // look, not just an equal vote — so it is moved to the front of the set
+  // handed to selection. This never *forces* the primary (an inadequate or
+  // policy-rejected primary still falls through to the next candidate); it
+  // only breaks a tie in the primary's favour instead of leaving candidate
+  // order to be an accident of caller iteration.
+  const rankedForBoundary =
+    params.atTaskBoundary === true
+      ? [...available].sort((a, b) => (a.ref === attempt.requestedModel ? -1 : b.ref === attempt.requestedModel ? 1 : 0))
+      : available;
   const result = await selectModel({
     ctx: params.ctx,
     profile: attempt.taskProfile,
-    candidates: available,
+    candidates: rankedForBoundary,
     allowlist: params.allowlist,
     staticOrder: params.staticOrder,
     pin: null,
@@ -261,11 +273,15 @@ export async function chooseFallback(params: ChooseFallbackParams): Promise<Fall
     };
   }
 
+  if (result.usedModel === attempt.usedModel) {
+    // The re-rank landed on the same model already in use — nothing
+    // actually changed, even though a re-rank happened (e.g. a task
+    // boundary re-ranked and confirmed the current substitute is still
+    // the best choice). Not a switch: the Attempt is untouched.
+    return { kind: "unchanged" };
+  }
+
   if (result.usedModel === attempt.requestedModel) {
-    if (attempt.usedModel === attempt.requestedModel) {
-      // Already on the primary; nothing to switch.
-      return { kind: "unchanged" };
-    }
     // Recovery to primary (#65 "Recovery"): the primary cleared and was
     // re-ranked back to the top. This is a real switch, not a no-op — the
     // Attempt must show the fallback ending, so `fallbackReason` is `null`.
