@@ -580,3 +580,164 @@ describe("guard evaluation fails closed in every shape", () => {
     expect(evaluateGuards(["checks_registered"], { checks_registered: () => true }, context).satisfied).toBe(true);
   });
 });
+
+describe("every attempt is audited, accepted or rejected", () => {
+  it("records revisions, mode, policy and actor on an accepted transition", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "ready" }));
+    const result = transitionTask({
+      store,
+      taskId: TK,
+      to: "running",
+      trigger: "dispatch",
+      actor: { kind: "engine", identity: "engine" },
+      guards: allGuardsTrue(),
+      evidenceRefs: ["ev:auth", "ev:budget"],
+      gitRevision: "b".repeat(40),
+      now: () => AT,
+      newId,
+    });
+    const event = store.transitionLog.get(result.event.eventId);
+    expect(event?.fromState).toBe("ready");
+    expect(event?.toState).toBe("running");
+    expect(event?.transitionId).toBe("task-dispatch");
+    expect(event?.taskRevision).toBe(1);
+    expect(event?.planRevision).toBe(1);
+    expect(event?.mode).toBe("supervised");
+    expect(event?.policyVersion).toBeTruthy();
+    expect(event?.actor).toEqual({ kind: "engine", identity: "engine" });
+    expect(event?.evidenceRefs).toEqual(["ev:auth", "ev:budget"]);
+    expect(event?.beforeHash).not.toBe(event?.afterHash);
+  });
+
+  it("a rejection is persisted even though the transaction rolled back", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "ready" }));
+    expect(() =>
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "done",
+        trigger: "task_gate_passed",
+        actor: { kind: "engine", identity: "engine" },
+        guards: allGuardsTrue(),
+        evidenceRefs: ["ev:1"],
+        now: () => AT,
+        newId,
+      }),
+    ).toThrow(TransitionRejected);
+    const events = store.transitionLog.forSubject("task", TK);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.disposition).toBe("rejected");
+    expect(store.tasks.require(TK).status).toBe("ready");
+  });
+
+  it("the transition log cannot be updated or deleted", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "ready" }));
+    const result = transitionTask({
+      store,
+      taskId: TK,
+      to: "running",
+      trigger: "dispatch",
+      actor: { kind: "engine", identity: "engine" },
+      guards: allGuardsTrue(),
+      evidenceRefs: ["ev:1"],
+      now: () => AT,
+      newId,
+    });
+    expect(() =>
+      store.connection
+        .prepare("UPDATE transition_event SET disposition = 'accepted' WHERE eventId = ?")
+        .run(result.event.eventId),
+    ).toThrow(/append-only/);
+    expect(() =>
+      store.connection.prepare("DELETE FROM transition_event WHERE eventId = ?").run(result.event.eventId),
+    ).toThrow(/append-only/);
+  });
+
+  it("rejects a request made against a stale snapshot", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "ready" }));
+    let error: TransitionRejected | undefined;
+    try {
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "running",
+        trigger: "dispatch",
+        actor: { kind: "engine", identity: "engine" },
+        guards: allGuardsTrue(),
+        evidenceRefs: ["ev:1"],
+        expected: { status: "proposed", revision: 1 },
+        now: () => AT,
+        newId,
+      });
+    } catch (caught) {
+      error = caught as TransitionRejected;
+    }
+    expect(error?.code).toBe("stale_snapshot");
+    expect(store.tasks.require(TK).status).toBe("ready");
+  });
+
+  it("rejects an edge that requires evidence when none is supplied", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "ready" }));
+    let error: TransitionRejected | undefined;
+    try {
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "running",
+        trigger: "dispatch",
+        actor: { kind: "engine", identity: "engine" },
+        guards: allGuardsTrue(),
+        now: () => AT,
+        newId,
+      });
+    } catch (caught) {
+      error = caught as TransitionRejected;
+    }
+    expect(error?.code).toBe("missing_evidence");
+  });
+
+  it("rejects an unknown trigger and an unknown target state", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "ready" }));
+    let unknownTrigger: TransitionRejected | undefined;
+    try {
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "running",
+        trigger: "make_it_so",
+        actor: { kind: "engine", identity: "engine" },
+        guards: allGuardsTrue(),
+        evidenceRefs: ["ev:1"],
+        now: () => AT,
+        newId,
+      });
+    } catch (caught) {
+      unknownTrigger = caught as TransitionRejected;
+    }
+    expect(unknownTrigger?.code).toBe("unknown_trigger");
+
+    let unknownState: TransitionRejected | undefined;
+    try {
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "finished" as TaskStatus,
+        trigger: "dispatch",
+        actor: { kind: "engine", identity: "engine" },
+        guards: allGuardsTrue(),
+        evidenceRefs: ["ev:1"],
+        now: () => AT,
+        newId,
+      });
+    } catch (caught) {
+      unknownState = caught as TransitionRejected;
+    }
+    expect(unknownState?.code).toBe("unknown_state");
+  });
+});
