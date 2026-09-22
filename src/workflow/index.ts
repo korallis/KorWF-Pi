@@ -120,6 +120,7 @@ export {
   buildPlannerPrompt,
   deterministicPlanSkeleton,
   generatePlan,
+  greenfieldScaffoldingIssues,
   planRulesText,
   planSchemaText,
   sizePlanTasks,

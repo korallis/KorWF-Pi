@@ -10,6 +10,7 @@ import {
   buildPlannerPrompt,
   deterministicPlanSkeleton,
   generatePlan,
+  greenfieldScaffoldingIssues,
   planSchemaText,
   sizePlanTasks,
   tasksNeedingDecomposition,
@@ -248,6 +249,59 @@ describe("generated tasks are sized against the model's output ceiling (#124)", 
     const prompt = buildPlannerPrompt({ intake: intake(), context: [], workerLimits: limits });
     expect(prompt).toContain("16384");
     expect(prompt).toContain("not its context window");
+  });
+});
+
+describe("AC: greenfield plans need test scaffolding in phase 0 (PLAN §2.3, §2.7)", () => {
+  it("warns when phase 0 registers no executable check", () => {
+    const plan = minimalPlan({
+      tasks: [
+        planTask({
+          checks: [
+            {
+              id: "c1",
+              kind: "human" as const,
+              command: "Look at it and decide whether it seems fine.",
+              cwd: ".",
+              expectedExitCode: 0,
+              coversCriteria: ["ac1"],
+              required: true,
+            },
+          ],
+        }),
+      ],
+    });
+    const issues = greenfieldScaffoldingIssues(plan);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain("runnable test harness");
+  });
+
+  it("does not warn when phase 0 registers a command check", () => {
+    expect(greenfieldScaffoldingIssues(minimalPlan())).toEqual([]);
+  });
+
+  it("generatePlan surfaces the warning only for a greenfield intake", async () => {
+    const humanOnly = minimalPlan({
+      tasks: [
+        planTask({
+          checks: [
+            {
+              id: "c1",
+              kind: "human" as const,
+              command: "Inspect the output by hand.",
+              cwd: ".",
+              expectedExitCode: 0,
+              coversCriteria: ["ac1"],
+              required: true,
+            },
+          ],
+        }),
+      ],
+    });
+    const green = await generatePlan({ intake: intake({ greenfield: true }), context: [], model: () => humanOnly });
+    const brown = await generatePlan({ intake: intake({ greenfield: false }), context: [], model: () => humanOnly });
+    expect(green.ok && green.warnings.some((w) => w.message.includes("runnable test harness"))).toBe(true);
+    expect(brown.ok && brown.warnings.some((w) => w.message.includes("runnable test harness"))).toBe(false);
   });
 });
 

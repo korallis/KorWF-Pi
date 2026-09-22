@@ -334,11 +334,14 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Genera
 
     const parsed: PlanParseResult = parsePlanOutput(raw);
     if (parsed.ok) {
-      attempts.push({ attempt, ok: true, errors: [], warnings: parsed.warnings, retryPrompt: null });
+      const warnings = options.intake.greenfield
+        ? [...parsed.warnings, ...greenfieldScaffoldingIssues(parsed.plan)]
+        : parsed.warnings;
+      attempts.push({ attempt, ok: true, errors: [], warnings, retryPrompt: null });
       return {
         ok: true,
         plan: parsed.plan,
-        warnings: parsed.warnings,
+        warnings,
         attempts,
         sizing: sizePlanTasks(parsed.plan, options.workerLimits, options.workerThinking),
       };
@@ -362,6 +365,43 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Genera
       `Planning failed after ${maxAttempts} attempt(s); nothing was saved. Last findings:\n` +
       lastErrors.map((e) => `  ! ${e.path === "" ? "<root>" : e.path}: ${e.message} [${e.rule}]`).join("\n"),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Greenfield scaffolding (PLAN §2.3, §2.7)
+// ---------------------------------------------------------------------------
+
+/**
+ * PLAN §2.3: "For greenfield projects the planner also produces the test
+ * scaffolding as early tasks."
+ *
+ * Checked rather than assumed: in an empty repository every check a later task
+ * registers is unrunnable until something can run tests at all, so a
+ * greenfield plan whose first phase builds no scaffolding produces tasks that
+ * are `ready` on paper and blocked in practice.
+ *
+ * Reported as warnings — the user may legitimately be adding to a project
+ * whose harness arrives another way — but reported, never inferred away.
+ */
+export function greenfieldScaffoldingIssues(plan: PlanDocument): readonly PlanIssue[] {
+  const first = plan.phases.find((p) => p.order === 0);
+  if (first === undefined) return [];
+  const firstPhaseTasks = plan.tasks.filter((t) => t.phaseId === first.id);
+  if (firstPhaseTasks.length === 0) return [];
+  const scaffolds = firstPhaseTasks.some((task) =>
+    task.checks.some((check) => check.kind === "command" || check.kind === "typecheck" || check.kind === "lint"),
+  );
+  if (scaffolds) return [];
+  return [
+    {
+      rule: "no_checks",
+      path: `phases[${plan.phases.indexOf(first)}]`,
+      severity: "warning",
+      message:
+        `greenfield plan: phase "${first.id}" registers no executable check, so nothing in it can ` +
+        `establish a runnable test harness. Later tasks' checks will have no runner (PLAN \u00a72.3, \u00a72.7).`,
+    },
+  ];
 }
 
 // ---------------------------------------------------------------------------
