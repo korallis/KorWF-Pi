@@ -109,6 +109,9 @@ export interface ArtifactSink {
 
 const DEFAULT_ESTIMATE_REQUESTS = 1;
 
+/** Smallest gap between two wall-clock checks, so a re-arm cannot spin. */
+const RE_ARM_FLOOR_MS = 25;
+
 /**
  * Live runs, so `/korwf pause|resume|cancel` can address a worker by id and
  * so shutdown can stop everything.
@@ -320,6 +323,12 @@ export class WorkerRun {
    * Without this a worker that emits nothing — a `sleep`, a hung request —
    * would never be checked, because every other limit is event-driven. The
    * timer is `unref`ed so it can never hold the process open by itself.
+   *
+   * It **re-arms** after a check that found no breach. A single-shot timer
+   * fires at `deadline` and can observe `elapsed === limit`, which is not yet
+   * *over* the limit; with no re-arm the worker would then never be checked
+   * again and would run forever one millisecond inside its budget. The
+   * re-arm floor keeps that from becoming a spin.
    */
   #armElapsedTimer(): void {
     this.#clearTimer();
@@ -327,8 +336,12 @@ export class WorkerRun {
     const wait = msUntilElapsedLimit(this.handle.contract.budget, this.elapsedMs);
     if (wait === null) return;
     const timer = setTimeout(() => {
-      void this.#enforceLimits();
-    }, wait);
+      void this.#enforceLimits().then(() => {
+        if (this.#breach === null && this.#state === "running" && this.handle.exit === undefined) {
+          this.#armElapsedTimer();
+        }
+      });
+    }, Math.max(RE_ARM_FLOOR_MS, wait));
     timer.unref?.();
     this.#timer = timer;
   }
