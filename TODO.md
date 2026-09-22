@@ -54,7 +54,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Greenfield bootstrap: repo init, scaffolding phase, test infrastructure tasks first. (#38)
 - [x] Atomicity/coverage/readiness evaluators; "no checks → not ready" rule.
 - [x] Dependency validation and cycle detection.
-- [ ] Task and phase transitions, blockers, revision tracking, reapproval, scope-change handling.
+- [x] Task and phase transitions, blockers, revision tracking, reapproval, scope-change handling. (#41 → `src/workflow/state.ts`, `blockers.ts`, `invalidation.ts`, `scope-change.ts`)
 - [ ] Session resume/reload/fork/tree reconciliation with live repo state.
 - [ ] `tasks` and `phases` boards; plan/TODO export.
 - [ ] Prompt-injection and misleading-description tests.

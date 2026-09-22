@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { openStore, type Store } from "../../../src/storage/db.ts";
-import type { PhaseId, TaskId, TaskStatus, WorkflowId } from "../../../src/storage/records.ts";
+import type { PhaseId, TaskId, TaskStatus } from "../../../src/storage/records.ts";
 import {
   PHASE_STATES,
   PHASE_TRANSITIONS,
@@ -42,7 +42,6 @@ import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 import { makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
 
 const AT = "2026-01-01T00:00:00.000Z";
-const WF = "wf-1" as WorkflowId;
 const PH = "ph-1" as PhaseId;
 const TK = "tk-1" as TaskId;
 

@@ -1,10 +1,39 @@
 # KorWF task and phase state machine
 
-**Status:** Stage 1 contract, issue #13. **Authority:** PLAN §5, §2.3–2.6,
+**Status:** Stage 1 contract, issue #13; **implemented at runtime by issue #41**. **Authority:** PLAN §5, §2.3–2.6,
 §3.C, §3.D, §3.F and §7. The data counterpart is
 [`src/workflow/transitions.ts`](../src/workflow/transitions.ts); record vocabulary is
-[`records.md`](records.md). This is **not a running engine**. Stage 3 implements the
-contract; #14 refines gate formulas, #15 approval classes, and #23 persistence.
+[`records.md`](records.md). #14 refines gate formulas, #15 approval classes, and #23
+persistence.
+
+### Runtime implementation (#41)
+
+The engine that applies this specification is:
+
+| Module | Responsibility |
+|---|---|
+| [`src/workflow/state.ts`](../src/workflow/state.ts) | `transitionTask` / `transitionPhase` — the **only** writers of `Task.status` and `Phase.gateStatus`. Conjunctive fail-closed guard evaluation, actor authorisation, snapshot freshness, evidence presence, gating substages, and one `transition_event` row for every accepted **and** rejected request. |
+| [`src/workflow/blockers.ts`](../src/workflow/blockers.ts) | Blockers as records. `blocked` is derived from unresolved rows; resolving the last one does not grant readiness. |
+| [`src/workflow/invalidation.ts`](../src/workflow/invalidation.ts) | §5 applied: each enumerated event → its task/phase state effect, plus task-revision bumping and evidence exclusion. |
+| [`src/workflow/scope-change.ts`](../src/workflow/scope-change.ts) | §3.C: an inert proposal, persisted only against an explicit, unspent, user-granted approval naming its digest. |
+| `transition_event` and `blocker` tables | `src/storage/migrations/0005-transitions.sql`, wrapped by `src/storage/transition-log.ts`. Both refuse UPDATE/DELETE by SQL trigger. |
+
+Three properties the runtime adds to the data contract:
+
+- **Guards fail closed in four shapes.** An absent evaluator, `false`,
+  `"unknown"` and a thrown error are all failures, and every failing guard id
+  is reported at once. `taskDoneGuards({})` therefore makes `done`
+  unreachable: the gate formulas are Stage 4, and until they exist the hook
+  rejects rather than assumes.
+- **Structural guards cannot be waived.** `checks_registered`,
+  `readiness_valid` (dependencies done, no unresolved blocker) and
+  `blocker_present` are computed from the store and combined with the
+  caller's table by conjunction, so a caller supplying `() => true` for one
+  of them does not change the outcome.
+- **A rejection is persisted even though nothing else is.** The event is
+  built inside the evaluating transaction and appended in a fresh one after
+  that transaction rolls back, so a refusal leaves exactly one row — the
+  audit of the refusal — and no mutation of task, phase, approval or attempt.
 
 ## 1. Interpretation and ownership
 
@@ -326,6 +355,12 @@ stateDiagram-v2
 
 ## 8. Verification and limits
 
+- `npm test -- workflow/state` — the **runtime** suites added by #41:
+  `test/unit/workflow/state.test.ts` (table-driven over every ordered pair of
+  task and of phase states; `done` unreachable without the gate hooks),
+  `state-blockers.test.ts`, `state-invalidation.test.ts` (walks
+  `APPROVAL_INVALIDATION_EVENTS`, so a new event fails the suite until it is
+  handled) and `state-scope-change.test.ts`.
 - `test -f docs/state-machine.md && test -f src/workflow/transitions.ts`
 - `node --test test/workflow/transitions.test.mjs` — offline structural contract tests:
   all ready edges, unique engine-only success edges and gate conjunctions, outgoing
@@ -333,8 +368,12 @@ stateDiagram-v2
 - `test/workflow/transitions.types.test.ts` — compile-time exhaustiveness against #12's
   status/reason unions (run with a local TypeScript compiler, no network install).
 
-These tests verify **the specification data**, not runtime enforcement. No live model
-or TypeSafe calls, Pi integration, evaluator, scheduler, policy engine, storage migration,
-or runtime bypass are introduced. Later implementation must add adversarial runtime
-checks for every tool/worker/store mutation route; TypeScript readonly fields alone are
-not a security boundary.
+The `test/workflow/` suites verify **the specification data**; the `test/unit/workflow/state*`
+suites verify the runtime enforcement of it. No live model or TypeSafe calls are made by
+either. Still outstanding after #41: the gate *formulas* behind
+`all_checks_pass_exact_revision`, `no_jev_gap_or_disabled` and
+`policy_review_satisfied` (Stage 4, #46–#49) — until they are supplied the hook rejects,
+so `done` is unreachable rather than assumed — and the scheduler that decides which
+ready task to dispatch (Stage 6). TypeScript readonly fields alone are not a security
+boundary: the enforcement above is by guard evaluation and SQL trigger, and the
+adversarial route tests belong with the tool and worker mutation paths.
