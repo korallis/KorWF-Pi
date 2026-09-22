@@ -16,6 +16,7 @@ import { enforcePolicy } from "../models/select.ts";
 import type { ModelAllowlist, ModelRef } from "../config/types.ts";
 import { DEFAULT_MAX_DEPTH } from "./env.ts";
 import { ROLE_IDS, SPAWN_TOOL_NAMES, isReadOnlyRole, roleTools, type RoleId } from "./roles.ts";
+import { assertRoutesClosed } from "./tool-gate.ts";
 
 /** Resource inheritance the role explicitly opts into (ADR 0004 row 12). */
 export interface ResourceInheritance {
@@ -96,6 +97,7 @@ export type ContractViolation =
   | "tool_not_allowed_for_role"
   | "spawn_tool_requested"
   | "mutation_tool_for_read_only_role"
+  | "mutation_route_open_for_read_only_role"
   | "depth_exceeds_max"
   | "extension_inheritance_not_permitted"
   | "cwd_not_absolute"
@@ -184,6 +186,19 @@ export function validateContract(
     const mutating = contract.tools.filter((t) => !allowed.includes(t));
     for (const tool of mutating) {
       add("mutation_tool_for_read_only_role", `read-only role '${contract.role}' may not use '${tool}'`);
+    }
+    // #69: the name-based check above only knows the built-in mutation tools.
+    // `assertRoutesClosed` asks the *route* question of every tool in the
+    // list, so a custom or renamed tool that reaches bash, git or the store
+    // is refused here too — PLAN §7: "disabling edit/write alone is not
+    // read-only enforcement".
+    try {
+      assertRoutesClosed(contract.role, contract.tools);
+    } catch (error) {
+      add(
+        "mutation_route_open_for_read_only_role",
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
 

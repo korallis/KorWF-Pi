@@ -25,3 +25,4 @@ export * from "./process-tree.ts";
 export * from "./spawn.ts";
 export * from "./surface.ts";
 export * from "./worktree.ts";
+export * from "./tool-gate.ts";
