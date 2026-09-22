@@ -41,12 +41,16 @@ import type {
 import { redactString } from "../security/redact.ts";
 
 /**
- * The check states of `docs/gates.md` §4, as produced by a *run*.
+ * The check states of `docs/gates.md` §4.
  *
- * `missing` is deliberately absent: it is the state of a check with no
- * evidence at all, which is a property of the store, not of a run.
+ * A *run* can only produce `pass`, `fail`, `timeout` or `unavailable`;
+ * `flaky` comes from reconciling several runs and `missing` is the state of a
+ * check with no fresh evidence at all, which is a property of the store
+ * rather than of a run. They are in the union so that mapping an
+ * `EvidenceExitStatus` never has to collapse a state into `fail` — which
+ * `docs/gates.md` §4 explicitly forbids in the audit entry.
  */
-export type CheckRunStatus = "pass" | "fail" | "timeout" | "unavailable" | "flaky";
+export type CheckRunStatus = "pass" | "fail" | "timeout" | "unavailable" | "flaky" | "missing";
 
 /** Why a check could not be executed. Kept short and machine-readable. */
 export type UnavailableReason =
@@ -151,6 +155,112 @@ export function hashEnvironment(fingerprint: EnvironmentFingerprint): ContentHas
   return createHash("sha256").update(canonical).digest("hex");
 }
 
+/**
+ * Raw result of executing one check command, before it becomes a record.
+ *
+ * `exitCode`/`signal` are `null` when the process never ran at all, which is
+ * exactly the case `unavailable` exists for.
+ */
+export interface CommandOutcome {
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  /** Set when the process was killed for exceeding its deadline. */
+  readonly timedOut: boolean;
+  /** Set when the command could not be executed at all. */
+  readonly unavailable: UnavailableReason | null;
+  /** Already-captured output. Redaction happens in `capturedOutput`. */
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly durationMs: number;
+  /** Pids killed as part of the deadline enforcement, for the audit trail. */
+  readonly killedPids?: readonly number[];
+}
+
+/**
+ * Shell exit code for "command not found".
+ *
+ * This constant carries the bug that motivated this issue: `npm test`
+ * exiting 127 because a binary was absent was read as "the tests failed",
+ * and a day went into debugging tests that had never run. 127 from the shell
+ * means the *check* could not be executed, so it is `unavailable`, which is
+ * not a pass and not a fail.
+ */
+export const SHELL_COMMAND_NOT_FOUND = 127;
+
+/** Shell exit code for "found but not executable". */
+export const SHELL_NOT_EXECUTABLE = 126;
+
+/**
+ * Text the shell prints when it cannot find a command. Matched only in
+ * combination with exit 127, so a test that legitimately prints the phrase
+ * and exits 1 is still a `fail`.
+ */
+const NOT_FOUND_MARKERS: readonly string[] = ["command not found", "not found", "no such file or directory"];
+
+/**
+ * Did a 127 exit come from the shell failing to find the command, or from a
+ * program that chose 127 as its own exit code?
+ *
+ * The conservative answer is the safe one in both directions: treating a
+ * genuine failure as `unavailable` does not let a task through the gate
+ * (`unavailable` does not satisfy C1 either), whereas treating an absent tool
+ * as `fail` sends a worker off to fix tests that never ran.
+ */
+export function looksLikeCommandNotFound(exitCode: number | null, stderr: string): boolean {
+  if (exitCode !== SHELL_COMMAND_NOT_FOUND) return false;
+  const haystack = stderr.toLowerCase();
+  return NOT_FOUND_MARKERS.some((marker) => haystack.includes(marker));
+}
+
+/**
+ * Classify a raw outcome into the `EvidenceExitStatus` union.
+ *
+ * Order matters and encodes the rules: unavailability first (the command
+ * never ran, so its exit code means nothing), then timeout, then signals,
+ * then the exit code.
+ */
+export function classifyOutcome(outcome: CommandOutcome): EvidenceExitStatus {
+  if (outcome.unavailable !== null) {
+    return { kind: "unavailable", reason: outcome.unavailable };
+  }
+  if (outcome.timedOut) return { kind: "timed_out" };
+  if (outcome.signal !== null) return { kind: "signalled", signal: outcome.signal };
+  if (outcome.exitCode === null) return { kind: "unavailable", reason: "spawn_failed" };
+  if (looksLikeCommandNotFound(outcome.exitCode, outcome.stderr)) {
+    return { kind: "unavailable", reason: "command_not_found" };
+  }
+  if (outcome.exitCode === SHELL_NOT_EXECUTABLE) {
+    return { kind: "unavailable", reason: "not_executable" };
+  }
+  return { kind: "exited", code: outcome.exitCode };
+}
+
+/**
+ * Map an exit status to the run status a reporter shows.
+ *
+ * Mirrors `docs/gates.md` §4 exactly, including that a mismatching exit code
+ * is `fail` while an unexecutable command is `unavailable`. `pass` is only
+ * ever returned for `{exited, code === expectedExitCode}`.
+ */
+export function runStatusOf(status: EvidenceExitStatus, expectedExitCode: number): CheckRunStatus {
+  switch (status.kind) {
+    case "exited":
+      return status.code === expectedExitCode ? "pass" : "fail";
+    case "timed_out":
+      return "timeout";
+    case "unavailable":
+      return "unavailable";
+    case "flaky":
+      return "flaky";
+    case "signalled":
+      // A killed process produced no verdict about the code; `docs/gates.md`
+      // §4 classifies `{signalled, _}` as `fail`, not as success.
+      return "fail";
+    case "missing":
+      return "missing";
+  }
+}
+
 /** Build the `CommandIdentity` a gate compares against the check definition. */
 export function commandIdentityOf(
   check: Pick<CheckDefinition, "command" | "cwd">,
@@ -161,4 +271,46 @@ export function commandIdentityOf(
     cwd: check.cwd,
     environmentHash: hashEnvironment(fingerprint),
   };
+}
+
+/** Default cap on the bytes of each stream kept on the evidence row. */
+export const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
+
+/** Marker inserted where output was dropped for length. */
+export const TRUNCATION_MARKER = "\n[... truncated by korwf: output limit reached ...]\n";
+
+/** Redacted, bounded output of one stream, plus what had to be done to it. */
+export interface CapturedStream {
+  readonly text: string;
+  readonly truncated: boolean;
+  /** Byte length before truncation, so a reader knows how much was dropped. */
+  readonly originalBytes: number;
+  readonly contentHash: ContentHash;
+}
+
+/**
+ * Redact, then truncate.
+ *
+ * The order is the one `src/security/outbound.ts` (#28) settled on and is not
+ * an implementation detail: truncating first can cut a credential in half and
+ * leave a prefix that no pattern matches any more, so a redactor that runs
+ * afterwards would miss it. Redacting the whole stream first means every
+ * secret is already `[redacted]` before any byte is dropped.
+ */
+export function capturedOutput(raw: string, limitBytes = DEFAULT_OUTPUT_LIMIT_BYTES): CapturedStream {
+  const redacted = redactString(raw);
+  const buffer = Buffer.from(redacted, "utf8");
+  const originalBytes = buffer.byteLength;
+  if (originalBytes <= limitBytes) {
+    return { text: redacted, truncated: false, originalBytes, contentHash: sha256(redacted) };
+  }
+  // Keep both ends: the head usually names the command, the tail usually
+  // carries the failure. `toString` on a cut buffer can split a multi-byte
+  // character, so the halves are decoded independently and any replacement
+  // character lands at the cut, inside the marker's neighbourhood.
+  const half = Math.max(1, Math.floor((limitBytes - Buffer.byteLength(TRUNCATION_MARKER)) / 2));
+  const head = buffer.subarray(0, half).toString("utf8");
+  const tail = buffer.subarray(originalBytes - half).toString("utf8");
+  const text = `${head}${TRUNCATION_MARKER}${tail}`;
+  return { text, truncated: true, originalBytes, contentHash: sha256(text) };
 }
