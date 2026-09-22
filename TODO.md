@@ -69,7 +69,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Human-approval gates for high-risk classes.
 - [ ] Evidence invalidation after relevant changes.
 - [ ] Flaky/missing/unavailable checks represented explicitly.
-- [ ] Failure taxonomy incl. quota/rate-limit; stall and drift detection.
+- [x] Failure taxonomy incl. quota/rate-limit; stall and drift detection.
 - [ ] Bounded recovery policies; side-effect reconciliation before retry.
 - [ ] Checkpoints and rollback proposals preserving user changes.
 - [ ] Tests: false completion claims, unrelated passing tests, persistent failure, exhausted budgets, cancellation during recovery.
