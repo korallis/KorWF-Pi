@@ -194,13 +194,15 @@ export function storeEvidence(
 ): Evidence {
   const id = fixture.nextId("ev") as EvidenceId;
   return fixture.store.evidence.insert({
-    id,
     createdAt: AT,
     updatedAt: AT,
     schemaVersion: RECORDS_SCHEMA_VERSION,
     kind: "append_only",
     ...draft,
     ...overrides,
+    // The id is the fixture's, not the draft's: a helper that silently
+    // re-used an id would turn an append-only violation into a test bug.
+    id: overrides.id ?? id,
   } as Evidence);
 }
 

@@ -66,10 +66,13 @@ export interface FlakyAwareResult {
    */
   readonly status: CheckRunStatus;
   readonly revision: GitSha | null;
-  /** Every non-null evidence draft produced, one per executed run, plus a
-   *  reconciled draft for the flaky case — the caller inserts all of them,
-   *  so a reader sees the disagreeing runs linked by identical
-   *  `(checkId, revision, taskRevision)`. */
+  /**
+   * Every non-null evidence draft produced, one per executed run, plus — in
+   * the flaky case — a reconciled `{kind:"flaky"}` draft **appended last**.
+   * The caller inserts all of them in order, so a reader sees the
+   * disagreeing runs linked by identical `(checkId, revision, taskRevision)`
+   * *and* the gate's latest-row rule lands on `flaky`.
+   */
   readonly evidence: readonly EvidenceDraft[];
 }
 
@@ -135,7 +138,12 @@ export function reconcileRuns(checkId: string, runs: readonly CheckRunResult[]):
       runs,
       status: "flaky",
       revision: first.revision,
-      evidence,
+      // The reconciled row is appended **last**, so the gate's "latest result
+      // wins" rule (docs/gates.md §2) lands on `flaky` rather than on
+      // whichever individual run happened to be newest. Without it a
+      // fail-then-pass sequence stores two honest rows that together say
+      // "flaky" and are read as "pass" — issue #55 found exactly that.
+      evidence: [...evidence, ...flakyDraft(sameRevision)],
     };
   }
 
@@ -152,6 +160,44 @@ export function reconcileRuns(checkId: string, runs: readonly CheckRunResult[]):
     evidence,
   };
 }
+
+/**
+ * The reconciled `flaky` evidence draft for a set of disagreeing runs at one
+ * revision, or nothing when no run produced a draft to base it on.
+ *
+ * It is derived from the last run's draft so the command identity, revision
+ * and subject are the ones actually observed; only the exit status and the
+ * caveat are this function's own. `supersedesId` stays `null`: the individual
+ * runs remain readable facts, and the reconciliation is an additional one.
+ */
+function flakyDraft(sameRevision: readonly CheckRunResult[]): readonly EvidenceDraft[] {
+  const drafts = sameRevision.flatMap((r) => (r.evidence === null ? [] : [r.evidence]));
+  const base = drafts[drafts.length - 1];
+  if (base === undefined) return [];
+  const codes = sameRevision.map((r) =>
+    r.exitStatus.kind === "exited" ? r.exitStatus.code : NON_EXIT_RUN_CODE,
+  );
+  return [
+    {
+      ...base,
+      exitStatus: { kind: "flaky", runs: codes },
+      caveats: [
+        ...base.caveats,
+        `runs at revision ${base.revision} disagreed (${sameRevision
+          .map((r) => r.status)
+          .join(", ")}); flaky never satisfies the gate (PLAN §3.F)`,
+      ],
+      supersedesId: null,
+    },
+  ];
+}
+
+/**
+ * Code recorded in `exitStatus.runs` for a run that produced no exit code at
+ * all (a timeout, a signal, an unavailable tool). `-1` is not a possible
+ * process exit status, so it cannot be confused with one.
+ */
+const NON_EXIT_RUN_CODE = -1;
 
 // ---------------------------------------------------------------------------
 // Reading state from the store: fresh evidence, flaky pairs, missing checks
