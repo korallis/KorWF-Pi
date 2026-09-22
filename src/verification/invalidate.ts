@@ -71,6 +71,7 @@ export function normaliseChangedPath(path: string): string {
  * outside the gate and this module must not import gate internals).
  */
 export function pathIsRelevant(path: string, ownership: Pick<Ownership, "paths">): boolean {
+  if (ownership.paths.length === 0) return true;
   const target = normaliseChangedPath(path);
   return ownership.paths.some((raw) => {
     const base = normaliseChangedPath(raw);

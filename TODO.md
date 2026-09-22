@@ -67,7 +67,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Completion-claim, evidence-gap, and test-exercises-requirement evaluators.
 - [ ] Independent review contexts; findings, severity, disposition, recheck.
 - [ ] Human-approval gates for high-risk classes.
-- [ ] Evidence invalidation after relevant changes.
+- [x] Evidence invalidation after relevant changes. (#50 → `src/verification/invalidate.ts`)
 - [x] Flaky/missing/unavailable checks represented explicitly. (#51 → `src/verification/flaky.ts`, `src/extension/ui/board.ts`)
 - [x] Failure taxonomy incl. quota/rate-limit; stall and drift detection.
 - [x] Bounded recovery policies; side-effect reconciliation before retry. (#53 → `src/workflow/recovery.ts`, `src/storage/recovery-log.ts`, `docs/recovery.md`)
