@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { runCheck } from "../../../src/verification/checks.ts";
 import type { CheckDefinition } from "../../../src/storage/records.ts";
 import type { EvidenceSubject } from "../../../src/verification/evidence.ts";
+import { REDACTED, clearRegisteredSecrets, registerSecretValue } from "../../../src/security/redact.ts";
 import { makeTestRepo, type TestRepo } from "../../helpers/git-repo.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 
@@ -241,4 +242,78 @@ describe("AC3: a timeout kills the whole process tree", () => {
     });
     expect(result.status).toBe("timeout");
   }, 20000);
+});
+
+describe("AC4: secrets never reach stored stdout/stderr", () => {
+  afterEach(() => {
+    clearRegisteredSecrets();
+  });
+
+  it("redacts a pattern-matched credential a check printed to stdout", async () => {
+    const repo = freshRepo();
+    // Built at runtime so the literal never sits in the repository; the shape
+    // is what the redactor matches. check-secrets:allow
+    const fake = ["apikey", "_", "LIVEabcdef0123456789"].join("");
+    const result = await runCheck(check({ command: `node -e "console.log('key=' + process.env.FAKE_KEY)"` }), {
+      cwd: repo.path,
+      subject,
+      env: { ...process.env, FAKE_KEY: fake },
+    });
+    expect(result.status).toBe("pass");
+    expect(result.stdout.text).not.toContain(fake);
+    expect(result.stdout.text).toContain(REDACTED);
+  });
+
+  it("redacts a registered literal a check printed to stderr", async () => {
+    const repo = freshRepo();
+    const literal = `korwf-test-value-${Date.now()}`;
+    registerSecretValue(literal);
+    const result = await runCheck(
+      check({ command: `node -e "console.error(process.env.FAKE_VALUE); process.exit(1)"` }),
+      { cwd: repo.path, subject, env: { ...process.env, FAKE_VALUE: literal } },
+    );
+    expect(result.status).toBe("fail");
+    expect(result.stderr.text).not.toContain(literal);
+    expect(result.stderr.text).toContain(REDACTED);
+  });
+
+  it("redacts before truncating, so a cut cannot leave half a secret", async () => {
+    const repo = freshRepo();
+    const fake = ["apikey", "_", "TRUNCabcdef0123456789"].join(""); // check-secrets:allow
+    // Pad so the secret sits just past a small byte cap: redact-then-truncate
+    // removes it; truncate-then-redact would keep a prefix of it.
+    const result = await runCheck(
+      check({ command: `node -e "console.log('x'.repeat(200) + process.env.FAKE_KEY + 'y'.repeat(200))"` }),
+      { cwd: repo.path, subject, env: { ...process.env, FAKE_KEY: fake }, outputLimitBytes: 128 },
+    );
+    expect(result.stdout.truncated).toBe(true);
+    expect(result.stdout.text).not.toContain(fake);
+    expect(result.stdout.text).not.toContain(fake.slice(0, 12));
+  });
+
+  it("records environment variable names only, never their values", async () => {
+    const repo = freshRepo();
+    const fake = ["apikey", "_", "ENVabcdef0123456789"].join(""); // check-secrets:allow
+    const result = await runCheck(check(), {
+      cwd: repo.path,
+      subject,
+      env: { ...process.env, KORWF_FAKE_KEY: fake },
+    });
+    expect(result.fingerprint.envVarNames).toContain("KORWF_FAKE_KEY");
+    expect(JSON.stringify(result.fingerprint)).not.toContain(fake);
+    expect(JSON.stringify(result.evidence)).not.toContain(fake);
+  });
+
+  it("changes the environment hash when the relevant variable set changes", async () => {
+    const repo = freshRepo();
+    const base = await runCheck(check(), { cwd: repo.path, subject, env: { PATH: process.env["PATH"] } });
+    const extra = await runCheck(check(), {
+      cwd: repo.path,
+      subject,
+      env: { PATH: process.env["PATH"], KORWF_EXTRA: "1" },
+    });
+    expect(base.evidence?.commandIdentity?.environmentHash).not.toBe(
+      extra.evidence?.commandIdentity?.environmentHash,
+    );
+  });
 });
