@@ -35,6 +35,7 @@
  */
 export * from "./availability.ts";
 export * from "./cap-detect.ts";
+export * from "./fallback.ts";
 export * from "./cards.ts";
 export * from "./catalog.ts";
 export * from "./hints.ts";
