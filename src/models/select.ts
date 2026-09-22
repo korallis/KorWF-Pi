@@ -23,13 +23,28 @@ export interface SelectionCandidate {
   readonly entry: CatalogEntry;
 }
 
+/**
+ * Code-only eligible set: `entries` is already `catalog ∩ allowlist`
+ * (#56); this adds the route-availability filter from #62/#125 — a route
+ * with an uncleared cap is not eligible, regardless of any Jev opinion.
+ * A catalog entry with no card at all is skipped (there is nothing for Jev
+ * to rank it against); an unrated card (from `mergeCards`) still passes
+ * through, since "unrated" is itself a valid, honest signal for Jev.
+ */
 export function eligibleCandidates(
   entries: readonly CatalogEntry[],
   cards: ReadonlyMap<ModelRef, ModelCard>,
   availability: RouteAvailabilityTable,
   now: IsoTimestamp,
 ): readonly SelectionCandidate[] {
-  throw new Error("todo");
+  const out: SelectionCandidate[] = [];
+  for (const entry of entries) {
+    if (!availability.isEligible(entry.routeId, now)) continue;
+    const card = cards.get(entry.id);
+    if (card === undefined) continue;
+    out.push({ ref: entry.id, routeId: entry.routeId, card, entry });
+  }
+  return out;
 }
 
 export interface RankedCandidate {
