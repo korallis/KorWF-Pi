@@ -40,7 +40,8 @@ import {
   type EvidenceGapState,
   type EvidenceSummary,
 } from "../decisions/questions/verify.ts";
-import type { RiskClass } from "../storage/records.ts";
+import { FALLBACK_USAGE, UNPRICED_JEV_USAGE } from "../decisions/record.ts";
+import { RECORDS_SCHEMA_VERSION, type Decision, type RiskClass, type TaskId } from "../storage/records.ts";
 
 // ---------------------------------------------------------------------------
 // Thresholds per risk class (issue #47 Scope: "thresholds per risk class from
@@ -623,6 +624,116 @@ export function explainEvidenceGap(evaluation: EvidenceGapEvaluation): readonly 
   return evaluation.findings
     .filter((f) => f.gap)
     .map((f) => `${f.criterionId}: ${f.reasons.join(", ")} — ${f.criterionText}`);
+}
+
+// ---------------------------------------------------------------------------
+// The gate-facing Decision (docs/gates.md §5; task-gate.ts C2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Condition 2 of the task gate reads exactly one thing: a fresh `Decision`
+ * under `TASK_EVIDENCE_GAP_QUESTION` whose `stateHash` equals the gate's own
+ * `gateStateHash(...)`. That row is what this function writes, from an
+ * evaluation produced above.
+ *
+ * Three properties matter and are structural, not conventional:
+ *
+ * 1. **The gate hashes its own state.** The caller passes `stateHash` from
+ *    `gateStateHash()`; nothing here computes it, so an evaluation cannot
+ *    claim freshness the gate would not agree with. Change a check state and
+ *    the hash changes and this row stops counting.
+ * 2. **Disabled mode is a recorded branch, not a skip.** With no Jev the row
+ *    carries `action: "deterministic_fallback"` and
+ *    `override: {actor: "policy", reason}`, which is the branch the gate
+ *    requires before it will even run `DET_COVERAGE`. Absence of a row is
+ *    neither branch and the gate refuses with `jev_decision_missing`.
+ * 3. **A gap is recorded as a gap.** `action` is `"gap"` whenever any
+ *    criterion is a gap — including when the gap came from an abstention.
+ */
+export const TASK_EVIDENCE_GAP_QUESTION_ID = "task_evidence_gap" as const;
+
+/** Version pinned on the gate Decision; must match `Workflow.policyVersion`'s pin. */
+export const TASK_EVIDENCE_GAP_QUESTION_VERSION = "1" as const;
+
+/** Why Jev did not answer. Exactly the gate's `JEV_DISABLED_REASONS`. */
+export type GateFallbackReason = "jev_disabled" | "jev_no_key" | "jev_unavailable";
+
+/** The minimal sink this module needs: append one `Decision` row. */
+export interface GateDecisionSink {
+  insert(record: Decision): Decision;
+}
+
+export interface GateDecisionOptions {
+  readonly workflowId: string;
+  readonly taskId: string;
+  readonly taskRevision: number;
+  /** Exact Git SHA, read by `src/git/`. Never taken from a worker record. */
+  readonly revision: string;
+  /** `gateStateHash(...)` from `src/verification/task-gate.ts`. */
+  readonly stateHash: string;
+  readonly now: string;
+  readonly newId: () => string;
+  /** Set when Jev did not answer; makes this the `deterministic_fallback` branch. */
+  readonly fallbackReason?: GateFallbackReason;
+  readonly jevModelVersion?: string | null;
+  readonly latencyMs?: number | null;
+}
+
+/**
+ * Build (do not insert) the `Decision` row for condition 2.
+ *
+ * Split from the insert so a caller can assert on the row in a test, and so
+ * a dry-run mode can show what would be recorded without writing it.
+ */
+export function buildGateDecision(
+  evaluation: EvidenceGapEvaluation,
+  options: GateDecisionOptions,
+): Decision {
+  const fallback = options.fallbackReason !== undefined;
+  const criteria = evaluation.findings.length;
+  const gaps = evaluation.gapCriterionIds.length;
+  // The raw distribution is preserved as a distribution over the *actions*
+  // the gate matches on, derived from the per-criterion answers rather than
+  // invented: this is the shape `/korwf why` prints (PLAN §6).
+  const gapShare = criteria === 0 ? 1 : gaps / criteria;
+  const rawDistribution = fallback ? {} : { gap: gapShare, no_gap: 1 - gapShare };
+  return {
+    id: options.newId() as Decision["id"],
+    createdAt: options.now,
+    updatedAt: options.now,
+    schemaVersion: RECORDS_SCHEMA_VERSION,
+    kind: "append_only",
+    workflowId: options.workflowId as Decision["workflowId"],
+    subject: { taskId: options.taskId as TaskId, taskRevision: options.taskRevision },
+    stateHash: options.stateHash,
+    questionId: TASK_EVIDENCE_GAP_QUESTION_ID,
+    questionVersion: TASK_EVIDENCE_GAP_QUESTION_VERSION,
+    jevModelVersion: fallback ? null : (options.jevModelVersion ?? null),
+    rawDistribution,
+    confidence: fallback ? null : evaluation.confidence,
+    policyRule: evaluation.rule,
+    action: fallback ? "deterministic_fallback" : evaluation.action,
+    override: fallback
+      ? {
+          actor: "policy",
+          action: "deterministic_fallback",
+          reason: options.fallbackReason as string,
+          at: options.now,
+        }
+      : null,
+    freshness: { revision: options.revision as Decision["freshness"]["revision"], decidedAt: options.now, expiresAt: null },
+    usage: fallback ? FALLBACK_USAGE : UNPRICED_JEV_USAGE,
+    latencyMs: fallback ? null : (options.latencyMs ?? null),
+  };
+}
+
+/** Build and append the condition-2 `Decision`. Returns it exactly as stored. */
+export function recordGateDecision(
+  sink: GateDecisionSink,
+  evaluation: EvidenceGapEvaluation,
+  options: GateDecisionOptions,
+): Decision {
+  return sink.insert(buildGateDecision(evaluation, options));
 }
 
 export { TEST_EXERCISES_MIN_LEVEL };
