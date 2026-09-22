@@ -34,6 +34,7 @@ import type {
   WorkflowId,
 } from "../storage/records.ts";
 import { RECORDS_SCHEMA_VERSION } from "../storage/records.ts";
+import { canonicalJson } from "../storage/repos/base.ts";
 import {
   NO_CHECKS_BLOCKER,
   SUPERSEDED_BLOCKER,
@@ -183,11 +184,18 @@ function buildTask(args: {
   };
 }
 
-/** Stable comparison of the fields that define "done" (docs/records.md §5.1). */
+/**
+ * Stable comparison of the fields that define "done" (docs/records.md §5.1).
+ *
+ * Uses the store's own canonical JSON: a record read back from SQLite has its
+ * object keys sorted, so a plain `JSON.stringify` comparison against a freshly
+ * built object would differ on key order alone, bump every task's revision on
+ * every re-plan, and invalidate every approval on a no-op revision.
+ */
 export function definitionOfDoneChanged(before: Task, next: PlanTask): boolean {
   if (before.goal !== next.goal) return true;
-  if (JSON.stringify(before.acceptanceCriteria) !== JSON.stringify(toCriteria(next.acceptanceCriteria))) return true;
-  if (JSON.stringify(before.checks) !== JSON.stringify(toChecks(next))) return true;
+  if (canonicalJson(before.acceptanceCriteria) !== canonicalJson(toCriteria(next.acceptanceCriteria))) return true;
+  if (canonicalJson(before.checks) !== canonicalJson(toChecks(next))) return true;
   return false;
 }
 

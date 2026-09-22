@@ -33,13 +33,18 @@ function freshStore(): Store {
     newId: () => `audit-${(counter += 1)}`,
   });
   open.push({ dir, store });
+  recordCounter = 0;
   store.workflows.insert(makeWorkflow({ planRevision: 0, status: "planning" }));
   return store;
 }
 
+/**
+ * Record-id generator. Ids must be unique across every call in one store, so
+ * the counter lives at module scope and is reset per store, not per call.
+ */
+let recordCounter = 0;
 function idFactory(): (kind: "phase" | "task") => string {
-  const counters = { phase: 0, task: 0 };
-  return (kind) => `${kind === "phase" ? "ph" : "tk"}-${(counters[kind] += 1)}`;
+  return (kind) => `${kind === "phase" ? "ph" : "tk"}-${(recordCounter += 1)}`;
 }
 
 afterEach(() => {
@@ -148,5 +153,84 @@ describe("AC: a task with checks: [] persists as proposed with the no_checks blo
       newId: idFactory(),
     });
     expect(summarisePersistedPlan(result)).toContain(NO_CHECKS_BLOCKER);
+  });
+});
+
+describe("AC: re-running produces revision N+1 and marks superseded tasks", () => {
+  it("bumps Workflow.planRevision", () => {
+    const store = freshStore();
+    persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    const revised = revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(revised.planRevision).toBe(2);
+    expect(store.workflows.require(WF).planRevision).toBe(2);
+  });
+
+  it("keeps the record id of a task whose goal is unchanged", () => {
+    const store = freshStore();
+    const first = persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    const second = revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(second.tasks[0]?.id).toBe(first.tasks[0]?.id);
+  });
+
+  it("bumps Task.revision when the definition of done changes", () => {
+    const store = freshStore();
+    const first = persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(first.tasks[0]?.revision).toBe(1);
+    const changed = minimalPlan({
+      tasks: [planTask({ acceptanceCriteria: [{ id: "ac1", text: "It exports greet() and farewell()." }] })],
+    });
+    const second = revisePlan({ store, workflowId: WF, plan: changed, now: () => AT, newId: idFactory() });
+    expect(second.revisedTasks).toEqual([first.tasks[0]!.id]);
+    expect(store.tasks.require(first.tasks[0]!.id).revision).toBe(2);
+  });
+
+  it("does not bump Task.revision when only ownership or dependencies change", () => {
+    const store = freshStore();
+    const first = persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    const moved = minimalPlan({
+      tasks: [planTask({ ownership: { paths: ["src/moved.ts"], components: ["moved"] } })],
+    });
+    const second = revisePlan({ store, workflowId: WF, plan: moved, now: () => AT, newId: idFactory() });
+    expect(second.revisedTasks).toEqual([]);
+    const task = store.tasks.require(first.tasks[0]!.id);
+    expect(task.revision).toBe(1);
+    expect(task.ownership.paths).toEqual(["src/moved.ts"]);
+  });
+
+  it("cancels a dropped task with the superseded blocker rather than deleting it", () => {
+    const store = freshStore();
+    const plan = minimalPlan({ tasks: [planTask({ id: "t1" }), planTask({ id: "t2", goal: "Drop me" })] });
+    const first = persistPlan({ store, workflowId: WF, plan, now: () => AT, newId: idFactory() });
+    const dropped = first.tasks.find((t) => t.goal === "Drop me")!;
+    const second = revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(second.supersededTasks).toEqual([dropped.id]);
+    const stored = store.tasks.require(dropped.id);
+    expect(stored.status).toBe("cancelled");
+    expect(stored.blocker).toBe(SUPERSEDED_BLOCKER);
+  });
+
+  it("gives a genuinely new piece of work a new record id", () => {
+    const store = freshStore();
+    const first = persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    const grown = minimalPlan({
+      tasks: [planTask({ id: "t1" }), planTask({ id: "t2", goal: "Add farewell", ownership: { paths: ["src/bye.ts"], components: [] } })],
+    });
+    const second = revisePlan({ store, workflowId: WF, plan: grown, now: () => AT, newId: idFactory() });
+    expect(second.tasks).toHaveLength(2);
+    expect(new Set(second.tasks.map((t) => t.id)).size).toBe(2);
+    expect(second.tasks.map((t) => t.id)).toContain(first.tasks[0]!.id);
+  });
+
+  it("persistOrRevisePlan picks the right path automatically", () => {
+    const store = freshStore();
+    expect(persistOrRevisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() }).planRevision).toBe(1);
+    expect(persistOrRevisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() }).planRevision).toBe(2);
+  });
+
+  it("refuses revisePlan on a workflow with no plan yet", () => {
+    const store = freshStore();
+    expect(() => revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() })).toThrow(
+      PlanPersistError,
+    );
   });
 });
