@@ -56,7 +56,10 @@ import {
   type Task,
   type Workflow,
 } from "../storage/records.ts";
+import type { Store } from "../storage/db.ts";
+import type { TaskId } from "../storage/records.ts";
 import { isTrivialCheck } from "../workflow/weak-checks.ts";
+import { revisionAt } from "./checks.ts";
 import { runStatusOf, type CheckRunStatus } from "./evidence.ts";
 
 // ---------------------------------------------------------------------------
@@ -877,4 +880,203 @@ function approvalRejections(input: TaskGateInput): readonly TaskGateRejection[] 
     });
   }
   return reasons;
+}
+
+// ---------------------------------------------------------------------------
+// The gate itself
+// ---------------------------------------------------------------------------
+
+/**
+ * Hash of the complete gate input. The receipt carries it, and the store
+ * refuses a `done` write whose recomputed hash does not match a receipt: a
+ * pass stops authorising anything the instant any input moves.
+ */
+export function taskGateInputHash(input: TaskGateInput): ContentHash {
+  const payload = {
+    workflow: {
+      id: input.workflow.id,
+      planRevision: input.workflow.planRevision,
+      policyVersion: input.workflow.policyVersion,
+      mode: input.workflow.mode,
+    },
+    task: {
+      id: input.task.id,
+      revision: input.task.revision,
+      status: input.task.status,
+      riskClass: input.task.riskClass,
+      blocker: input.task.blocker,
+      acceptanceCriteria: input.task.acceptanceCriteria,
+      checks: input.task.checks,
+      ownership: input.task.ownership,
+    },
+    revision: input.revision,
+    evidence: input.evidence.map((e) => e.id).sort(),
+    decisions: input.decisions.map((d) => d.id).sort(),
+    approvals: input.approvals.map((a) => [a.id, a.invalidation?.reason ?? null]).sort(),
+    attempts: input.attempts.map((a) => [a.id, a.outcome ?? null, a.role]).sort(),
+    unresolvedBlockers: [...input.unresolvedBlockers].sort(),
+    policy: input.policy,
+    jev: input.jev,
+    now: input.now,
+  };
+  return createHash("sha256").update(canonicalJson(payload)).digest("hex");
+}
+
+/**
+ * `TASK_GATE(T)` — pure, total, and complete in its reporting.
+ *
+ * Every condition is evaluated even when an earlier one already failed, so
+ * the result explains the whole refusal rather than the first thing noticed;
+ * `/korwf why` reads those fields off the receipt. Ordering the conjunction
+ * differently cannot change the verdict, because the conditions do not read
+ * each other: C1 and C3 take no `Decision`, and C2 takes no authority over
+ * either.
+ */
+export function evaluateTaskGate(input: TaskGateInput): TaskGateResult {
+  const inputHash = taskGateInputHash(input);
+  const revision = input.revision;
+
+  if (revision === null) {
+    // No revision means nothing can be pinned to one. Fail closed rather than
+    // evaluating against "whatever is on disk" (docs/gates.md §1).
+    const rejection: TaskGateRejection = {
+      condition: "C1",
+      reasonCode: "revision_unavailable",
+      detail: "no Git revision could be read for the task worktree; evidence cannot be pinned",
+    };
+    return {
+      pass: false,
+      conditions: TASK_GATE_CONDITIONS.map((id) => ({
+        id,
+        satisfied: false,
+        reasonCode: id === "C1" ? rejection.reasonCode : "revision_unavailable",
+        detail: rejection.detail,
+      })),
+      reasons: [rejection],
+      inputHash,
+      c2Branch: null,
+      checkStates: [],
+    };
+  }
+
+  const fresh = freshEvidence(input, revision);
+  const c0 = evaluateC0(input);
+  const c1 = evaluateC1(input, fresh);
+  const stateHash = gateStateHash({ task: input.task, revision, checkStates: c1.checkStates, fresh });
+  const c2 = evaluateC2(input, fresh, stateHash, revision);
+  const c3 = evaluateC3(input, fresh);
+
+  const byCondition: Record<TaskGateCondition, readonly TaskGateRejection[]> = {
+    C0: c0,
+    C1: c1.rejections,
+    C2: c2.rejections,
+    C3: c3,
+  };
+  const reasons = TASK_GATE_CONDITIONS.flatMap((id) => byCondition[id]);
+  const conditions: GateConditionResult[] = TASK_GATE_CONDITIONS.map((id) => {
+    const failures = byCondition[id];
+    const first = failures[0];
+    return {
+      id,
+      satisfied: failures.length === 0,
+      reasonCode: first?.reasonCode ?? null,
+      detail: first === undefined ? null : failures.map((f) => f.detail).join("; "),
+    };
+  });
+
+  return {
+    pass: reasons.length === 0,
+    conditions,
+    reasons,
+    inputHash,
+    c2Branch: c2.branch,
+    checkStates: c1.checkStates,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Runtime entry point: build the input from the store, record the verdict
+// ---------------------------------------------------------------------------
+
+/**
+ * How the evaluation reads the exact revision.
+ *
+ * The default resolves it from the worktree through `src/git/`. A caller may
+ * substitute a resolver (tests do), but the signature takes a *worktree path*
+ * and not a SHA, so "pass in the revision you would like to be at" is not an
+ * option any caller has — including a worker-driven one.
+ */
+export type RevisionResolver = (worktreePath: string) => GitSha | null;
+
+export interface TaskGateOptions {
+  /** Policy review result, recorded by #15's policy evaluation. */
+  readonly policy: PolicyReviewResult | null;
+  readonly jev: JevGateConfig;
+  readonly now: IsoTimestamp;
+  readonly newId: () => string;
+  /** Absolute path of the task worktree the revision is read from. */
+  readonly worktreePath: string;
+  readonly resolveRevision?: RevisionResolver;
+}
+
+/** A gate evaluation and the receipt that recorded it. */
+export interface TaskGateEvaluation {
+  readonly result: TaskGateResult;
+  readonly receipt: GateReceipt;
+}
+
+/**
+ * Evaluate the task gate for `taskId` against the store, and record the
+ * verdict as a `gate_receipt` row — pass *or* reject.
+ *
+ * The receipt is written **before** the result is returned (docs/gates.md §7
+ * guarantee 5), so a crash after a refusal still leaves the explanation, and
+ * the ordinary `audit_entry` row that the repositories emit is untouched: a
+ * rejection changes no record, so it must not pretend to be an update.
+ */
+export function runTaskGate(store: Store, taskId: TaskId, options: TaskGateOptions): TaskGateEvaluation {
+  const task = store.tasks.require(taskId);
+  const workflow = store.workflows.require(task.workflowId);
+  const resolve = options.resolveRevision ?? ((path: string) => revisionAt(path));
+  const input: TaskGateInput = {
+    workflow,
+    task,
+    revision: resolve(options.worktreePath),
+    evidence: store.evidence.findBy("taskId", task.id),
+    decisions: store.decisions.findBy("workflowId", workflow.id),
+    approvals: store.approvals.findBy("workflowId", workflow.id),
+    attempts: store.attempts.forTask(task.id),
+    unresolvedBlockers: store.blockers.unresolvedForSubject("task", task.id).map((b) => b.kind),
+    policy: options.policy,
+    jev: options.jev,
+    now: options.now,
+  };
+  const result = evaluateTaskGate(input);
+  const receipt = store.gateReceipts.record({
+    receiptId: options.newId(),
+    createdAt: options.now,
+    workflowId: workflow.id,
+    gate: "task",
+    subjectId: task.id,
+    subjectRevision: task.revision,
+    // A rejected evaluation with no readable revision still needs a row; the
+    // all-zero SHA records "there was none" without inventing one.
+    revision: input.revision ?? "0".repeat(40),
+    disposition: result.pass ? "pass" : "reject",
+    reasonCode: result.pass ? null : (result.reasons[0]?.reasonCode ?? null),
+    detail: result.pass ? null : explainTaskGate(result),
+    inputHash: result.inputHash,
+    evaluatedAt: options.now,
+    consumedAt: null,
+    conditions: result.conditions,
+  });
+  return { result, receipt };
+}
+
+/** One-line explanation of a refusal, for `/korwf why` and log lines. */
+export function explainTaskGate(result: TaskGateResult): string {
+  if (result.pass) return "task gate passed: checks, evidence-gap assessment and policy review all satisfied";
+  return result.reasons
+    .map((r) => `${r.condition} ${r.reasonCode}: ${r.detail}`)
+    .join("\n");
 }
