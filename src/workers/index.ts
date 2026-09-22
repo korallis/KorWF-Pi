@@ -10,6 +10,10 @@
  * - `surface.ts` — best-effort worktree Space visibility (#68).
  * - `worktree.ts` — attempt worktree lifecycle under `.korwf/worktrees/<attempt>`,
  *   built from the base revision, never touching the main tree (#70).
+ * - `progress.ts` / `limits.ts` / `lifecycle.ts` — progress capture from the
+ *   ADR 0004 RPC event stream, per-worker limit predicates, and the
+ *   `WorkerRun` supervisor that reserves against the #30 ledger, captures
+ *   artifacts and drives pause/resume/cancel (#71).
  *
  * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
  * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
@@ -26,3 +30,6 @@ export * from "./spawn.ts";
 export * from "./surface.ts";
 export * from "./worktree.ts";
 export * from "./tool-gate.ts";
+export * from "./progress.ts";
+export * from "./limits.ts";
+export * from "./lifecycle.ts";

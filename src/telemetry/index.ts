@@ -16,3 +16,4 @@ export * from "./ledger.ts";
 export * from "./retention.ts";
 export * from "./trace.ts";
 export * from "./trace-types.ts";
+export * from "./usage.ts";
