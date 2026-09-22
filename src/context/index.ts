@@ -34,3 +34,11 @@ export { allPinsPresent, mergeWithPins, PinDeniedError, pinFile, pinFiles } from
 
 export type { ShortlistEntry } from "./artifacts.ts";
 export { toShortlistEntry, writeRawToolOutput, writeShortlist } from "./artifacts.ts";
+
+export type { Capability, CapabilitySuggestions, RankCapabilitiesOptions, RankedCapability } from "./capabilities.ts";
+export {
+  DEFAULT_MAX_CAPABILITIES,
+  DEFAULT_SUGGEST_THRESHOLD,
+  detectMandatoryTrigger,
+  rankCapabilities,
+} from "./capabilities.ts";
