@@ -117,6 +117,7 @@ function passEvidence(check: CheckDefinition, overrides: Partial<Evidence> = {})
     createdAt: `2026-01-01T00:00:0${evidenceSeq % 10}.000Z`,
     taskId: TK,
     taskRevision: 3,
+    attemptId: "at-author" as Attempt["id"],
     revision: SHA,
     requirementId: check.coversCriteria[0] ?? "ac1",
     checkId: check.id,
@@ -707,4 +708,169 @@ describe("AC1/AC2/AC3: bypass attempts are refused with a reason code", () => {
       expect(result.pass).toBe(false);
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// 5. B1 and the store: `done` is unreachable except through a receipt
+// ---------------------------------------------------------------------------
+
+/** Seed a store with the fixture workflow/phase/task and the given rows. */
+function seed(
+  store: Store,
+  args: {
+    readonly task?: ReturnType<typeof makeTask>;
+    readonly evidence?: readonly Evidence[];
+    readonly decisions?: readonly Decision[];
+    readonly approvals?: readonly Approval[];
+    readonly attempts?: readonly Attempt[];
+  } = {},
+): TaskGateInput {
+  const workflow = makeWorkflow({ planRevision: 1, policyVersion: "2026.1", status: "running" });
+  const task = args.task ?? taskInReview();
+  // Materialise each list exactly once: the store and the in-memory input
+  // must hold the *same* rows, or the state hash would differ for reasons
+  // that have nothing to do with what is being tested.
+  const evidence = args.evidence ?? [passEvidence(CHK1), passEvidence(CHK2)];
+  const attempts = args.attempts ?? [authorAttempt()];
+  const approvals = args.approvals ?? [];
+  store.workflows.insert(workflow);
+  store.phases.insert(makePhase());
+  store.tasks.insert(task);
+  for (const attempt of attempts) store.attempts.insert(attempt);
+  for (const row of evidence) store.evidence.insert(row);
+  for (const row of approvals) store.approvals.insert(row);
+  const input = buildInput({ workflow, task, evidence, attempts, approvals });
+  const decisions = args.decisions ?? [noGapDecision(input)];
+  for (const row of decisions) store.decisions.insert(row);
+  return { ...input, decisions };
+}
+
+const gateOptions = {
+  policy: policyNone(),
+  jev: JEV_ENABLED,
+  now: AT,
+  newId: () => `rc-${(counter += 1)}`,
+  worktreePath: "/unused",
+  resolveRevision: () => SHA,
+};
+
+describe("AC4/B1: nothing but a passing gate receipt can set Task.status = done", () => {
+  it("B1.rawPatch — a direct store patch to done is refused as status_write_forbidden", () => {
+    const store = freshStore();
+    seed(store, { evidence: [] });
+    expect(() => store.tasks.update(TK, { status: "done" })).toThrow(/status_write_forbidden/);
+    expect(store.tasks.require(TK).status).toBe("review");
+  });
+
+  it("B1.workerTransition — a worker calling transition(…, 'done') is refused", () => {
+    const store = freshStore();
+    seed(store, { evidence: [] });
+    let error: TransitionRejected | undefined;
+    try {
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "done",
+        trigger: "task_gate_passed",
+        actor: { kind: "worker", identity: "worker-1" },
+        guards: {
+          all_checks_pass_exact_revision: () => true,
+          no_jev_gap_or_disabled: () => true,
+          policy_review_satisfied: () => true,
+        },
+        evidenceRefs: ["ev:claim"],
+        now: () => AT,
+        newId: () => `e-${(counter += 1)}`,
+      });
+    } catch (caught) {
+      error = caught as TransitionRejected;
+    }
+    expect(error?.code).toBe("unauthorized_actor");
+    expect(store.tasks.require(TK).status).toBe("review");
+  });
+
+  it("B1.engineWithoutReceipt — even the engine with every guard true is refused", () => {
+    const store = freshStore();
+    seed(store, { evidence: [] });
+    let error: TransitionRejected | undefined;
+    try {
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "done",
+        trigger: "task_gate_passed",
+        actor: { kind: "engine", identity: "engine" },
+        guards: {
+          all_checks_pass_exact_revision: () => true,
+          no_jev_gap_or_disabled: () => true,
+          policy_review_satisfied: () => true,
+          checks_registered: () => true,
+        },
+        evidenceRefs: ["ev:claim"],
+        now: () => AT,
+        newId: () => `e-${(counter += 1)}`,
+      });
+    } catch (caught) {
+      error = caught as TransitionRejected;
+    }
+    expect(error?.code).toBe("status_write_forbidden");
+    expect(store.tasks.require(TK).status).toBe("review");
+    // The refusal is on the record, as a rejected transition event.
+    const events = store.transitionLog.forSubject("task", TK);
+    expect(events.at(-1)?.disposition).toBe("rejected");
+  });
+
+  it("B1.rejectionReceipt — a rejecting receipt cannot authorise the write", () => {
+    const store = freshStore();
+    seed(store, { evidence: [] });
+    const { receipt, result } = runTaskGate(store, TK, gateOptions);
+    expect(result.pass).toBe(false);
+    expect(receipt.disposition).toBe("reject");
+    expect(() => store.tasks.authoriseDone(receipt.receiptId)).toThrow(/status_write_forbidden/);
+  });
+
+  it("B1.singleUse — a passing receipt authorises exactly one completion", () => {
+    const store = freshStore();
+    seed(store);
+    const { receipt, result } = runTaskGate(store, TK, gateOptions);
+    expect(result.pass).toBe(true);
+    expect(store.tasks.authoriseDone(receipt.receiptId)).toBe(receipt.receiptId);
+    expect(() => store.tasks.authoriseDone(receipt.receiptId)).toThrow(/already used/);
+  });
+
+  it("B1.revisionPinned — a receipt stops authorising once the task revision moves", () => {
+    const store = freshStore();
+    seed(store);
+    const { receipt } = runTaskGate(store, TK, gateOptions);
+    store.tasks.update(TK, { revision: 4, goal: "Write a different thing" });
+    expect(() => store.tasks.authoriseDone(receipt.receiptId)).toThrow(/status_write_forbidden/);
+  });
+
+  it("completeTask is the route that works: gate, receipt, transition, done", () => {
+    const store = freshStore();
+    seed(store);
+    const outcome = completeTask(store, TK, {
+      ...gateOptions,
+      actor: { kind: "engine", identity: "engine" },
+      evidenceRefs: ["ev:checks", "ev:gap", "ev:policy"],
+    });
+    expect(outcome.result.pass).toBe(true);
+    expect(outcome.transition?.subject.status).toBe("done");
+    expect(store.tasks.require(TK).status).toBe("done");
+    expect(store.gateReceipts.find(outcome.receipt.receiptId)?.consumedAt).toBe(AT);
+  });
+
+  it("completeTask leaves the task in review and writes no partial state when it refuses", () => {
+    const store = freshStore();
+    seed(store, { evidence: [passEvidence(CHK1)] });
+    const outcome = completeTask(store, TK, {
+      ...gateOptions,
+      actor: { kind: "engine", identity: "engine" },
+      evidenceRefs: ["ev:checks"],
+    });
+    expect(outcome.transition).toBeNull();
+    expect(store.tasks.require(TK).status).toBe("review");
+    expect(outcome.receipt.disposition).toBe("reject");
+    expect(outcome.receipt.consumedAt).toBeNull();
+  });
 });
