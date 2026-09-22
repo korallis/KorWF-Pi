@@ -62,6 +62,7 @@ import type { TransitionActor } from "../storage/transition-log.ts";
 import { taskDoneGuards, transitionTask, type TransitionResult } from "../workflow/state.ts";
 import { isTrivialCheck } from "../workflow/weak-checks.ts";
 import { revisionAt } from "./checks.ts";
+import { blockingFindings, reviewGateVerdict, type ReviewRecord } from "./review.ts";
 import { runStatusOf, type CheckRunStatus } from "./evidence.ts";
 
 // ---------------------------------------------------------------------------
@@ -99,6 +100,8 @@ export const TASK_GATE_REASON_CODES = [
   "fallback_coverage_gap",
   "review_missing",
   "review_not_independent",
+  "review_stale_revision",
+  "blocking_finding_unresolved",
   "approval_missing",
   "approval_actor_not_user",
   "policy_result_missing",
@@ -180,6 +183,20 @@ export interface TaskGateInput {
   readonly unresolvedBlockers: readonly string[];
   /** Recorded policy review result, or `null` when none was recorded. */
   readonly policy: PolicyReviewResult | null;
+  /**
+   * Independent review records for this task (issue #48). Optional so every
+   * existing caller keeps its behaviour: with no reviews supplied, C3 falls
+   * back to the `Evidence`-row check below exactly as before. When they are
+   * supplied, `reviewGateVerdict` additionally refuses on an unresolved
+   * blocking finding, which no evidence row on its own can express.
+   */
+  readonly reviews?: readonly ReviewRecord[];
+  /**
+   * Ancestry test from `src/git/`: is `candidate` strictly newer than
+   * `base`? Required for recheck evaluation; without it a recheck at a
+   * different SHA cannot be shown to be *later*, and the gate fails closed.
+   */
+  readonly isNewerRevision?: (candidate: GitSha, base: GitSha) => boolean;
   readonly jev: JevGateConfig;
   /** Caller-supplied timestamp; the gate does no clock access. */
   readonly now: IsoTimestamp;
@@ -821,11 +838,54 @@ export function evaluateC3(
         detail: "every fresh review came from the authoring attempt or its handoff chain",
       });
     }
+
+    // Issue #48: a review row's exit code says "this review passed"; the
+    // review *records* say whether a blocking finding is still open. Both are
+    // consulted, and either can refuse — a review is evidence that can
+    // withhold completion, never evidence that confers it.
+    out.push(...reviewRecordRejections(input));
   }
 
   if (humanApproval) out.push(...approvalRejections(input));
 
   return out;
+}
+
+/**
+ * The issue-#48 half of condition 3: the review *records*.
+ *
+ * `reviewGateVerdict` is the single predicate; this function only maps its
+ * closed reason set onto gate reason codes. Nothing here reads a `Decision`,
+ * so Jev still cannot waive C3, and a review still cannot set `done`: the
+ * only thing this can add to the result is a refusal.
+ *
+ * With no `reviews` supplied the function returns nothing, preserving the
+ * behaviour of every caller written before #48.
+ */
+function reviewRecordRejections(input: TaskGateInput): readonly TaskGateRejection[] {
+  const reviews = input.reviews;
+  if (reviews === undefined) return [];
+  const revision = input.revision;
+  if (revision === null) return [];
+  const verdict = reviewGateVerdict({
+    required: true,
+    revision,
+    taskRevision: input.task.revision,
+    reviews,
+    authorAttemptId: claimingAttempt(input)?.id ?? null,
+    // No ancestry oracle means no recheck can be proven newer, so every
+    // blocker stays open. Failing closed is the only safe default here.
+    isNewer: input.isNewerRevision ?? (() => false),
+  });
+  if (verdict.satisfied) return [];
+  return verdict.reasons.map((reason) => ({
+    condition: "C3" as const,
+    reasonCode: reason,
+    detail:
+      reason === "blocking_finding_unresolved"
+        ? `unresolved blocking review finding(s): ${verdict.blocking.join(", ")}; a blocker is cleared only by a recheck at a newer revision`
+        : `independent review does not satisfy condition 3 (${reason})`,
+  }));
 }
 
 /** The `valid approval` clause of docs/gates.md §2, with its reason codes. */
@@ -926,6 +986,9 @@ export function taskGateInputHash(input: TaskGateInput): ContentHash {
     attempts: input.attempts.map((a) => [a.id, a.outcome ?? null, a.role]).sort(),
     unresolvedBlockers: [...input.unresolvedBlockers].sort(),
     policy: input.policy,
+    reviews: (input.reviews ?? [])
+      .map((r) => [r.id, r.revision, r.taskRevision, r.promptHash, blockingFindings(r.findings).map((f) => f.id)])
+      .sort(),
     jev: input.jev,
     now: input.now,
   };
