@@ -25,6 +25,7 @@ import { BlockerStore, TransitionLogStore } from "./transition-log.ts";
 import { ActionLogStore } from "./action-log.ts";
 import { GateReceiptStore } from "./gate-receipts.ts";
 import { RecoveryLogStore } from "./recovery-log.ts";
+import { CheckpointStore, RollbackProposalStore } from "./checkpoints.ts";
 import { ApprovalRequestStore } from "./approval-requests.ts";
 import { reconcileAbandonedAttempts, type ReconcileOptions, type ReconciliationReport } from "./reconcile.ts";
 import type { AuditEntry, AuditEntryId, IsoTimestamp, RecordTable, WorkflowId } from "./records.ts";
@@ -122,6 +123,10 @@ export class Store {
   readonly recoveries: RecoveryLogStore;
   /** Queued human-approval questions (#49). Never an authorisation, see approval-requests.ts. */
   readonly approvalRequests: ApprovalRequestStore;
+  /** Durable working-tree checkpoints (#54), see checkpoints.ts. */
+  readonly checkpoints: CheckpointStore;
+  /** Rollback proposals (#54). Never an authorisation; see checkpoints.ts. */
+  readonly rollbackProposals: RollbackProposalStore;
 
   readonly #db: Database;
   readonly #lock: LockHandle | null;
@@ -175,6 +180,8 @@ export class Store {
     this.gateReceipts = new GateReceiptStore(this.#db);
     this.recoveries = new RecoveryLogStore(this.#db);
     this.approvalRequests = new ApprovalRequestStore(this.#db);
+    this.checkpoints = new CheckpointStore(this.#db);
+    this.rollbackProposals = new RollbackProposalStore(this.#db);
   }
 
   #context(audit: AuditSink | null): RepoContext {

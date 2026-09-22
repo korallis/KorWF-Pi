@@ -15,7 +15,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openStore } from "../../../src/storage/db.ts";
 import { resolveLockfilePath, resolveStorageRoot } from "../../../src/storage/paths.ts";
@@ -216,6 +216,7 @@ describe.skipIf(!available)("M2 exit: consecutive Pi sessions clean up after the
   it("leaves no stray pi process and no temp dir behind after the session exits", () => {
     const before = tempEntrySnapshot();
     const pi = makeIsolatedPi("korwf-stray-");
+    const piRoot = pi.root;
     try {
       expect(installPackage(pi).status).toBe(0);
       const run = runKorwf(pi, ["/korwf version", "/korwf config", "/korwf why"]);
@@ -225,13 +226,20 @@ describe.skipIf(!available)("M2 exit: consecutive Pi sessions clean up after the
       // Anything the session wrote is inside its own temp root; TMPDIR was
       // pointed there too, so a stray scratch dir would show up under it and
       // not in the developer's /tmp.
+      // Assert about THIS session's own root, not a count of every `korwf-stray-`
+      // entry in the shared system temp dir: vitest runs test files in parallel, so a
+      // concurrent file creating its own prefixed dir made this count 2 and failed a
+      // run that had leaked nothing. The property under test is "this session created
+      // exactly its own root and nothing beside it".
       const after = tempEntrySnapshot().filter((name) => !before.includes(name));
-      expect(after.filter((name) => name.startsWith("korwf-stray-"))).toHaveLength(1);
+      const mine = basename(pi.root);
+      expect(after).toContain(mine);
+      expect(after.filter((name) => name.startsWith("korwf-stray-") && name !== mine)).toHaveLength(0);
     } finally {
       pi.cleanup();
     }
     // After cleanup, nothing of this run's remains.
-    expect(tempEntrySnapshot().filter((n) => n.startsWith("korwf-stray-"))).toEqual([]);
+    expect(tempEntrySnapshot()).not.toContain(basename(piRoot));
   });
 });
 

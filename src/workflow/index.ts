@@ -22,6 +22,8 @@
  *   and stall/scope-drift detection over the attempt stream (#52).
  * - `recovery.ts` — bounded recovery policies chosen from that taxonomy, and side-effect
  *   reconciliation (over #42's receipts) before any retry (#53).
+ * - `checkpoint.ts` — working-tree checkpoints, the dirty-tree guard, and rollback as an
+ *   approval-gated PROPOSAL that never discards uncommitted user work (#54).
  *
  * **Re-export style: `export *`, deliberately.** This barrel previously listed every symbol
  * explicitly, which made it a guaranteed merge conflict: four consecutive PRs (#37, #38,
@@ -34,6 +36,7 @@ export * from "./approval-classes.ts";
 export * from "./approvals.ts";
 export * from "./attempt-budget.ts";
 export * from "./attempt-controller.ts";
+export * from "./checkpoint.ts";
 export * from "./evaluate-plan.ts";
 export * from "./failure.ts";
 export * from "./failure-classify.ts";

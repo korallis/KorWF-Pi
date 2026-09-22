@@ -71,7 +71,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Flaky/missing/unavailable checks represented explicitly. (#51 → `src/verification/flaky.ts`, `src/extension/ui/board.ts`)
 - [x] Failure taxonomy incl. quota/rate-limit; stall and drift detection.
 - [x] Bounded recovery policies; side-effect reconciliation before retry. (#53 → `src/workflow/recovery.ts`, `src/storage/recovery-log.ts`, `docs/recovery.md`)
-- [ ] Checkpoints and rollback proposals preserving user changes.
+- [x] Checkpoints and rollback proposals preserving user changes.
 - [ ] Tests: false completion claims, unrelated passing tests, persistent failure, exhausted budgets, cancellation during recovery.
 
 ## 5. Model catalog, Jev selection, fallback, single-worker execution (Stage 5)
