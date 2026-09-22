@@ -369,3 +369,109 @@ export function blockingFindings(findings: readonly ReviewFinding[]): readonly R
     .filter(isUnresolvedBlocking)
     .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.id.localeCompare(b.id));
 }
+
+// ---------------------------------------------------------------------------
+// Review policy: which changes require an independent review
+// ---------------------------------------------------------------------------
+
+/** One policy rule: a change class and/or ownership globs that demand review. */
+export interface ReviewPolicyRule {
+  /** Human-readable id, reported as the reason review was required. */
+  readonly id: string;
+  /** Change classes this rule applies to; empty means "any class". */
+  readonly changeClasses: readonly string[];
+  /** Ownership globs (repo-relative); empty means "any path". */
+  readonly paths: readonly string[];
+  /** Lowest risk class this rule fires at. */
+  readonly minRiskClass: "low" | "medium" | "high";
+}
+
+/** The configured review policy. */
+export interface ReviewPolicy {
+  readonly rules: readonly ReviewPolicyRule[];
+  /**
+   * Require review for every change, whatever the rules say. A config may
+   * turn this on; turning it off never removes a rule, so the policy can only
+   * be tightened by configuration, per AGENTS.md §4.
+   */
+  readonly reviewEverything: boolean;
+}
+
+const RISK_ORDER: Readonly<Record<"low" | "medium" | "high", number>> = { low: 0, medium: 1, high: 2 };
+
+/**
+ * The facts a requirement is computed from. **Every field comes from the plan
+ * record or from `src/git/`.** There is no `workerSaysItIsSimple`, no
+ * `selfAssessedRisk` and no attempt id: issue #48 AC3, "review requirement is
+ * derived from policy, not from the worker's self-assessment", is true
+ * because the worker's assessment is not in scope of this function.
+ */
+export interface ReviewSubject {
+  readonly changeClass: string;
+  readonly riskClass: "low" | "medium" | "high";
+  /** Repository-relative paths the diff touches, from `src/git/`. */
+  readonly touchedPaths: readonly string[];
+}
+
+/** Why review was (or was not) required. Machine-readable, for the receipt. */
+export interface ReviewRequirement {
+  readonly required: boolean;
+  /** Ids of every rule that fired, in policy order. */
+  readonly matchedRules: readonly string[];
+  readonly reason: "review_everything" | "rule_matched" | "no_rule_matched";
+}
+
+/** Prefix match on path segments, the same comparison ownership uses. */
+function pathMatches(path: string, prefix: string): boolean {
+  const p = path.replace(/^\.\//, "").replace(/\/+$/, "");
+  const q = prefix.replace(/^\.\//, "").replace(/\/+$/, "");
+  if (q.length === 0) return true;
+  return p === q || p.startsWith(`${q}/`);
+}
+
+/**
+ * Does this change require an independent review?
+ *
+ * High risk always does, whatever the rules say: PLAN §2.4 (3) names review
+ * for "change classes the policy specifies", and a policy that omitted the
+ * high-risk class would be a policy that weakened itself, which AGENTS.md §4
+ * forbids. So the high-risk clause is applied *on top of* the rules, exactly
+ * as `task-gate.ts` applies the high-risk human-approval clause.
+ */
+export function reviewRequirement(policy: ReviewPolicy, subject: ReviewSubject): ReviewRequirement {
+  const matched = policy.rules
+    .filter((rule) => {
+      if (RISK_ORDER[subject.riskClass] < RISK_ORDER[rule.minRiskClass]) return false;
+      if (rule.changeClasses.length > 0 && !rule.changeClasses.includes(subject.changeClass)) return false;
+      if (rule.paths.length > 0 && !subject.touchedPaths.some((p) => rule.paths.some((g) => pathMatches(p, g)))) {
+        return false;
+      }
+      return true;
+    })
+    .map((rule) => rule.id);
+
+  if (policy.reviewEverything) {
+    return { required: true, matchedRules: matched, reason: "review_everything" };
+  }
+  if (subject.riskClass === "high") {
+    return { required: true, matchedRules: [...matched, "high_risk_always"], reason: "rule_matched" };
+  }
+  if (matched.length > 0) return { required: true, matchedRules: matched, reason: "rule_matched" };
+  return { required: false, matchedRules: [], reason: "no_rule_matched" };
+}
+
+/**
+ * Shipped default policy. Conservative: anything that can change behaviour,
+ * security posture or the project's own policy is reviewed from `low` risk
+ * upwards; documentation-only changes are not.
+ */
+export const DEFAULT_REVIEW_POLICY: ReviewPolicy = Object.freeze({
+  reviewEverything: false,
+  rules: Object.freeze([
+    Object.freeze({ id: "behaviour_change", changeClasses: ["behaviour", "mixed"], paths: [], minRiskClass: "low" }),
+    Object.freeze({ id: "security_surface", changeClasses: [], paths: ["src/security"], minRiskClass: "low" }),
+    Object.freeze({ id: "verification_surface", changeClasses: [], paths: ["src/verification"], minRiskClass: "low" }),
+    Object.freeze({ id: "policy_surface", changeClasses: [], paths: ["src/config"], minRiskClass: "low" }),
+    Object.freeze({ id: "medium_risk_any", changeClasses: [], paths: [], minRiskClass: "medium" }),
+  ]) as readonly ReviewPolicyRule[],
+});
