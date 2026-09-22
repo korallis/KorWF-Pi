@@ -34,7 +34,6 @@
  */
 import { ask, type AskContext } from "../decisions/ask.ts";
 import {
-  atomicFallbackVerdict,
   coverageFallbackVerdict,
   taskAmbiguityQuestion,
   taskAtomicQuestion,

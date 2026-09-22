@@ -245,7 +245,7 @@ export const taskAmbiguityQuestion: QuestionDefinition<TaskAmbiguityState, numbe
   boundaries: [
     { name: "no criteria is maximally ambiguous", state: { goal: "improve the thing", acceptanceCriteria: [] }, expectFallback: 2 },
     { name: "clear goal, no vague markers", state: { goal: "add a logout button to the header", acceptanceCriteria: ["c1"] }, expectFallback: 0 },
-    { name: "one vague marker", state: { goal: "improve the header appropriately", acceptanceCriteria: ["c1"] }, expectFallback: 1 },
+    { name: "one vague marker", state: { goal: "make the header nice", acceptanceCriteria: ["c1"] }, expectFallback: 1 },
   ],
 });
 
