@@ -1570,6 +1570,77 @@
           "maximum": 20000,
           "default": 2000,
           "description": "Largest test-file or evidence excerpt put into a question state. `privacy.outbound` caps again afterwards; this is the evaluator's own ceiling so the full diff is never the input."
+        },
+        "review": {
+          "$ref": "#/$defs/ReviewPolicy",
+          "default": {}
+        }
+      }
+    },
+    "ReviewPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Independent review contexts (PLAN §2.4 (3), §3.F; issue #48). Which changes require an independent coding-model review in a fresh context that never sees the worker's claim. A review is evidence for gate condition 3, never authority: it cannot set `done`, and an unresolved blocking finding refuses the gate until a recheck at a newer revision passes. High-risk tasks always require review whatever these rules say.",
+      "properties": {
+        "reviewEverything": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require an independent review for every change. Turning this on only tightens the policy; turning it off never removes a rule, and high-risk tasks are reviewed regardless."
+        },
+        "rules": {
+          "type": "array",
+          "default": [],
+          "description": "Additional rules, each naming change classes and/or ownership path prefixes that require review from a minimum risk class upwards. These are added to the shipped defaults in `src/verification/review.ts`; a rule can only make review required, never optional.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "Stable rule id, reported as the reason review was required."
+              },
+              "changeClasses": {
+                "type": "array",
+                "default": [],
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "description": "Change classes this rule fires for, as classified by `src/git/`. Empty means any class."
+              },
+              "paths": {
+                "type": "array",
+                "default": [],
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Repository-relative path prefixes. Empty means any path."
+              },
+              "minRiskClass": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "default": "low",
+                "description": "Lowest task risk class at which this rule fires."
+              }
+            }
+          }
+        },
+        "preferDifferentModelFamily": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prefer a reviewer from a different model family than the one that produced the work (.pi/skills/jev-orchestration/SKILL.md §4). A same-family review is still recorded, with a caveat on its evidence row, so a single-family configuration can still review."
         }
       }
     }

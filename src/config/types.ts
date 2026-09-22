@@ -339,6 +339,31 @@ export interface VerificationConfig {
   readonly thresholds: Readonly<Record<RiskClass, VerificationThresholdsConfig>>;
   /** Largest excerpt the evaluator puts into a question state, in bytes. */
   readonly maxExcerptBytes: number;
+  /** Independent review contexts (issue #48). */
+  readonly review: ReviewPolicyConfig;
+}
+
+/**
+ * `verification.review` — which changes require an independent review
+ * (PLAN §2.4 (3), §3.F; issue #48).
+ *
+ * Configuration can only *tighten* this: `rules` are added to the shipped
+ * defaults in `src/verification/review.ts`, `reviewEverything` only adds, and
+ * high-risk tasks are reviewed whatever is configured. There is deliberately
+ * no key that makes a review optional.
+ */
+export interface ReviewPolicyConfig {
+  readonly reviewEverything: boolean;
+  readonly rules: readonly ReviewPolicyRuleConfig[];
+  readonly preferDifferentModelFamily: boolean;
+}
+
+/** One configured review rule. `id` is required; everything else defaults. */
+export interface ReviewPolicyRuleConfig {
+  readonly id: string;
+  readonly changeClasses: readonly string[];
+  readonly paths: readonly string[];
+  readonly minRiskClass: RiskClass;
 }
 
 // ---------------------------------------------------------------------------

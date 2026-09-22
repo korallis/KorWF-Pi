@@ -24,6 +24,7 @@ import type {
   Decision,
   Evidence,
   EvidenceExitStatus,
+  GitSha,
   TaskId,
 } from "../../../src/storage/records.ts";
 import {
@@ -38,6 +39,7 @@ import {
   type TaskGateResult,
 } from "../../../src/verification/task-gate.ts";
 import { TransitionRejected, transitionTask } from "../../../src/workflow/state.ts";
+import { disposeFinding, ingestFinding, type ReviewRecord } from "../../../src/verification/review.ts";
 import { whyMessage } from "../../../src/extension/commands/why.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 import {
@@ -992,5 +994,137 @@ describe("X: cross-cutting invariants", () => {
     const message = whyMessage(store, TK);
     expect(message).toContain("Task gate PASSED");
     expect(message).toContain("authorised the completion");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Issue #48 — review records are evidence feeding C3
+// ---------------------------------------------------------------------------
+
+/**
+ * Issue #48 AC2: "a `blocker` finding prevents the gate until a recheck at a
+ * newer revision passes". The gate is the enforcement point, so the property
+ * is asserted here as well as on `reviewGateVerdict` in `review.test.ts`.
+ *
+ * Issue #48 also states that a review is *evidence* for condition 3 and never
+ * sets `done` — the only thing review records can do to a result here is
+ * refuse it.
+ */
+describe("R (#48): review records refuse C3 while a blocker is open", () => {
+  const NEW_SHA = "c".repeat(40) as GitSha;
+  const reviewerAttempt = makeAttempt({
+    id: "at-reviewer" as Attempt["id"],
+    taskId: TK,
+    taskRevision: 3,
+    role: "reviewer",
+    outcome: "succeeded",
+  });
+
+  /** A fresh passing review evidence row, so the pre-#48 C3 clause is met. */
+  function reviewEvidence(): Evidence {
+    return passEvidence(CHK1, {
+      checkId: null,
+      commandIdentity: null,
+      reviewer: { kind: "model", model: "example-provider/example-model", attemptId: reviewerAttempt.id },
+    });
+  }
+
+  function reviewRecord(overrides: Partial<ReviewRecord> = {}): ReviewRecord {
+    return {
+      id: "rv-1",
+      taskId: TK,
+      taskRevision: 3,
+      revision: SHA,
+      reviewer: { model: "example-provider/example-model", family: "example", attemptId: reviewerAttempt.id },
+      promptHash: HASH,
+      findings: [],
+      rechecksReviewId: null,
+      ...overrides,
+    };
+  }
+
+  const blocker = ingestFinding({
+    id: "f1",
+    path: "src/example.ts",
+    startLine: 1,
+    endLine: 2,
+    description: "ac1 is not actually met by this change",
+    suggestedSeverity: "blocker",
+    criterionId: "ac1",
+  });
+
+  function withReviews(reviews: readonly ReviewRecord[], extra: Partial<TaskGateInput> = {}) {
+    return evaluateWithNoGap({
+      evidence: [passEvidence(CHK1), passEvidence(CHK2), reviewEvidence()],
+      attempts: [authorAttempt(), reviewerAttempt],
+      policy: policyNone({ modelReview: true }),
+      reviews,
+      ...extra,
+    });
+  }
+
+  it("R1 — a clean review at this revision leaves C3 satisfied", () => {
+    const result = withReviews([reviewRecord()]);
+    expect(codes(result)).toEqual([]);
+    expect(result.pass).toBe(true);
+  });
+
+  it("R2 — an unresolved blocking finding refuses the gate", () => {
+    const result = withReviews([reviewRecord({ findings: [blocker] })]);
+    expect(codes(result)).toContain("blocking_finding_unresolved");
+    expect(result.pass).toBe(false);
+    expect(result.reasons.find((r) => r.reasonCode === "blocking_finding_unresolved")?.detail).toContain("f1");
+  });
+
+  it("R3 — a claimed fix at the same revision does not clear it", () => {
+    const fixed = disposeFinding(blocker, "fix", { kind: "user", identity: "lee" });
+    const result = withReviews([
+      reviewRecord({ findings: [fixed] }),
+      reviewRecord({ id: "rv-2", rechecksReviewId: "rv-1", findings: [] }),
+    ]);
+    expect(codes(result)).toContain("blocking_finding_unresolved");
+  });
+
+  it("R4 — a clean recheck at a newer revision clears it", () => {
+    const result = withReviews(
+      [
+        reviewRecord({ findings: [blocker] }),
+        reviewRecord({ id: "rv-2", rechecksReviewId: "rv-1", revision: NEW_SHA, findings: [] }),
+      ],
+      {
+        revision: NEW_SHA,
+        evidence: [
+          passEvidence(CHK1, { revision: NEW_SHA }),
+          passEvidence(CHK2, { revision: NEW_SHA }),
+          passEvidence(CHK1, {
+            revision: NEW_SHA,
+            checkId: null,
+            commandIdentity: null,
+            reviewer: { kind: "model", model: "example-provider/example-model", attemptId: reviewerAttempt.id },
+          }),
+        ],
+        policy: policyNone({ modelReview: true, revision: NEW_SHA }),
+        isNewerRevision: (candidate, base) => candidate === NEW_SHA && base === SHA,
+      },
+    );
+    expect(codes(result)).toEqual([]);
+  });
+
+  it("R5 — without an ancestry oracle the recheck cannot be proven newer, so it fails closed", () => {
+    const result = withReviews([
+      reviewRecord({ findings: [blocker] }),
+      reviewRecord({ id: "rv-2", rechecksReviewId: "rv-1", revision: NEW_SHA, findings: [] }),
+    ]);
+    expect(codes(result)).toContain("blocking_finding_unresolved");
+  });
+
+  it("R6 — review records can only refuse: with no reviews supplied behaviour is unchanged", () => {
+    const base = evaluateWithNoGap({
+      evidence: [passEvidence(CHK1), passEvidence(CHK2), reviewEvidence()],
+      attempts: [authorAttempt(), reviewerAttempt],
+      policy: policyNone({ modelReview: true }),
+    });
+    expect(base.pass).toBe(true);
+    expect(codes(base)).toEqual([]);
   });
 });

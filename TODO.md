@@ -65,7 +65,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Check registration per task/project; evidence capture at exact revision and environment. (#45)
 - [x] Task gate implementation (PLAN §2.4); worker claims and Jev scores cannot set `done`. (#46)
 - [x] Completion-claim, evidence-gap, and test-exercises-requirement evaluators.
-- [ ] Independent review contexts; findings, severity, disposition, recheck.
+- [x] Independent review contexts; findings, severity, disposition, recheck. (#48 → `src/verification/review.ts`, `src/decisions/questions/review.ts`)
 - [x] Human-approval gates for high-risk classes. (#49 → `src/workflow/approvals.ts`, `src/extension/ui/approval-prompt.ts`, `docs/approvals.md`)
 - [x] Evidence invalidation after relevant changes. (#50 → `src/verification/invalidate.ts`)
 - [x] Flaky/missing/unavailable checks represented explicitly. (#51 → `src/verification/flaky.ts`, `src/extension/ui/board.ts`)

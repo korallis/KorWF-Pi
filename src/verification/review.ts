@@ -46,6 +46,7 @@ import {
   reviewSeverityQuestion,
 } from "../decisions/questions/review.ts";
 import { ask, type AskContext } from "../decisions/ask.ts";
+import type { ReviewPolicyConfig } from "../config/types.ts";
 import type { GitSha, Revision } from "../storage/records.ts";
 
 export type { ReviewSeverity };
@@ -839,5 +840,35 @@ export function reviewToEvidence(args: {
     reviewer: { kind: "model", model: args.review.reviewer.model, attemptId: args.review.reviewer.attemptId },
     caveats: reviewCaveats(args.review, args.authorFamily ?? null),
     promptHash: args.review.promptHash,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Config → policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the effective review policy from configuration.
+ *
+ * The shipped rules are always present and configured rules are **added** to
+ * them. There is no subtraction: AGENTS.md §4, "the system never weakens its
+ * own permission, allowlist or spending policy", and a review requirement is
+ * that same kind of floor. A duplicate rule id keeps the shipped rule, so a
+ * config cannot redefine `behaviour_change` into something laxer.
+ */
+export function reviewPolicyFrom(config: ReviewPolicyConfig | undefined): ReviewPolicy {
+  if (config === undefined) return DEFAULT_REVIEW_POLICY;
+  const shippedIds = new Set(DEFAULT_REVIEW_POLICY.rules.map((r) => r.id));
+  const extra = config.rules
+    .filter((rule) => !shippedIds.has(rule.id))
+    .map((rule) => ({
+      id: rule.id,
+      changeClasses: [...rule.changeClasses],
+      paths: [...rule.paths],
+      minRiskClass: rule.minRiskClass,
+    }));
+  return {
+    reviewEverything: config.reviewEverything,
+    rules: [...DEFAULT_REVIEW_POLICY.rules, ...extra],
   };
 }

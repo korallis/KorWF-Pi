@@ -338,6 +338,31 @@ Three properties hold whatever is configured here, and none of them is a key:
 | `thresholds.<class>.requireExercisingTest` | boolean | `false` / `true` / `true` | Whether a criterion whose linked tests are all below the level floor is a gap on its own. Off for `low` so a task with no tests at all is judged by the mapping rule rather than blocked twice. |
 | `maxExcerptBytes` | integer 200–20000 | `2000` | Largest test-file or evidence excerpt put into a question state. The evaluator's own ceiling, so the full diff is never the input; `privacy.outbound` caps again afterwards. |
 
+### 10b.1 `verification.review` — independent review contexts
+
+Condition 3 of the task gate (PLAN §2.4 (3), §3.F; issue #48): which changes require an
+independent coding-model review, run in a fresh context that never sees the worker's claim
+of success. Three properties hold whatever is configured here:
+
+- **Configuration can only tighten.** Configured `rules` are *added* to the shipped rules in
+  `src/verification/review.ts`; a rule that reuses a shipped id is ignored in favour of the
+  shipped one. There is deliberately no key that makes a review optional, and a high-risk
+  task is reviewed whatever this section says.
+- **A review is evidence, never authority.** It feeds condition 3 and can only *withhold*
+  completion; nothing here can set `done`, and a review is recorded as `model` evidence so it
+  can never stand in for a deterministic check under condition 1.
+- **An unresolved blocking finding refuses the gate**, and is cleared only by a recheck at a
+  strictly newer revision — not by a claimed fix, and not by a Jev severity downgrade.
+
+| Key | Type | Default | Why the default is safe |
+|---|---|---|---|
+| `review.reviewEverything` | boolean | `false` | Require a review for every change. Turning it on only tightens; turning it off removes no rule. |
+| `review.rules[].id` | string 1–64 | — | Stable rule id, reported as the reason review was required. A shipped id cannot be redefined. |
+| `review.rules[].changeClasses` | string[] | `[]` | Change classes (from `src/git/`) the rule fires for. Empty means any class, i.e. broader. |
+| `review.rules[].paths` | string[] | `[]` | Repository-relative path prefixes. Empty means any path, i.e. broader. |
+| `review.rules[].minRiskClass` | `low\|medium\|high` | `"low"` | Lowest risk class the rule fires at. `low` is the broadest setting. |
+| `review.preferDifferentModelFamily` | boolean | `true` | Prefer a reviewer from a different family than the author's. A same-family review is still recorded, with a caveat on its evidence row, so a single-family configuration can still review at all. |
+
 ## 11. Validation rules beyond types
 
 The schema enforces types, enums, ranges, `const` pins, the deny-list floor, and unknown-key
