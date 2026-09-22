@@ -261,6 +261,51 @@ export function missingCheckBlockerDetail(criterionId: string): string {
   return `acceptance criterion "${criterionId}" has no registered check covering it`;
 }
 
+/** One check's reported state, for a board row. */
+export interface TaskCheckStateRow {
+  readonly checkId: string;
+  readonly status: CheckRunStatus;
+}
+
+/** Everything a board needs to render distinct check markers for one task. */
+export interface TaskCheckSummary {
+  readonly checks: readonly TaskCheckStateRow[];
+  /** Acceptance-criterion ids with no covering check at all. */
+  readonly uncoveredCriteria: readonly string[];
+}
+
+/**
+ * Compute the per-check state summary for a task, at its current revision.
+ *
+ * Pure: takes the task's own checks and the evidence already read from the
+ * store, so it composes with `src/workflow/boards.ts`'s read-only guarantee
+ * without this module ever touching a `Store` for reads.
+ */
+export function taskCheckSummary<E extends FreshnessInput>(
+  task: Pick<Task, "checks" | "acceptanceCriteria" | "revision">,
+  evidence: readonly E[],
+  currentSha: GitSha | null,
+  supersededIds: ReadonlySet<string> = new Set(),
+): TaskCheckSummary {
+  const byCheck = new Map<string, E[]>();
+  for (const e of evidence) {
+    const list = byCheck.get(e.checkId ?? "") ?? [];
+    list.push(e);
+    byCheck.set(e.checkId ?? "", list);
+  }
+  const checks: TaskCheckStateRow[] = task.checks.map((check) => ({
+    checkId: check.id,
+    status:
+      currentSha === null
+        ? "missing"
+        : checkState(check, byCheck.get(check.id) ?? [], task.revision, currentSha, supersededIds),
+  }));
+  return {
+    checks,
+    uncoveredCriteria: uncoveredCriteria(task.acceptanceCriteria, task.checks),
+  };
+}
+
 /**
  * Raise a `missing_check` blocker on `task` for every uncovered acceptance
  * criterion, one blocker per criterion so `/korwf why` and the board can
