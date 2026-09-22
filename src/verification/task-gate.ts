@@ -472,3 +472,252 @@ function stalenessNote(check: CheckDefinition, input: TaskGateInput, fresh: read
   }
   return reasons.size === 0 ? "" : ` (${[...reasons].sort().join(", ")})`;
 }
+
+// ---------------------------------------------------------------------------
+// C2 — a disjunction of two *recorded* outcomes (docs/gates.md §5)
+// ---------------------------------------------------------------------------
+
+/** The question id both branches of C2 are recorded under. */
+export const TASK_EVIDENCE_GAP_QUESTION = "task_evidence_gap" as const;
+
+/** Override reasons that record "Jev did not answer this". */
+export const JEV_DISABLED_REASONS = ["jev_disabled", "jev_no_key", "jev_unavailable"] as const;
+export type JevDisabledReason = (typeof JEV_DISABLED_REASONS)[number];
+
+/**
+ * `H(...)` of docs/gates.md §5.1: the canonical hash over the gate input a
+ * decision was made about.
+ *
+ * It covers the check **states**, so a decision made while a check was failing
+ * is stale the moment that check is re-run: a "no gap" cannot be carried
+ * across a fix. It covers fresh evidence content hashes, so swapping the
+ * evidence under a decision invalidates it too.
+ */
+export function gateStateHash(args: {
+  readonly task: Task;
+  readonly revision: GitSha;
+  readonly checkStates: readonly { readonly checkId: string; readonly state: CheckRunStatus }[];
+  readonly fresh: readonly Evidence[];
+}): ContentHash {
+  const payload = {
+    taskRevision: args.task.revision,
+    revision: args.revision,
+    acceptanceCriteria: args.task.acceptanceCriteria.map((a) => ({ id: a.id, text: a.text })),
+    checks: args.task.checks.map((c) => ({
+      id: c.id,
+      kind: c.kind,
+      command: c.command,
+      cwd: c.cwd,
+      expectedExitCode: c.expectedExitCode,
+      coversCriteria: [...c.coversCriteria].sort(),
+    })),
+    checkStates: args.checkStates.map((s) => [s.checkId, s.state]).sort(),
+    evidence: args.fresh
+      .map((e) => [e.id, ...e.provenance.map((p) => p.contentHash)])
+      .sort(),
+  };
+  return createHash("sha256").update(canonicalJson(payload)).digest("hex");
+}
+
+/** Decisions about this task+revision at this SHA, under the gap question. */
+function candidateDecisions(input: TaskGateInput, revision: GitSha, stateHash: ContentHash): readonly Decision[] {
+  return input.decisions.filter((d) => {
+    const subject = d.subject;
+    if (subject === null || !("taskId" in subject)) return false;
+    return (
+      subject.taskId === input.task.id &&
+      subject.taskRevision === input.task.revision &&
+      d.questionId === TASK_EVIDENCE_GAP_QUESTION &&
+      d.freshness.revision === revision &&
+      d.stateHash === stateHash
+    );
+  });
+}
+
+/**
+ * `DET_COVERAGE(T)` of docs/gates.md §5.2 — what condition 2 *becomes* when
+ * Jev is disabled.
+ *
+ * This is the reason "the product works with no key" is not a weakening. The
+ * fallback is stricter on structure than Jev's judgement: every criterion must
+ * be covered by a **passing** check *and* have its own passing evidence row,
+ * and each command/assertion check's provenance must intersect the task's
+ * ownership — a deterministic proxy for "the tests exercise the requirement
+ * rather than something unrelated".
+ */
+export function evaluateDetCoverage(
+  input: TaskGateInput,
+  fresh: readonly Evidence[],
+): readonly TaskGateRejection[] {
+  const out: TaskGateRejection[] = [];
+  const { task } = input;
+
+  for (const criterion of task.acceptanceCriteria) {
+    const passingCheck = task.checks.some(
+      (check) =>
+        !isTrivialCheck(check) &&
+        check.coversCriteria.includes(criterion.id) &&
+        checkState(check, fresh).state === "pass",
+    );
+    if (!passingCheck) {
+      out.push({
+        condition: "C2",
+        reasonCode: "fallback_coverage_gap",
+        detail: `criterion ${criterion.id} has no passing check`,
+      });
+    }
+    const evidenceRow = fresh.some(
+      (row) => row.requirementId === criterion.id && evidencePasses(row, task.checks),
+    );
+    if (!evidenceRow) {
+      out.push({
+        condition: "C2",
+        reasonCode: "fallback_coverage_gap",
+        detail: `criterion ${criterion.id} has no passing evidence row`,
+      });
+    }
+  }
+
+  for (const check of task.checks) {
+    if (check.kind !== "command" && check.kind !== "assertion") continue;
+    const row = latestResultFor(check, fresh);
+    if (row === undefined) continue;
+    const touchesOwned = row.provenance.some((p) => pathIsOwned(p.path, task.ownership.paths));
+    if (!touchesOwned) {
+      out.push({
+        condition: "C2",
+        reasonCode: "fallback_coverage_gap",
+        detail: `check ${check.id}: no provenance path inside the task's ownership`,
+      });
+    }
+  }
+
+  return out;
+}
+
+/** Does a criterion-level evidence row itself record a success? */
+function evidencePasses(row: Evidence, checks: readonly CheckDefinition[]): boolean {
+  const expected = checks.find((c) => c.id === row.checkId)?.expectedExitCode ?? 0;
+  return runStatusOf(row.exitStatus, expected) === "pass";
+}
+
+/**
+ * Is a provenance path inside one of the task's owned paths? Prefix match on
+ * path segments, so `src/a` owns `src/a/b.ts` but never `src/ab.ts`.
+ */
+export function pathIsOwned(path: string, owned: readonly string[]): boolean {
+  const normalise = (p: string): string => p.replace(/^\.\//, "").replace(/\/+$/, "");
+  const target = normalise(path);
+  return owned.some((raw) => {
+    const base = normalise(raw);
+    if (base === "" || base === ".") return true;
+    return target === base || target.startsWith(`${base}/`);
+  });
+}
+
+/**
+ * Condition 2, as the truth table of docs/gates.md §5.2.
+ *
+ * Exactly one of the two branches must be **present as a fresh `Decision`
+ * row**. "No row" is neither branch and yields `jev_decision_missing`:
+ * skipping is not a state, and with Jev disabled the gate still works — it
+ * just requires the recorded fallback plus `DET_COVERAGE`.
+ *
+ * `Decision` rows are engine-append-only (records.md §4), so nothing a worker
+ * can do produces one; that is what keeps this condition an input rather than
+ * a lever.
+ */
+export function evaluateC2(
+  input: TaskGateInput,
+  fresh: readonly Evidence[],
+  stateHash: ContentHash,
+  revision: GitSha,
+): { readonly rejections: readonly TaskGateRejection[]; readonly branch: TaskGateResult["c2Branch"] } {
+  const candidates = candidateDecisions(input, revision, stateHash);
+  const fallback = candidates.find(
+    (d) =>
+      d.override !== null &&
+      d.override.actor === "policy" &&
+      (JEV_DISABLED_REASONS as readonly string[]).includes(d.override.reason) &&
+      d.action === "deterministic_fallback",
+  );
+
+  if (fallback !== undefined) {
+    const reason = fallback.override?.reason as JevDisabledReason;
+    // D2: an operator who turned Jev *on* expects its judgement. A transport
+    // failure degrades to the deterministic predicate only when the config
+    // says that is acceptable; otherwise the task waits in `review`.
+    if (reason === "jev_unavailable" && input.jev.enabled && !input.jev.optional) {
+      return {
+        branch: null,
+        rejections: [
+          {
+            condition: "C2",
+            reasonCode: "jev_unavailable",
+            detail: "Jev is enabled and jev.optional is false: the gate waits rather than degrading",
+          },
+        ],
+      };
+    }
+    const coverage = evaluateDetCoverage(input, fresh);
+    return { branch: "deterministic_fallback", rejections: coverage };
+  }
+
+  const answered = candidates.filter((d) => d.override === null);
+  const noGap = answered.find(
+    (d) => d.action === "no_gap" && (d.confidence ?? 0) >= input.jev.confidenceThreshold,
+  );
+  if (noGap !== undefined) {
+    if (noGap.questionVersion !== input.jev.questionVersion) {
+      return {
+        branch: null,
+        rejections: [
+          {
+            condition: "C2",
+            reasonCode: "jev_decision_missing",
+            detail: `decision was answered under question version ${noGap.questionVersion}, policy pins ${input.jev.questionVersion}`,
+          },
+        ],
+      };
+    }
+    return { branch: "jev_no_gap", rejections: [] };
+  }
+
+  const errored = answered.find((d) => d.action === "error");
+  if (errored !== undefined) {
+    // "An error is not disabled" (docs/gates.md §5.1). Without a separately
+    // recorded fallback row an error leaves the task in `review`.
+    return {
+      branch: null,
+      rejections: [
+        {
+          condition: "C2",
+          reasonCode: input.jev.optional ? "jev_error" : "jev_unavailable",
+          detail: `evidence-gap question returned "error" and no deterministic fallback was recorded`,
+        },
+      ],
+    };
+  }
+
+  const gap = answered.find((d) => d.action === "gap" || d.action === "no_gap");
+  if (gap !== undefined) {
+    const detail =
+      gap.action === "no_gap"
+        ? `no_gap recorded at confidence ${String(gap.confidence)} below threshold ${input.jev.confidenceThreshold}`
+        : "evidence-gap question reported a gap";
+    return { branch: null, rejections: [{ condition: "C2", reasonCode: "jev_gap", detail }] };
+  }
+
+  return {
+    branch: null,
+    rejections: [
+      {
+        condition: "C2",
+        reasonCode: "jev_decision_missing",
+        detail: input.jev.enabled
+          ? "no fresh evidence-gap decision for this task revision, revision and state hash"
+          : "Jev is disabled and no deterministic-fallback decision was recorded; absence is not a state",
+      },
+    ],
+  };
+}
