@@ -615,3 +615,111 @@ function resultCaveats(
   if (exitStatus.kind === "unavailable") caveats.push(`unavailable: ${exitStatus.reason}`);
   return caveats;
 }
+
+// ---------------------------------------------------------------------------
+// Human checks: an approval request, never evidence
+// ---------------------------------------------------------------------------
+
+/**
+ * The action a pending approval for a human check permits.
+ *
+ * Namespaced per check so an approval granted for "a human looked at the
+ * migration" cannot be replayed as "a human looked at the release".
+ */
+export function humanCheckAction(checkId: string): string {
+  return `verify_check:${checkId}`;
+}
+
+/**
+ * A request for a human check, pinned to the exact task revision and
+ * repository revision it was asked at.
+ *
+ * This is not an `Approval` record: the engine does not grant its own
+ * approvals. It is what the caller hands to the approval queue, which is why
+ * it carries `taskRevision` and `planRevision` — #41's invalidation rules key
+ * on those, so an approval for this request dies the moment the checks or the
+ * plan change.
+ */
+export interface PendingApprovalRequest {
+  readonly kind: "pending_approval";
+  readonly checkId: string;
+  readonly workflowId: EvidenceSubject["workflowId"];
+  readonly taskId: EvidenceSubject["taskId"];
+  readonly taskRevision: EvidenceSubject["taskRevision"];
+  /** Revision the worktree was at when the human was asked. */
+  readonly revision: GitSha | null;
+  /** Instruction the planner wrote in `CheckDefinition.command`. */
+  readonly instruction: string;
+  readonly permittedAction: string;
+  readonly coversCriteria: readonly string[];
+  readonly required: boolean;
+}
+
+/**
+ * Turn a `human` check into a pending approval request.
+ *
+ * A human check is **not self-certifying**: nothing in this module can
+ * produce `Evidence` for it, because the only evidence that satisfies a human
+ * check is a row with `reviewer.kind = "human"` (`docs/gates.md` §2), and that
+ * row exists only once a real actor has granted an approval. The return type
+ * makes this structural — there is no `EvidenceDraft` on it to append.
+ */
+export function requestHumanCheck(
+  check: CheckDefinition,
+  options: Pick<RunCheckOptions, "cwd" | "subject" | "gitRunner">,
+): PendingApprovalRequest {
+  if (check.kind !== "human") {
+    throw new Error(`check "${check.id}" is ${check.kind}, not a human check`);
+  }
+  return {
+    kind: "pending_approval",
+    checkId: check.id,
+    workflowId: options.subject.workflowId,
+    taskId: options.subject.taskId,
+    taskRevision: options.subject.taskRevision,
+    revision: revisionAt(options.cwd, options.gitRunner ?? realGitRunner),
+    instruction: check.command,
+    permittedAction: humanCheckAction(check.id),
+    coversCriteria: check.coversCriteria,
+    required: check.required,
+  };
+}
+
+/** Result of running a task's full registered check list. */
+export interface CheckSuiteResult {
+  readonly results: readonly CheckRunResult[];
+  /** Human checks encountered, as approval requests. Never evidence. */
+  readonly pendingApprovals: readonly PendingApprovalRequest[];
+  /** `true` only when every executed check passed and nothing is pending. */
+  readonly allPassed: boolean;
+}
+
+/**
+ * Run every registered check for a task, sequentially.
+ *
+ * Sequential on purpose: checks share one worktree, and two builds writing
+ * the same output directory would produce evidence about a state neither of
+ * them defined. `allPassed` is a conjunction over run results *and* requires
+ * that no human check is still pending — an unanswered human check is not a
+ * pass.
+ */
+export async function runChecks(
+  checks: readonly CheckDefinition[],
+  options: RunCheckOptions & { readonly timeoutMsFor?: (check: CheckDefinition) => number | undefined },
+): Promise<CheckSuiteResult> {
+  const results: CheckRunResult[] = [];
+  const pendingApprovals: PendingApprovalRequest[] = [];
+  for (const check of checks) {
+    if (check.kind === "human") {
+      pendingApprovals.push(requestHumanCheck(check, options));
+      continue;
+    }
+    const timeoutMs = options.timeoutMsFor?.(check) ?? options.timeoutMs;
+    results.push(await runCheck(check, timeoutMs === undefined ? options : { ...options, timeoutMs }));
+  }
+  return {
+    results,
+    pendingApprovals,
+    allPassed: pendingApprovals.length === 0 && results.length > 0 && results.every((r) => r.status === "pass"),
+  };
+}
