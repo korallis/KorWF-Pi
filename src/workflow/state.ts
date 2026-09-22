@@ -888,3 +888,57 @@ function phaseGateStatusFor(request: PhaseTransitionRequest, edge: Transition<Ph
 
 /** Blocker kinds that store a phase pause as `paused_cap` rather than `paused_approval`. */
 export const CAP_BLOCKER_KINDS: readonly string[] = ["all_candidates_capped", "budget_hard_stop"];
+
+/**
+ * Advance a gating phase to its next substage (`integrating` → `verifying`
+ * → `review`). This is not a lifecycle transition — the phase stays `gating`
+ * — but it is still only writable here, because a phase that jumped straight
+ * to `review` would let `phase-done` be requested without the merged checks
+ * having run.
+ */
+export function advanceGatingSubstage(args: {
+  readonly store: Store;
+  readonly phaseId: PhaseId;
+  readonly now: () => IsoTimestamp;
+}): Phase {
+  const { store } = args;
+  return store.write(() => {
+    const phase = store.phases.require(args.phaseId) as Phase;
+    const index = (GATING_SUBSTAGES as readonly PhaseGateStatus[]).indexOf(phase.gateStatus);
+    if (index < 0) {
+      throw new TransitionRejected({
+        message: `phase ${phase.id} is "${phase.gateStatus}", not gating: substages advance only within gating`,
+        code: "unlisted_edge",
+      });
+    }
+    const next = GATING_SUBSTAGES[index + 1] as PhaseGateStatus | undefined;
+    if (next === undefined) {
+      throw new TransitionRejected({
+        message: `phase ${phase.id} is already at the last gating substage "${phase.gateStatus}"; ` +
+          `completion is phase-done, which re-evaluates the whole PHASE_DONE conjunction`,
+        code: "unlisted_edge",
+      });
+    }
+    return store.phases.update(phase.id, { gateStatus: next });
+  });
+}
+
+/** Is the phase at the last gating substage, i.e. may `phase-done` be requested? */
+export function isGateReviewStage(phase: Pick<Phase, "gateStatus">): boolean {
+  return phase.gateStatus === GATING_SUBSTAGES[GATING_SUBSTAGES.length - 1];
+}
+
+/** Task ids whose status is not terminal, for the §5 "affected T*" rules. */
+export function nonterminalTasks(store: Store, workflowId: WorkflowId): readonly Task[] {
+  return store.tasks
+    .findBy("workflowId", workflowId)
+    .filter((task) => !(TASK_TERMINAL_STATES as readonly string[]).includes(task.status));
+}
+
+/** Phases of a workflow whose lifecycle state is not terminal. */
+export function nonterminalPhases(store: Store, workflowId: WorkflowId): readonly Phase[] {
+  return store.phases.forWorkflow(workflowId).filter((phase) => {
+    const state = phaseLifecycleState(phase.gateStatus);
+    return state !== undefined && !(PHASE_TERMINAL_STATES as readonly string[]).includes(state);
+  });
+}
