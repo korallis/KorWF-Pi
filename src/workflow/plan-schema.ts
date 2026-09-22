@@ -73,3 +73,88 @@ export type PlanRuleId =
   | "path_shape";
 
 export type { CheckDefinition };
+
+// ---------------------------------------------------------------------------
+// The plan document, exactly as a planner model must emit it
+// ---------------------------------------------------------------------------
+
+/** One executable (or explicitly human) check on a task (PLAN §2.3). */
+export interface PlanCheck {
+  readonly id: string;
+  readonly kind: PlanCheckKind;
+  /** Exact command line for executable kinds; the instruction for `human`. */
+  readonly command: string;
+  /** Repository-relative working directory. `.` for the repository root. */
+  readonly cwd: string;
+  readonly expectedExitCode: number;
+  /** Acceptance-criterion ids on the same task that this check exercises. */
+  readonly coversCriteria: readonly string[];
+  /** `true` when the check may never be waived by Jev or a worker (PLAN §2.4). */
+  readonly required: boolean;
+  /** Why this check is the right evidence. Free text, kept for the plan document. */
+  readonly rationale?: string;
+}
+
+/** One acceptance criterion as the planner writes it. */
+export interface PlanCriterion {
+  readonly id: string;
+  readonly text: string;
+}
+
+/** An artifact the task is expected to produce, used for output-budget sizing (#124). */
+export interface PlanArtifact {
+  readonly path: string;
+  readonly estimate: {
+    readonly unit: "tokens" | "lines" | "bytes";
+    readonly value: number;
+  };
+  /** `true` when the artifact genuinely cannot be produced in pieces. */
+  readonly atomic?: boolean;
+}
+
+/** A task as the planner emits it. Ids are planner-local, not record ids. */
+export interface PlanTask {
+  /** Planner-local id, unique within the document (e.g. `t1`). */
+  readonly id: string;
+  /** Planner-local id of the owning phase. */
+  readonly phaseId: string;
+  readonly goal: string;
+  readonly acceptanceCriteria: readonly PlanCriterion[];
+  readonly checks: readonly PlanCheck[];
+  readonly ownership: {
+    readonly paths: readonly string[];
+    readonly components: readonly string[];
+  };
+  /** Planner-local task ids that must be done first. Must be acyclic. */
+  readonly dependencies: readonly string[];
+  readonly riskClass: RiskClass;
+  /** Optional; absent means the planner declared no artifacts to size. */
+  readonly expectedArtifacts?: readonly PlanArtifact[];
+}
+
+/** A phase as the planner emits it. */
+export interface PlanPhase {
+  readonly id: string;
+  /** 0-based position. Must be a dense 0..n-1 sequence over the document. */
+  readonly order: number;
+  readonly goal: string;
+  readonly acceptanceCriteria: readonly PlanCriterion[];
+  /** Branch name the phase integrates into; `plan-store.ts` supplies a default. */
+  readonly integrationBranch?: string;
+}
+
+/** The whole plan document. */
+export interface PlanDocument {
+  readonly schemaVersion: number;
+  /** Prose summary of the architecture the plan assumes or creates (PLAN §2.1). */
+  readonly architectureSummary: string;
+  readonly phases: readonly PlanPhase[];
+  readonly tasks: readonly PlanTask[];
+  /** Things the planner could not settle. Surfaced, never silently dropped. */
+  readonly openQuestions?: readonly string[];
+}
+
+/** Result of validating an unknown value as a `PlanDocument`. */
+export type PlanValidation =
+  | { readonly ok: true; readonly plan: PlanDocument; readonly warnings: readonly PlanIssue[] }
+  | { readonly ok: false; readonly errors: readonly PlanIssue[]; readonly warnings: readonly PlanIssue[] };
