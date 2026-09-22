@@ -114,6 +114,50 @@ export function extractJson(text: string): Extracted {
   };
 }
 
+/** Upper bound on findings quoted in a retry prompt, so the prompt itself stays small. */
+export const MAX_RETRY_FINDINGS = 25;
+
+/**
+ * Build the prompt for the planner's next attempt from the actual findings.
+ *
+ * Deliberately concrete: the model is told the exact paths that failed and the
+ * rule each broke, because a generic "your JSON was invalid, try again" costs
+ * a full planning turn and usually reproduces the same mistake.
+ */
+export function buildRetryPrompt(errors: readonly PlanIssue[], warnings: readonly PlanIssue[]): string {
+  const shown = errors.slice(0, MAX_RETRY_FINDINGS);
+  const hidden = errors.length - shown.length;
+  const lines = [
+    "Your plan was rejected. Nothing was saved. Fix exactly these problems and emit the whole plan document again.",
+    "",
+    "Errors (each line is <path>: <problem> [<rule>]):",
+    formatPlanIssues(shown),
+  ];
+  if (hidden > 0) lines.push(`  ... and ${hidden} more error(s) of the same kinds.`);
+
+  const noChecks = warnings.filter((w) => w.rule === "no_checks");
+  if (noChecks.length > 0) {
+    lines.push(
+      "",
+      "These tasks have no verification checks. They will be stored as `proposed` and can never run until they have some (PLAN \u00a72.3):",
+      formatPlanIssues(noChecks),
+    );
+  }
+
+  lines.push(
+    "",
+    "Rules that are enforced in code, not suggestions:",
+    "- Every task needs at least one check. `command`, `lint` and `typecheck` checks need a real command line, not a description; `human` checks carry the instruction in `command`.",
+    "- `coversCriteria` entries must be acceptance-criterion ids declared on the same task.",
+    "- Task `dependencies` must name tasks in this document, must not be self-referential, and must not form a cycle.",
+    "- All `ownership.paths` and `cwd` values are repository-relative; no absolute paths and no `..`.",
+    "- Phase `order` must be 0,1,2,... with no gaps, and a task may not depend on a task in a later phase.",
+    "",
+    "Return only the JSON plan document.",
+  );
+  return lines.join("\n");
+}
+
 /** First balanced `{...}` span, ignoring braces inside JSON strings. */
 function balancedObject(text: string): string | null {
   const start = text.indexOf("{");
