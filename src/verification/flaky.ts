@@ -20,9 +20,8 @@
  * `DEFAULT_RERUN_POLICY.allowFlakyToPass` exists for symmetry with the
  * option PLAN leaves configurable but defaults to `false`.
  */
-import type { AcceptanceCriterion, CheckDefinition, Evidence, GitSha, Revision, TaskId } from "../storage/records.ts";
+import type { AcceptanceCriterion, CheckDefinition, Evidence, GitSha, Revision } from "../storage/records.ts";
 import type { CheckRunStatus } from "./evidence.ts";
-import { runStatusOf, classifyOutcome } from "./evidence.ts";
 import { runCheck, type CheckRunResult, type RunCheckOptions } from "./checks.ts";
 
 /** Blocker kind for an acceptance criterion with no covering check. */
@@ -149,4 +148,112 @@ export function reconcileRuns(checkId: string, runs: readonly CheckRunResult[]):
     revision: last.revision,
     evidence,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Reading state from the store: fresh evidence, flaky pairs, missing checks
+// ---------------------------------------------------------------------------
+
+/** The subset of `Evidence` fields the freshness/state computation needs. */
+export type FreshnessInput = Pick<
+  Evidence,
+  "id" | "checkId" | "taskRevision" | "revision" | "exitStatus" | "createdAt" | "supersedesId"
+>;
+
+/**
+ * Is this evidence row fresh for the given task revision and current SHA?
+ * `docs/gates.md` §2: `e.taskRevision = T.rev ∧ e.revision = SHA(T) ∧
+ * ¬superseded(e)`. Supersession is checked by the caller passing only
+ * non-superseded rows (the store enumerates `supersedesId` chains); this
+ * function checks the two revision equalities, which is the part that must
+ * not be gotten wrong by inlining it at each call site.
+ */
+export function isFreshEvidence(
+  evidence: FreshnessInput,
+  taskRevision: Revision,
+  currentSha: GitSha,
+  supersededIds: ReadonlySet<string> = new Set(),
+): boolean {
+  return (
+    evidence.taskRevision === taskRevision && evidence.revision === currentSha && !supersededIds.has(evidence.id)
+  );
+}
+
+/**
+ * The latest fresh evidence row for one check, per docs/gates.md §2's tie
+ * break: greatest `createdAt`, then greatest `id`.
+ */
+export function latestFreshEvidence<E extends FreshnessInput>(
+  evidenceForCheck: readonly E[],
+  taskRevision: Revision,
+  currentSha: GitSha,
+  supersededIds: ReadonlySet<string> = new Set(),
+): E | null {
+  const fresh = evidenceForCheck.filter((e) => isFreshEvidence(e, taskRevision, currentSha, supersededIds));
+  if (fresh.length === 0) return null;
+  return fresh.reduce((best, e) => {
+    if (e.createdAt > best.createdAt) return e;
+    if (e.createdAt < best.createdAt) return best;
+    return e.id > best.id ? e : best;
+  });
+}
+
+/**
+ * Map an `EvidenceExitStatus` to the `docs/gates.md` §4 state table. Mirrors
+ * `runStatusOf` but takes the exit status stored on a row rather than a
+ * freshly-classified outcome, since a reader has only the row.
+ */
+export function stateFromExitStatus(exitStatus: Evidence["exitStatus"], expectedExitCode: number): CheckRunStatus {
+  switch (exitStatus.kind) {
+    case "exited":
+      return exitStatus.code === expectedExitCode ? "pass" : "fail";
+    case "timed_out":
+      return "timeout";
+    case "unavailable":
+      return "unavailable";
+    case "flaky":
+      return "flaky";
+    case "signalled":
+      return "fail";
+    case "missing":
+      return "missing";
+  }
+}
+
+/**
+ * State of one registered check for a task at its current revision, reading
+ * only fresh evidence. No fresh row at all → `missing`: absence is a state,
+ * never an inferred pass (PLAN §3.F).
+ */
+export function checkState<E extends FreshnessInput>(
+  check: Pick<CheckDefinition, "id" | "expectedExitCode">,
+  evidenceForCheck: readonly E[],
+  taskRevision: Revision,
+  currentSha: GitSha,
+  supersededIds: ReadonlySet<string> = new Set(),
+): CheckRunStatus {
+  const latest = latestFreshEvidence(evidenceForCheck, taskRevision, currentSha, supersededIds);
+  if (latest === null) return "missing";
+  return stateFromExitStatus(latest.exitStatus, check.expectedExitCode);
+}
+
+/**
+ * Acceptance criteria with no check covering them.
+ *
+ * Distinct from `missing` (a registered check with no fresh evidence): this
+ * is a criterion that was never given a check at all, which `docs/gates.md`
+ * §3 C1 treats as its own conjunct (`∀ a ∈ T.ac: ∃ c ∈ T.checks: a.id ∈
+ * c.coversCriteria`) rather than folding into any check's state.
+ */
+export function uncoveredCriteria(
+  acceptanceCriteria: readonly AcceptanceCriterion[],
+  checks: readonly Pick<CheckDefinition, "coversCriteria">[],
+): readonly string[] {
+  const covered = new Set(checks.flatMap((c) => c.coversCriteria));
+  return acceptanceCriteria.filter((ac) => !covered.has(ac.id)).map((ac) => ac.id);
+}
+
+/** Detail text for a `missing_check` blocker naming the uncovered criterion. */
+export function missingCheckBlockerDetail(criterionId: string): string {
+  return `acceptance criterion "${criterionId}" has no registered check covering it`;
 }
