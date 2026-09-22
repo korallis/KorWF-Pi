@@ -208,3 +208,184 @@ export function driftingWrites(
 ): readonly WriteObservation[] {
   return attempt.writes.filter((write) => !pathInOwnership(write.path, ownership));
 }
+
+// ---------------------------------------------------------------------------
+// the detector
+// ---------------------------------------------------------------------------
+
+/** Signature of one identical failure: which check, failing the same way. */
+export function failureSignatureKey(check: CheckObservation): string {
+  return `${check.checkId}::${check.failureSignature ?? check.status}`;
+}
+
+/** What the detector carries between attempts. Serialisable; no clock, no I/O. */
+export interface StallState {
+  readonly failureCounts: Readonly<Record<string, readonly string[]>>;
+  readonly approachCounts: Readonly<Record<string, readonly string[]>>;
+  readonly noProgressStreak: readonly string[];
+  readonly lastAttempt: AttemptObservation | null;
+  readonly fired: readonly StallKind[];
+}
+
+export const EMPTY_STALL_STATE: StallState = Object.freeze({
+  failureCounts: Object.freeze({}),
+  approachCounts: Object.freeze({}),
+  noProgressStreak: Object.freeze([]),
+  lastAttempt: null,
+  fired: Object.freeze([]),
+});
+
+/** Result of folding one attempt into the detector. */
+export interface StallUpdate {
+  readonly state: StallState;
+  readonly events: readonly StallEvent[];
+}
+
+/**
+ * Fold one attempt into the stall state (AC2).
+ *
+ * Each stall kind fires **once** per task per state: a stall event asks for a
+ * recovery decision, and re-raising it on every subsequent attempt would
+ * drown the decision it is asking for. `fired` records which have gone off.
+ *
+ * Harness failures (#124) never contribute to `repeated_failure` or to the
+ * no-progress streak — a truncated turn is a turn the worker never took.
+ */
+export function observeAttempt(
+  state: StallState,
+  attempt: AttemptObservation,
+  options: {
+    readonly ownership?: Ownership;
+    readonly thresholds?: Partial<StallThresholds>;
+  } = {},
+): StallUpdate {
+  const thresholds = resolveStallThresholds(options.thresholds);
+  const events: StallEvent[] = [];
+  const fired = new Set<StallKind>(state.fired);
+  const harness = isHarnessFailure(attempt.failureKind);
+
+  // --- repeated failures -------------------------------------------------
+  const failureCounts: Record<string, readonly string[]> = { ...state.failureCounts };
+  if (!harness) {
+    for (const check of attempt.checks) {
+      if (check.status === "pass") continue;
+      const key = failureSignatureKey(check);
+      const seen = [...(failureCounts[key] ?? []), attempt.attemptId];
+      failureCounts[key] = Object.freeze(seen);
+      if (seen.length >= thresholds.repeatedFailures && !fired.has("repeated_failure")) {
+        fired.add("repeated_failure");
+        events.push(
+          Object.freeze({
+            kind: "repeated_failure" as const,
+            taskId: attempt.taskId,
+            attemptId: attempt.attemptId,
+            count: seen.length,
+            threshold: thresholds.repeatedFailures,
+            detail: `Check ${check.checkId} failed identically ${seen.length} times (signature ${check.failureSignature ?? check.status}).`,
+            attemptIds: Object.freeze([...seen]),
+          }),
+        );
+      }
+    }
+  }
+
+  // --- repeated approaches ----------------------------------------------
+  const approachCounts: Record<string, readonly string[]> = { ...state.approachCounts };
+  if (attempt.approachFingerprint !== null && attempt.approachFingerprint !== "") {
+    const key = attempt.approachFingerprint;
+    const seen = [...(approachCounts[key] ?? []), attempt.attemptId];
+    approachCounts[key] = Object.freeze(seen);
+    if (seen.length >= thresholds.repeatedApproaches && !fired.has("repeated_approach")) {
+      fired.add("repeated_approach");
+      events.push(
+        Object.freeze({
+          kind: "repeated_approach" as const,
+          taskId: attempt.taskId,
+          attemptId: attempt.attemptId,
+          count: seen.length,
+          threshold: thresholds.repeatedApproaches,
+          detail: `${seen.length} attempts produced the same approach fingerprint ${key}.`,
+          attemptIds: Object.freeze([...seen]),
+        }),
+      );
+    }
+  }
+
+  // --- no measurable progress -------------------------------------------
+  const progress = attemptMadeProgress(attempt, state.lastAttempt);
+  const churned = attempt.filesChanged === 0 && attempt.toolCalls >= thresholds.toolCallsWithoutChange;
+  let noProgressStreak: readonly string[] = progress.progressed || harness
+    ? Object.freeze([])
+    : Object.freeze([...state.noProgressStreak, attempt.attemptId]);
+  if (
+    !fired.has("no_progress") &&
+    (noProgressStreak.length >= thresholds.noProgressAttempts || (churned && !harness))
+  ) {
+    fired.add("no_progress");
+    const byChurn = noProgressStreak.length < thresholds.noProgressAttempts;
+    events.push(
+      Object.freeze({
+        kind: "no_progress" as const,
+        taskId: attempt.taskId,
+        attemptId: attempt.attemptId,
+        count: byChurn ? attempt.toolCalls : noProgressStreak.length,
+        threshold: byChurn ? thresholds.toolCallsWithoutChange : thresholds.noProgressAttempts,
+        detail: byChurn
+          ? `${attempt.toolCalls} tool calls in one attempt changed no file.`
+          : `${noProgressStreak.length} consecutive attempts made no measurable progress. ${progress.reason}`,
+        attemptIds: Object.freeze([...noProgressStreak, ...(byChurn ? [attempt.attemptId] : [])].filter(
+          (id, index, all) => all.indexOf(id) === index,
+        )),
+      }),
+    );
+    if (byChurn) noProgressStreak = Object.freeze([...noProgressStreak, attempt.attemptId]);
+  }
+
+  // --- scope drift -------------------------------------------------------
+  if (options.ownership !== undefined) {
+    const drifted = driftingWrites(attempt, options.ownership);
+    if (drifted.length > 0 && !fired.has("scope_drift")) {
+      fired.add("scope_drift");
+      events.push(
+        Object.freeze({
+          kind: "scope_drift" as const,
+          taskId: attempt.taskId,
+          attemptId: attempt.attemptId,
+          count: drifted.length,
+          threshold: 1,
+          detail:
+            `Wrote outside the task's declared ownership: ` +
+            `${drifted.map((w) => `${w.kind} ${w.path}`).join(", ")}. ` +
+            `This is the write_outside_ownership approval class (#15).`,
+          attemptIds: Object.freeze([attempt.attemptId]),
+        }),
+      );
+    }
+  }
+
+  return {
+    state: Object.freeze({
+      failureCounts: Object.freeze(failureCounts),
+      approachCounts: Object.freeze(approachCounts),
+      noProgressStreak,
+      lastAttempt: attempt,
+      fired: Object.freeze([...fired]),
+    }),
+    events: Object.freeze(events),
+  };
+}
+
+/** Fold a whole attempt stream, returning every event in order. */
+export function detectStalls(
+  attempts: readonly AttemptObservation[],
+  options: { readonly ownership?: Ownership; readonly thresholds?: Partial<StallThresholds> } = {},
+): { readonly state: StallState; readonly events: readonly StallEvent[] } {
+  let state = EMPTY_STALL_STATE;
+  const events: StallEvent[] = [];
+  for (const attempt of attempts) {
+    const update = observeAttempt(state, attempt, options);
+    state = update.state;
+    events.push(...update.events);
+  }
+  return { state, events: Object.freeze(events) };
+}
