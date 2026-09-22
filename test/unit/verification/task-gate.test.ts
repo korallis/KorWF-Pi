@@ -874,3 +874,98 @@ describe("AC4/B1: nothing but a passing gate receipt can set Task.status = done"
     expect(outcome.receipt.consumedAt).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 6. Cross-cutting invariants (gates.spec.md §5)
+// ---------------------------------------------------------------------------
+
+describe("X: cross-cutting invariants", () => {
+  it("X1 — the receipt is written before the result is returned, even on a refusal", () => {
+    const store = freshStore();
+    seed(store, { evidence: [] });
+    const { receipt } = runTaskGate(store, TK, gateOptions);
+    const stored = store.gateReceipts.find(receipt.receiptId);
+    expect(stored?.disposition).toBe("reject");
+    expect(stored?.reasonCode).toBe("check_missing");
+    expect(store.tasks.require(TK).status).toBe("review");
+  });
+
+  it("X1.everyEvaluationIsRecorded — pass and reject both leave exactly one row", () => {
+    const store = freshStore();
+    seed(store);
+    runTaskGate(store, TK, gateOptions);
+    runTaskGate(store, TK, gateOptions);
+    expect(store.gateReceipts.forSubject("task", TK)).toHaveLength(2);
+  });
+
+  it("X1.receiptsCannotBeDeletedOrRewritten", () => {
+    const store = freshStore();
+    seed(store);
+    const { receipt } = runTaskGate(store, TK, gateOptions);
+    expect(() =>
+      store.connection.prepare("DELETE FROM gate_receipt WHERE receiptId = ?").run(receipt.receiptId),
+    ).toThrow(/append-only/);
+    expect(() =>
+      store.connection.prepare("UPDATE gate_receipt SET disposition = 'pass' WHERE receiptId = ?").run(receipt.receiptId),
+    ).toThrow(/consumedAt/);
+  });
+
+  it("X2 — the same input evaluates identically twice, with no network or Jev call", () => {
+    const input = buildInput({ evidence: [passEvidence(CHK1), stateEvidence(CHK2, { kind: "timed_out" })] });
+    const withDecision = { ...input, decisions: [noGapDecision(input)] };
+    const first = evaluateTaskGate(withDecision);
+    const second = evaluateTaskGate(withDecision);
+    expect(codes(first)).toEqual(codes(second));
+    expect(first.inputHash).toBe(second.inputHash);
+    expect(first.conditions).toEqual(second.conditions);
+  });
+
+  it("X3 — disabling Jev never relaxes C1", () => {
+    const input = buildInput({
+      jev: JEV_DISABLED,
+      evidence: [passEvidence(CHK1), stateEvidence(CHK2, { kind: "exited", code: 1 })],
+    });
+    const result = evaluateTaskGate({ ...input, decisions: [fallbackDecision(input, "jev_no_key")] });
+    expect(codes(result)).toContain("check_fail");
+    expect(result.pass).toBe(false);
+  });
+
+  it("X3 — disabling Jev never relaxes C3", () => {
+    const input = buildInput({ jev: JEV_DISABLED, task: taskInReview({ riskClass: "high" }) });
+    const result = evaluateTaskGate({ ...input, decisions: [fallbackDecision(input, "jev_no_key")] });
+    expect(codes(result)).toContain("approval_missing");
+  });
+
+  it("X4 — every refusal names the condition that failed, for /korwf why", () => {
+    const input = buildInput({
+      task: taskInReview({ status: "running", riskClass: "high" }),
+      evidence: [stateEvidence(CHK1, { kind: "timed_out" })],
+      jev: JEV_DISABLED,
+    });
+    const result = evaluateTaskGate(input);
+    // All four conditions report; none is silently skipped because an earlier
+    // one failed.
+    expect(result.conditions.map((c) => c.id)).toEqual(["C0", "C1", "C2", "C3"]);
+    expect(result.conditions.filter((c) => !c.satisfied).map((c) => c.id)).toEqual(["C0", "C1", "C2", "C3"]);
+    for (const rejection of result.reasons) {
+      expect(["C0", "C1", "C2", "C3"]).toContain(rejection.condition);
+      expect(rejection.detail.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("X5 — with no readable revision the gate fails closed", () => {
+    const result = evaluateTaskGate(buildInput({ revision: null }));
+    expect(codes(result)).toEqual(["revision_unavailable"]);
+    expect(result.pass).toBe(false);
+  });
+
+  it("X6 — the revision comes from the resolver, never from a record", () => {
+    const store = freshStore();
+    seed(store);
+    // The worker's evidence claims SHA; the repository says otherwise, and the
+    // repository wins.
+    const { result, receipt } = runTaskGate(store, TK, { ...gateOptions, resolveRevision: () => OLD_SHA });
+    expect(receipt.revision).toBe(OLD_SHA);
+    expect(codes(result)).toContain("check_missing");
+  });
+});
