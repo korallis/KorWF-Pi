@@ -3,7 +3,11 @@
  *
  * Implemented so far:
  * - `truncation.ts` — `stopReason` capture and harness/quality classification (#124).
- * - `roles.ts` — shipped worker role contracts from `resources/roles/` (#124).
+ * - `roles.ts` — shipped worker role contracts and per-role tool allowlists (#124, #68).
+ * - `contract.ts` — `WorkerContract` and pre-spawn validation (#68).
+ * - `env.ts` — credential scrubbing and the depth marker (#68).
+ * - `process-tree.ts` / `spawn.ts` — launch, RPC framing, three-tier cancel (#68).
+ * - `surface.ts` — best-effort worktree Space visibility (#68).
  *
  * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
  * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
