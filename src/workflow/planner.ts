@@ -363,3 +363,61 @@ export async function generatePlan(options: GeneratePlanOptions): Promise<Genera
       lastErrors.map((e) => `  ! ${e.path === "" ? "<root>" : e.path}: ${e.message} [${e.rule}]`).join("\n"),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Deterministic fallback (no model available at all)
+// ---------------------------------------------------------------------------
+
+/**
+ * A valid, honest plan produced with no model call.
+ *
+ * It contains exactly one task — "write the plan" — with a human check, so it
+ * satisfies PLAN §2.3 without pretending to know work it has not analysed. It
+ * exists so `/korwf plan` degrades to something inspectable instead of an
+ * error when no model is configured or every attempt failed (AGENTS.md §4:
+ * every assisted decision has a deterministic fallback).
+ */
+export function deterministicPlanSkeleton(intake: PlannerIntake): PlanDocument {
+  const task: PlanTask = {
+    id: "t1",
+    phaseId: "p1",
+    goal: `Decompose the goal into phases, tasks and per-task checks by hand: ${intake.goal}`,
+    acceptanceCriteria: [
+      { id: "ac1", text: "Every phase has acceptance criteria and every task has at least one verification check." },
+      { id: "ac2", text: "The task dependency graph is acyclic and no task depends on a later phase." },
+    ],
+    checks: [
+      {
+        id: "c1",
+        kind: "human",
+        command:
+          "Review the plan: confirm each task is atomic, has an observable acceptance criterion, and has an executable check.",
+        cwd: ".",
+        expectedExitCode: 0,
+        coversCriteria: ["ac1", "ac2"],
+        required: true,
+        rationale: "No model was available to plan, so a person must supply the decomposition.",
+      },
+    ],
+    ownership: { paths: [], components: ["plan"] },
+    dependencies: [],
+    riskClass: "low",
+  };
+  return {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    architectureSummary:
+      `No planner model was available, so no architecture was analysed. This is a placeholder plan for ` +
+      `"${intake.goal}" in ${intake.greenfield ? "a new repository" : intake.repoName}; replace it with a real plan ` +
+      `before running any phase.`,
+    phases: [
+      {
+        id: "p1",
+        order: 0,
+        goal: "Produce a real plan",
+        acceptanceCriteria: [{ id: "pac1", text: "A reviewed plan with phases, tasks and per-task checks exists." }],
+      },
+    ],
+    tasks: [task],
+    openQuestions: ["Everything: this plan was generated deterministically with no model call."],
+  };
+}
