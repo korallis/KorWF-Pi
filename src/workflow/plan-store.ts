@@ -37,6 +37,7 @@ import { RECORDS_SCHEMA_VERSION } from "../storage/records.ts";
 import { canonicalJson } from "../storage/repos/base.ts";
 import {
   NO_CHECKS_BLOCKER,
+  OUTPUT_BUDGET_BLOCKER,
   SUPERSEDED_BLOCKER,
   taskReadiness,
   type PlanDocument,
@@ -65,6 +66,8 @@ export interface PersistPlanResult {
   readonly tasks: readonly Task[];
   /** Task ids persisted `proposed` with the `no_checks` blocker (PLAN §2.3). */
   readonly blockedForNoChecks: readonly TaskId[];
+  /** Task ids persisted `proposed` with the `output_budget` blocker (#124). */
+  readonly blockedForOutputBudget: readonly TaskId[];
   /** Tasks present in the previous revision and absent from this one. */
   readonly supersededTasks: readonly TaskId[];
   /** Tasks whose revision was bumped because their definition of done changed. */
@@ -84,6 +87,18 @@ export interface PersistPlanOptions {
   readonly newId: (kind: "phase" | "task") => string;
   /** Git revision the phases integrate onto; defaults to `Workflow.baseRevision`. */
   readonly baseRevision?: string;
+  /**
+   * Planner-local ids of tasks whose expected output cannot be produced within
+   * the worker model's per-turn ceiling as planned (#124) — pass
+   * `tasksNeedingDecomposition(sizePlanTasks(plan, limits))`.
+   *
+   * Such a task is persisted `proposed` with the `output_budget` blocker: a
+   * worker dispatched on it would be truncated before its tool call is
+   * emitted and would write nothing, so it must be split first. The
+   * `no_checks` blocker takes precedence, since a task with neither checks nor
+   * a feasible size needs checks before anything else.
+   */
+  readonly outputBudgetBlocked?: readonly string[];
 }
 
 /** Thrown when a plan cannot be persisted. The transaction is already rolled back. */
@@ -121,11 +136,18 @@ function toChecks(task: PlanTask): readonly CheckDefinition[] {
  * transition the engine performs later, and PLAN §2.3's rule is applied here
  * as well so a checkless task carries its blocker from the moment it exists.
  */
-export function initialStatusFor(task: PlanTask): { status: TaskStatus; blocker: string | null } {
+export function initialStatusFor(
+  task: PlanTask,
+  outputBudgetBlocked: ReadonlySet<string> = new Set(),
+): { status: TaskStatus; blocker: string | null } {
   const readiness = taskReadiness(task);
-  return readiness.canBecomeReady
-    ? { status: INITIAL_TASK_STATUS, blocker: null }
-    : { status: INITIAL_TASK_STATUS, blocker: readiness.blocker ?? NO_CHECKS_BLOCKER };
+  if (!readiness.canBecomeReady) {
+    return { status: INITIAL_TASK_STATUS, blocker: readiness.blocker ?? NO_CHECKS_BLOCKER };
+  }
+  if (outputBudgetBlocked.has(task.id)) {
+    return { status: INITIAL_TASK_STATUS, blocker: OUTPUT_BUDGET_BLOCKER };
+  }
+  return { status: INITIAL_TASK_STATUS, blocker: null };
 }
 
 function buildPhase(args: {
@@ -162,8 +184,9 @@ function buildTask(args: {
   plan: PlanTask;
   dependencies: readonly TaskId[];
   now: IsoTimestamp;
+  outputBudgetBlocked: ReadonlySet<string>;
 }): Task {
-  const { status, blocker } = initialStatusFor(args.plan);
+  const { status, blocker } = initialStatusFor(args.plan, args.outputBudgetBlocked);
   return {
     id: args.id,
     createdAt: args.now,
@@ -308,8 +331,10 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
     taskIds.set(planTask.id, args.newId("task") as TaskId);
   }
 
+  const outputBudgetBlocked = new Set(args.outputBudgetBlocked ?? []);
   const tasks: Task[] = [];
   const blockedForNoChecks: TaskId[] = [];
+  const blockedForOutputBudget: TaskId[] = [];
   const revisedTasks: TaskId[] = [];
 
   for (const planTask of plan.tasks) {
@@ -326,13 +351,16 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
 
     const previous = matched.get(planTask.id);
     if (previous === undefined) {
-      const record = store.tasks.insert(buildTask({ id, workflowId, phaseId, plan: planTask, dependencies, now }));
+      const record = store.tasks.insert(
+        buildTask({ id, workflowId, phaseId, plan: planTask, dependencies, now, outputBudgetBlocked }),
+      );
       tasks.push(record);
       if (record.blocker === NO_CHECKS_BLOCKER) blockedForNoChecks.push(record.id);
+      if (record.blocker === OUTPUT_BUDGET_BLOCKER) blockedForOutputBudget.push(record.id);
       continue;
     }
 
-    const { status, blocker } = initialStatusFor(planTask);
+    const { status, blocker } = initialStatusFor(planTask, outputBudgetBlocked);
     const changed = definitionOfDoneChanged(previous, planTask);
     const patch: Partial<Task> = {
       phaseId,
@@ -354,6 +382,7 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
     tasks.push(record);
     if (changed) revisedTasks.push(record.id);
     if (record.blocker === NO_CHECKS_BLOCKER) blockedForNoChecks.push(record.id);
+    if (record.blocker === OUTPUT_BUDGET_BLOCKER) blockedForOutputBudget.push(record.id);
   }
 
   const supersededTasks = supersedeDroppedTasks(store, args.previousTasks, takenPrevious, now);
@@ -373,6 +402,7 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
     phases: args.phases,
     tasks,
     blockedForNoChecks,
+    blockedForOutputBudget,
     supersededTasks,
     revisedTasks,
     invalidatedApprovals,
@@ -529,6 +559,13 @@ export function summarisePersistedPlan(result: PersistPlanResult): string {
     lines.push(
       `  ${result.blockedForNoChecks.length} task(s) have no verification checks and stay "proposed" with ` +
         `blocker "${NO_CHECKS_BLOCKER}" until checks are added (PLAN \u00a72.3): ${result.blockedForNoChecks.join(", ")}`,
+    );
+  }
+  if (result.blockedForOutputBudget.length > 0) {
+    lines.push(
+      `  ${result.blockedForOutputBudget.length} task(s) expect more output than one worker turn can emit and ` +
+        `stay "proposed" with blocker "${OUTPUT_BUDGET_BLOCKER}" until they are split (#124): ` +
+        `${result.blockedForOutputBudget.join(", ")}`,
     );
   }
   if (result.revisedTasks.length > 0) {

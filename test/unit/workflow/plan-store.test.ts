@@ -17,6 +17,7 @@ import {
 } from "../../../src/workflow/plan-store.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 import { makeApproval, makeWorkflow } from "../../helpers/records.ts";
+import { sizePlanTasks, tasksNeedingDecomposition } from "../../../src/workflow/planner.ts";
 import { minimalPlan, planTask, planWithoutChecks } from "../../helpers/plan.ts";
 
 const AT = "2026-01-01T00:00:00.000Z";
@@ -153,6 +154,67 @@ describe("AC: a task with checks: [] persists as proposed with the no_checks blo
       newId: idFactory(),
     });
     expect(summarisePersistedPlan(result)).toContain(NO_CHECKS_BLOCKER);
+  });
+});
+
+describe("a task that cannot fit one worker turn persists with the output_budget blocker (#124)", () => {
+  it("blocks the task named by the sizing pass", () => {
+    const store = freshStore();
+    const plan = minimalPlan({
+      tasks: [planTask({ expectedArtifacts: [{ path: "src/huge.ts", estimate: { unit: "lines", value: 4_000 } }] })],
+    });
+    const blocked = tasksNeedingDecomposition(sizePlanTasks(plan, { maxTokens: 16_384, contextWindow: 200_000 }));
+    expect(blocked).toEqual(["t1"]);
+    const result = persistPlan({
+      store,
+      workflowId: WF,
+      plan,
+      now: () => AT,
+      newId: idFactory(),
+      outputBudgetBlocked: blocked,
+    });
+    const task = store.tasks.require(result.tasks[0]!.id);
+    expect(task.status).toBe("proposed");
+    expect(task.blocker).toBe("output_budget");
+    expect(result.blockedForOutputBudget).toEqual([task.id]);
+  });
+
+  it("lets no_checks win when a task has neither checks nor a feasible size", () => {
+    const store = freshStore();
+    const plan = minimalPlan({
+      tasks: [
+        planTask({
+          checks: [],
+          expectedArtifacts: [{ path: "src/huge.ts", estimate: { unit: "lines", value: 4_000 } }],
+        }),
+      ],
+    });
+    const result = persistPlan({
+      store,
+      workflowId: WF,
+      plan,
+      now: () => AT,
+      newId: idFactory(),
+      outputBudgetBlocked: ["t1"],
+    });
+    expect(store.tasks.require(result.tasks[0]!.id).blocker).toBe(NO_CHECKS_BLOCKER);
+  });
+
+  it("clears the blocker when a revision splits the task", () => {
+    const store = freshStore();
+    const plan = minimalPlan({
+      tasks: [planTask({ expectedArtifacts: [{ path: "src/huge.ts", estimate: { unit: "lines", value: 4_000 } }] })],
+    });
+    const first = persistPlan({
+      store,
+      workflowId: WF,
+      plan,
+      now: () => AT,
+      newId: idFactory(),
+      outputBudgetBlocked: ["t1"],
+    });
+    revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(store.tasks.require(first.tasks[0]!.id).blocker).toBeNull();
   });
 });
 
