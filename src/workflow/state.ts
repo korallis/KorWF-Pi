@@ -79,6 +79,9 @@ export const REJECTION_CODES = [
   "terminal_subject",
   "stale_snapshot",
   "unknown_subject",
+  // #46: the request would set a success state without a passing, unconsumed
+  // gate receipt for this subject at this revision (docs/gates.md §7).
+  "status_write_forbidden",
 ] as const;
 export type RejectionCode = (typeof REJECTION_CODES)[number];
 
@@ -347,6 +350,16 @@ export interface TransitionRequestBase {
     readonly kind: string;
     readonly detail: string;
   };
+  /**
+   * Passing gate receipt authorising a success state (#46).
+   *
+   * Required for `task-done`: the store refuses the status write without one,
+   * and consuming it here means a single receipt certifies a single
+   * completion. Supplying a receipt is not an assertion that the gate passed
+   * — the receipt itself records the verdict, and a rejection receipt or a
+   * used one is refused.
+   */
+  readonly gateReceiptId?: string;
 }
 
 export interface TaskTransitionRequest extends TransitionRequestBase {
@@ -673,6 +686,34 @@ function commitTaskEdge(args: CommitTaskArgs): TransitionResult<Task> {
       now,
       newId,
     );
+  }
+
+  // The one place a task may become `done`, and even here it is the *receipt*
+  // that authorises it, not this code path. `authoriseDone` consumes a
+  // passing, unconsumed, revision-matched receipt or throws; the enclosing
+  // transaction rolls the consumption back if anything below fails.
+  if (request.to === "done") {
+    const receiptId = request.gateReceiptId;
+    if (receiptId === undefined) {
+      reject(
+        store,
+        { ...base, reasonCode: "status_write_forbidden", failedGuards: [] },
+        `task-done requires a passing gate receipt (PLAN §2.4, docs/gates.md §7); none was supplied`,
+        now,
+        newId,
+      );
+    }
+    try {
+      store.tasks.authoriseDone(receiptId);
+    } catch (error) {
+      reject(
+        store,
+        { ...base, reasonCode: "status_write_forbidden", failedGuards: [] },
+        error instanceof Error ? error.message : String(error),
+        now,
+        newId,
+      );
+    }
   }
 
   const blockerKind = applyTaskBlockerSideEffects(args);

@@ -61,6 +61,36 @@ function newId(): string {
   return `id-${(counter += 1)}`;
 }
 
+/**
+ * A passing task-gate receipt for `taskId` (#46).
+ *
+ * `task-done` now requires one: the store refuses the status write without a
+ * passing, unconsumed, revision-matched receipt. These tests are about the
+ * *edge*, so they mint a receipt directly; the receipt's own contents are
+ * exercised in `test/unit/verification/task-gate.test.ts`.
+ */
+function passingReceipt(store: Store, taskId: string = TK): string {
+  const receiptId = `rcpt-${(counter += 1)}`;
+  const task = store.tasks.require(taskId);
+  store.gateReceipts.record({
+    receiptId,
+    createdAt: AT,
+    workflowId: task.workflowId,
+    gate: "task",
+    subjectId: task.id,
+    subjectRevision: task.revision,
+    revision: "a".repeat(40),
+    disposition: "pass",
+    reasonCode: null,
+    detail: null,
+    inputHash: "c".repeat(64),
+    evaluatedAt: AT,
+    consumedAt: null,
+    conditions: [],
+  });
+  return receiptId;
+}
+
 /** An actor a given transition row permits. */
 function actorFor(whoMayTrigger: readonly string[]): { kind: "engine" | "user" | "worker"; identity: string } {
   if (whoMayTrigger.includes("engine_only")) return { kind: "engine", identity: "test-engine" };
@@ -160,6 +190,7 @@ describe("AC1: every illegal transition in the Stage 1 table is rejected", () =>
         guards: allGuardsTrue(),
         evidenceRefs: ["ev:1"],
         ...(to === "blocked" ? { blocker: { kind: "dependency", detail: "dep not done" } } : {}),
+        ...(to === "done" ? { gateReceiptId: passingReceipt(store) } : {}),
         now: () => AT,
         newId,
       });
@@ -230,7 +261,7 @@ describe("AC2: done is unreachable without the gate preconditions", () => {
     store.tasks.insert(makeTask({ status: "review" }));
   }
 
-  function requestDone(store: Store, guards: GuardTable) {
+  function requestDone(store: Store, guards: GuardTable, gateReceiptId?: string) {
     return transitionTask({
       store,
       taskId: TK,
@@ -238,6 +269,7 @@ describe("AC2: done is unreachable without the gate preconditions", () => {
       trigger: "task_gate_passed",
       actor: { kind: "engine", identity: "engine" },
       guards,
+      gateReceiptId,
       evidenceRefs: ["ev:checks", "ev:coverage", "ev:review"],
       gitRevision: "a".repeat(40),
       now: () => AT,
@@ -402,6 +434,7 @@ describe("AC2: done is unreachable without the gate preconditions", () => {
         noJevGapOrDisabled: () => true,
         policyReviewSatisfied: () => true,
       }),
+      passingReceipt(store),
     );
     expect(result.subject.status).toBe("done");
     expect(result.event.gitRevision).toBe("a".repeat(40));
@@ -418,6 +451,7 @@ describe("AC2: done is unreachable without the gate preconditions", () => {
         noJevGapOrDisabled: () => true,
         policyReviewSatisfied: () => true,
       }),
+      passingReceipt(store),
     );
     let error: TransitionRejected | undefined;
     try {
