@@ -34,6 +34,10 @@ import { registerCatalogRefresh } from "./catalog-refresh.ts";
 import type { CatalogConfig } from "../models/catalog.ts";
 import { registerMainSessionRouting } from "./main-session-routing.ts";
 import { runAvailability, runRefusalMessage } from "./commands/run.ts";
+import { pauseMessage, parseWorkerCommandArgs } from "./commands/pause.ts";
+import { resumeMessage } from "./commands/resume.ts";
+import { cancelMessage } from "./commands/cancel.ts";
+import { WorkerRegistry } from "../workers/lifecycle.ts";
 
 /**
  * Recursion guard 2 (#68, ADR 0004): read the depth marker once, at load.
@@ -59,12 +63,23 @@ const SUBCOMMANDS = [
   "approvals",
   "export",
   "run",
+  "pause",
+  "resume",
+  "cancel",
 ] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
-/** Subcommands actually offered by this process: `run` only outside a worker. */
+/**
+ * Subcommands actually offered by this process.
+ *
+ * `run` and the three worker-control commands are all part of the spawn
+ * surface: recursion guard 2 (#68, ADR 0004) withholds them inside a worker,
+ * because a worker that can pause or cancel workers is a worker that can
+ * supervise them.
+ */
+const WORKER_SURFACE: readonly Subcommand[] = ["run", "pause", "resume", "cancel"];
 const ACTIVE_SUBCOMMANDS: readonly Subcommand[] = SUBCOMMANDS.filter(
-  (s) => s !== "run" || RUN_AVAILABILITY.available,
+  (s) => !WORKER_SURFACE.includes(s) || RUN_AVAILABILITY.available,
 );
 
 function isSubcommand(value: string): value is Subcommand {
@@ -75,6 +90,11 @@ export default function korwfExtension(pi: ExtensionAPI): void {
   // In-memory until the SQLite store (#23) persists ModelAvailability rows.
   // Cap detection (#62) writes into this table; listings read from it.
   const availability = new RouteAvailabilityTable();
+
+  // Live worker runs, so `/korwf pause|resume|cancel` can address one by id
+  // (#71). Handles only: global concurrency is a budget cap enforced by the
+  // ledger's atomic reservation, never by counting this map.
+  const workers = new WorkerRegistry();
 
   // Session resume/reload/fork/tree reconciliation (#42). Registered before
   // any command so a rewound conversation is reconciled against live
@@ -119,7 +139,7 @@ export default function korwfExtension(pi: ExtensionAPI): void {
       if (!sub || !isSubcommand(sub)) {
         // A worker typing `/korwf run` lands here; say why rather than
         // pretending the subcommand was a typo.
-        if (sub === "run" && !RUN_AVAILABILITY.available) {
+        if (sub !== undefined && (WORKER_SURFACE as readonly string[]).includes(sub) && !RUN_AVAILABILITY.available) {
           ui.notify(runRefusalMessage(RUN_AVAILABILITY), "error");
           return;
         }
@@ -245,6 +265,22 @@ export default function korwfExtension(pi: ExtensionAPI): void {
             } finally {
               store.close();
             }
+            return;
+          }
+          case "pause":
+          case "resume":
+          case "cancel": {
+            // The registry is per-process and holds only *live* runs; there
+            // is nothing to pause before the scheduler (#72) starts one, so
+            // this reports "no active workers" rather than pretending.
+            const parsed = parseWorkerCommandArgs(rest);
+            const outcome =
+              sub === "pause"
+                ? pauseMessage(workers, parsed)
+                : sub === "resume"
+                  ? resumeMessage(workers, parsed)
+                  : await cancelMessage(workers, parsed);
+            ui.notify(outcome.message, outcome.ok ? "info" : "warning");
             return;
           }
           case "disclosure": {
