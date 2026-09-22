@@ -11,15 +11,14 @@
  *   outcomes with a Wilson interval (#57). Registry metadata never appears here as ranking
  *   material — only hints, overrides, and outcomes rank.
  *
- * Jev selection and cap detection (#62), health/breakers (#123) build on these and key on `RouteId`.
  *
- * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
- * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
- * `src/workflow/index.ts` and each had to be resolved by hand, always by keeping both.
- * `export *` is additive, so modules added in parallel do not conflict; a genuine
- * duplicate-name clash still fails the build, which is what we want to hear about.
+ * **Re-export style: `export *`, deliberately.** A barrel listing every symbol is a
+ * guaranteed conflict between parallel branches — #57 and #62 collided here on the same
+ * day, as #37-#40 did in `src/workflow/index.ts`. `export *` is additive; a genuine
+ * duplicate-name clash still fails the build, which is the outcome worth hearing about.
  */
 export * from "./availability.ts";
+export * from "./cap-detect.ts";
 export * from "./cards.ts";
 export * from "./catalog.ts";
 export * from "./outcomes.ts";
