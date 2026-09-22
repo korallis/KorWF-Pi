@@ -269,7 +269,7 @@ describe("AC2: done is unreachable without the gate preconditions", () => {
       trigger: "task_gate_passed",
       actor: { kind: "engine", identity: "engine" },
       guards,
-      gateReceiptId,
+      ...(gateReceiptId === undefined ? {} : { gateReceiptId }),
       evidenceRefs: ["ev:checks", "ev:coverage", "ev:review"],
       gitRevision: "a".repeat(40),
       now: () => AT,

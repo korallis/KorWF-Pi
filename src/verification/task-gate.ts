@@ -58,6 +58,8 @@ import {
 } from "../storage/records.ts";
 import type { Store } from "../storage/db.ts";
 import type { TaskId } from "../storage/records.ts";
+import type { TransitionActor } from "../storage/transition-log.ts";
+import { taskDoneGuards, transitionTask, type TransitionResult } from "../workflow/state.ts";
 import { isTrivialCheck } from "../workflow/weak-checks.ts";
 import { revisionAt } from "./checks.ts";
 import { runStatusOf, type CheckRunStatus } from "./evidence.ts";
@@ -1079,4 +1081,82 @@ export function explainTaskGate(result: TaskGateResult): string {
   return result.reasons
     .map((r) => `${r.condition} ${r.reasonCode}: ${r.detail}`)
     .join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// The state-machine hooks (#41 supplied the sockets; these are the plugs)
+// ---------------------------------------------------------------------------
+
+/**
+ * `TaskGateHooks` for `taskDoneGuards` (src/workflow/state.ts), backed by a
+ * single evaluation of this gate.
+ *
+ * Each hook answers for exactly one PLAN §2.4 condition, so
+ * `precondition_failed` names `all_checks_pass_exact_revision`,
+ * `no_jev_gap_or_disabled` or `policy_review_satisfied` — and the receipt
+ * carries the specific reason code behind it. Every hook is derived from the
+ * same result, so the guards cannot disagree with the receipt that will
+ * authorise the write.
+ *
+ * `C0` is not a hook: the state machine already refuses any edge into `done`
+ * other than `review -> done`, and a claim-free task fails `C0` in the
+ * evaluation itself.
+ */
+export function taskGateHooks(result: TaskGateResult): {
+  readonly allChecksPassAtExactRevision: () => boolean;
+  readonly noJevGapOrDisabled: () => boolean;
+  readonly policyReviewSatisfied: () => boolean;
+} {
+  const satisfied = (id: TaskGateCondition): boolean =>
+    result.conditions.find((c) => c.id === id)?.satisfied === true &&
+    result.conditions.find((c) => c.id === "C0")?.satisfied === true;
+  return {
+    allChecksPassAtExactRevision: () => satisfied("C1"),
+    noJevGapOrDisabled: () => satisfied("C2"),
+    policyReviewSatisfied: () => satisfied("C3"),
+  };
+}
+
+/** What `completeTask` did: the gate verdict, and the transition if it ran. */
+export interface CompleteTaskOutcome {
+  readonly result: TaskGateResult;
+  readonly receipt: GateReceipt;
+  /** `null` when the gate refused; no transition was attempted. */
+  readonly transition: TransitionResult<Task> | null;
+}
+
+/**
+ * The only supported route from `review` to `done`.
+ *
+ * Evaluate the gate, record the receipt, and — only on a pass — request the
+ * `task-done` transition with that receipt. On a refusal the task is left in
+ * `review` and the caller gets the reasons; nothing partial is written,
+ * because the receipt is the only row the refusal produces and it is the
+ * explanation.
+ *
+ * A caller who skips this function does not get a shortcut: `transitionTask`
+ * demands a receipt, `authoriseDone` demands that it pass and be unused, and
+ * only `runTaskGate` mints one.
+ */
+export function completeTask(
+  store: Store,
+  taskId: TaskId,
+  options: TaskGateOptions & { readonly actor: TransitionActor; readonly evidenceRefs: readonly string[] },
+): CompleteTaskOutcome {
+  const { result, receipt } = runTaskGate(store, taskId, options);
+  if (!result.pass) return { result, receipt, transition: null };
+  const transition = transitionTask({
+    store,
+    taskId,
+    to: "done",
+    trigger: "task_gate_passed",
+    actor: options.actor,
+    guards: taskDoneGuards(taskGateHooks(result)),
+    evidenceRefs: options.evidenceRefs,
+    gitRevision: receipt.revision,
+    gateReceiptId: receipt.receiptId,
+    now: () => options.now,
+    newId: options.newId,
+  });
+  return { result, receipt, transition };
 }
