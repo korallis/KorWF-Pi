@@ -3,7 +3,7 @@
  * refusal to ever remove the repository's main tree.
  */
 import { describe, it, expect, afterEach } from "vitest";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { addWorktree, listWorktrees, removeWorktree, WorktreeError } from "../../../src/git/worktree.ts";
 import { makeTestRepo, type TestRepo } from "../../helpers/git-repo.ts";
@@ -71,9 +71,15 @@ describe("listWorktrees", () => {
     const path = join(main.path, "..", `wt-${Date.now()}`);
     addWorktree({ repoCwd: main.path, worktreePath: path, branch: "korwf/t5", baseRevision: main.head() });
     try {
+      // Compare REALPATHS: on macOS the temp root is a symlink (/tmp ->
+      // /private/tmp), so `git worktree list` reports the resolved path while
+      // the fixture holds the unresolved one. Comparing raw strings passes on
+      // Linux and fails on macOS, which is exactly what CI caught.
       const list = listWorktrees(main.path);
-      expect(list.some((w) => w.path === main.path)).toBe(true);
-      expect(list.some((w) => w.path === path)).toBe(true);
+      const real = (p: string) => realpathSync(p);
+      const listed = list.map((w) => real(w.path));
+      expect(listed).toContain(real(main.path));
+      expect(listed).toContain(real(path));
     } finally {
       removeWorktree({ repoCwd: main.path, worktreePath: path, force: true });
     }
