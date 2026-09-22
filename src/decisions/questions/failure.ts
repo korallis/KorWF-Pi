@@ -91,3 +91,93 @@ export const failureClassifyQuestion: QuestionDefinition<FailureClassifyState, F
     },
   ],
 });
+
+// ---------------------------------------------------------------------------
+// stall.repeatedApproach@1
+// ---------------------------------------------------------------------------
+
+/**
+ * Two attempt summaries whose *fingerprints differ*. The structural check in
+ * `stall.ts` already answers the identical-fingerprint case; this question
+ * exists only for "different diff, same idea".
+ */
+export interface RepeatedApproachState {
+  readonly taskGoal: string;
+  readonly previousApproach: string;
+  readonly currentApproach: string;
+  readonly previousFailure: string;
+}
+
+export type RepeatedApproachResult = "repeated" | "not_repeated" | "unknown";
+
+const APPROACH_OPTIONS: Readonly<Record<RepeatedApproachResult, string>> = Object.freeze({
+  repeated:
+    "The current attempt is the same idea as the previous one — the same mechanism against the same cause — so it will fail the same way.",
+  not_repeated:
+    "The current attempt is a materially different approach: a different mechanism, a different cause addressed, or new information used.",
+  unknown: "The summaries do not say enough to tell the two approaches apart.",
+});
+
+function isRepeatedApproachResult(value: string): value is RepeatedApproachResult {
+  return value in APPROACH_OPTIONS;
+}
+
+/**
+ * `stall.repeatedApproach@1`. Fallback is `not_repeated`: with no key the
+ * only supportable claim is the structural fingerprint comparison, which
+ * already said the two attempts differ. Falling back to `repeated` would
+ * halt a task on no evidence at all.
+ */
+export const stallRepeatedApproachQuestion: QuestionDefinition<RepeatedApproachState, RepeatedApproachResult> =
+  defineChoice<RepeatedApproachState, RepeatedApproachResult>({
+    id: "stall.repeatedApproach",
+    version: "1",
+    prompt:
+      "Two successive attempts at the same task produced different diffs. Judge whether the second is genuinely a " +
+      "different approach, or the same idea re-expressed and therefore doomed to fail the same way. " +
+      "Answer `unknown` if the summaries do not support either conclusion.",
+    options: APPROACH_OPTIONS,
+    minConfidence: 0.65,
+    state: (input) => ({
+      taskGoal: input.taskGoal,
+      previousApproach: input.previousApproach,
+      currentApproach: input.currentApproach,
+      previousFailure: input.previousFailure,
+    }),
+    decide: (answer) => {
+      const value: RepeatedApproachResult = isRepeatedApproachResult(answer.choice) ? answer.choice : "unknown";
+      return { value, rule: `stall.repeatedApproach:${value}`, action: value };
+    },
+    fallback: () => ({ value: "not_repeated", action: "not_repeated" }),
+    replay: (action) => (isRepeatedApproachResult(action) ? action : null),
+    boundaries: [
+      {
+        name: "no key / disabled never invents a stall",
+        state: { taskGoal: "g", previousApproach: "a", currentApproach: "b", previousFailure: "f" },
+        expectFallback: "not_repeated",
+      },
+      {
+        name: "empty summaries still do not invent a stall",
+        state: { taskGoal: "", previousApproach: "", currentApproach: "", previousFailure: "" },
+        expectFallback: "not_repeated",
+      },
+    ],
+  });
+
+// ---------------------------------------------------------------------------
+// registry
+// ---------------------------------------------------------------------------
+
+/** Hashes as reviewed; editing prompt/options without a version bump fails registration. */
+export const FAILURE_QUESTION_HASHES: Readonly<Record<string, string>> = Object.freeze({
+  "failure.classify@1": failureClassifyQuestion.contentHash,
+  "stall.repeatedApproach@1": stallRepeatedApproachQuestion.contentHash,
+});
+
+export const failureQuestionRegistry = new QuestionRegistry();
+failureQuestionRegistry.register(failureClassifyQuestion as QuestionDefinition<unknown, unknown>, {
+  pinnedHash: failureClassifyQuestion.contentHash,
+});
+failureQuestionRegistry.register(stallRepeatedApproachQuestion as QuestionDefinition<unknown, unknown>, {
+  pinnedHash: stallRepeatedApproachQuestion.contentHash,
+});
