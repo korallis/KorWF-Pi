@@ -248,3 +248,130 @@ function checkRelativePath(bag: IssueBag, value: string, path: string): void {
     bag.error("path_shape", path, `must not traverse outside the repository ("..") : "${value}"`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Element validators
+// ---------------------------------------------------------------------------
+
+function validateCriteria(bag: IssueBag, raw: unknown, path: string): PlanCriterion[] {
+  const items = requireArray(bag, raw, path);
+  if (items === null) return [];
+  if (items.length === 0) {
+    bag.error("range", path, `at least one acceptance criterion is required`);
+    return [];
+  }
+  const seen = new Set<string>();
+  const out: PlanCriterion[] = [];
+  items.forEach((item, i) => {
+    const at = `${path}[${i}]`;
+    if (!isRecord(item)) {
+      bag.error("type", at, `expected object, got ${typeName(item)}`);
+      return;
+    }
+    const id = requireString(bag, item["id"], `${at}.id`);
+    const text = requireString(bag, item["text"], `${at}.text`);
+    if (id === null || text === null) return;
+    if (seen.has(id)) {
+      bag.error("duplicate_id", `${at}.id`, `duplicate acceptance-criterion id "${id}"`);
+      return;
+    }
+    seen.add(id);
+    out.push({ id, text });
+  });
+  return out;
+}
+
+function validateChecks(bag: IssueBag, raw: unknown, path: string, criterionIds: ReadonlySet<string>): PlanCheck[] {
+  const items = requireArray(bag, raw, path);
+  if (items === null) return [];
+  const seen = new Set<string>();
+  const out: PlanCheck[] = [];
+  items.forEach((item, i) => {
+    const at = `${path}[${i}]`;
+    if (!isRecord(item)) {
+      bag.error("type", at, `expected object, got ${typeName(item)}`);
+      return;
+    }
+    const id = requireString(bag, item["id"], `${at}.id`);
+    const kindRaw = item["kind"];
+    const command = requireString(bag, item["command"], `${at}.command`);
+    if (typeof kindRaw !== "string" || !(PLAN_CHECK_KINDS as readonly string[]).includes(kindRaw)) {
+      bag.error("enum", `${at}.kind`, `expected one of ${PLAN_CHECK_KINDS.join(", ")}, got ${JSON.stringify(kindRaw)}`);
+      return;
+    }
+    const kind = kindRaw as PlanCheckKind;
+    const cwdRaw = item["cwd"];
+    const cwd = cwdRaw === undefined ? "." : requireString(bag, cwdRaw, `${at}.cwd`);
+    if (cwd !== null && cwd !== ".") checkRelativePath(bag, cwd, `${at}.cwd`);
+    const exitRaw = item["expectedExitCode"];
+    const expectedExitCode = exitRaw === undefined ? 0 : requireInteger(bag, exitRaw, `${at}.expectedExitCode`);
+    const coversRaw = item["coversCriteria"];
+    const covers = coversRaw === undefined ? [] : requireArray(bag, coversRaw, `${at}.coversCriteria`);
+    const requiredRaw = item["required"];
+    if (requiredRaw !== undefined && typeof requiredRaw !== "boolean") {
+      bag.error("type", `${at}.required`, `expected boolean, got ${typeName(requiredRaw)}`);
+      return;
+    }
+    if (id === null || command === null || cwd === null || expectedExitCode === null || covers === null) return;
+    if (seen.has(id)) {
+      bag.error("duplicate_id", `${at}.id`, `duplicate check id "${id}"`);
+      return;
+    }
+    seen.add(id);
+
+    // An executable check whose "command" is prose is not executable. This is
+    // the most common way a model satisfies PLAN §2.3 in appearance only.
+    if ((EXECUTABLE_CHECK_KINDS as readonly string[]).includes(kind) && !looksLikeCommand(command)) {
+      bag.error(
+        "check_shape",
+        `${at}.command`,
+        `kind "${kind}" needs an executable command line, got prose: ${JSON.stringify(command.slice(0, 60))}`,
+      );
+      return;
+    }
+
+    const coversIds: string[] = [];
+    covers.forEach((c, j) => {
+      if (typeof c !== "string") {
+        bag.error("type", `${at}.coversCriteria[${j}]`, `expected string, got ${typeName(c)}`);
+        return;
+      }
+      if (!criterionIds.has(c)) {
+        bag.error("unknown_reference", `${at}.coversCriteria[${j}]`, `no acceptance criterion "${c}" on this task`);
+        return;
+      }
+      coversIds.push(c);
+    });
+
+    const rationale = item["rationale"];
+    out.push({
+      id,
+      kind,
+      command,
+      cwd,
+      expectedExitCode,
+      coversCriteria: coversIds,
+      required: requiredRaw ?? true,
+      ...(typeof rationale === "string" ? { rationale } : {}),
+    });
+  });
+  return out;
+}
+
+/**
+ * Heuristic but deliberately strict: an executable check must start with a
+ * token that could be a program (no spaces before it, not a sentence). A
+ * description like "run the tests and make sure they pass" is rejected so the
+ * deterministic gate is never handed something it cannot run.
+ */
+function looksLikeCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (trimmed.length === 0) return false;
+  const first = trimmed.split(/\s+/)[0] ?? "";
+  if (!/^[A-Za-z0-9._/\\$-]+$/.test(first)) return false;
+  // A trailing sentence period or a capitalised English sentence opener is prose.
+  if (/[.!?]$/.test(trimmed) && !/\.(sh|mjs|cjs|js|ts|py)$/.test(trimmed)) return false;
+  // `make` and `check` are real programs, so they are not in this list; the
+  // openers here cannot begin a command line in any toolchain.
+  return !/^(please|ensure|confirm|review|the|a|an|it|we|you|this|that|someone)$/i.test(first);
+}
