@@ -26,6 +26,7 @@ import { tasksMessage, parseTasksArgs } from "./commands/tasks.ts";
 import { phasesMessage, parsePhasesArgs } from "./commands/phases.ts";
 import { runExport, parseExportArgs } from "./commands/export.ts";
 import { openStore, resolveStorageRoot } from "../storage/index.ts";
+import { readLiveRepoState } from "../git/revision.ts";
 import { registerSessionHooks } from "./session-hooks.ts";
 
 const SUBCOMMANDS = [
@@ -147,7 +148,9 @@ export default function korwfExtension(pi: ExtensionAPI): void {
             const { store } = openStore({ storageRoot, writable: false });
             try {
               if (sub === "tasks") {
-                const outcome = tasksMessage(store, parseTasksArgs(rest));
+                const live = readLiveRepoState(ctx.cwd);
+                const currentSha = live.kind === "repo" ? live.head : null;
+                const outcome = tasksMessage(store, { ...parseTasksArgs(rest), currentSha });
                 ui.notify(outcome.message, outcome.ok ? "info" : "error");
               } else if (sub === "phases") {
                 const outcome = phasesMessage(store, parsePhasesArgs(rest));

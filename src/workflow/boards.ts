@@ -10,6 +10,7 @@
 import type { Store } from "../storage/db.ts";
 import type { Phase, PhaseId, Task, TaskId, WorkflowId } from "../storage/records.ts";
 import type { BlockerRow } from "../storage/transition-log.ts";
+import { taskCheckSummary, type TaskCheckSummary } from "../verification/flaky.ts";
 
 /** One row of the `/korwf tasks` board. */
 export interface TaskBoardRow {
@@ -22,6 +23,13 @@ export interface TaskBoardRow {
   readonly evidenceCount: number;
   /** Most recent attempt's `usedModel`, or `null` if the task never ran. */
   readonly lastModel: string | null;
+  /**
+   * Per-check state (pass/fail/flaky/missing/unavailable/timeout) plus
+   * uncovered acceptance criteria (issue #51; PLAN §3.F). `null` when no
+   * current revision was supplied to `buildTaskBoard` — every check then
+   * reports `missing`, which is the honest answer for "we don't know".
+   */
+  readonly checkSummary: TaskCheckSummary;
 }
 
 export interface TaskBoardFilter {
@@ -89,11 +97,19 @@ function evidenceCountForTask(store: TaskBoardReadStore, taskId: TaskId): number
   return store.evidence.list().filter((e) => e.taskId === taskId).length;
 }
 
-/** Build the rows for `/korwf tasks`, optionally filtered. */
+/**
+ * Build the rows for `/korwf tasks`, optionally filtered.
+ *
+ * `currentSha` comes from the caller (`src/git/`, never from this module,
+ * which stays read-only over the store): `null` when no live revision is
+ * known, in which case every check reports `missing` rather than the board
+ * guessing a revision.
+ */
 export function buildTaskBoard(
   store: TaskBoardReadStore,
   workflowId: WorkflowId,
   filter: TaskBoardFilter = {},
+  currentSha: string | null = null,
 ): readonly TaskBoardRow[] {
   const phases = store.phases.forWorkflow(workflowId);
   const phaseIds = new Set(phases.map((p) => p.id));
@@ -105,6 +121,7 @@ export function buildTaskBoard(
     if (filter.status !== undefined && task.status !== filter.status) continue;
     const blockers = store.blockers.unresolvedForSubject("task", task.id);
     if (filter.blockedOnly === true && blockers.length === 0) continue;
+    const taskEvidence = store.evidence.forTaskRevision(task.id, task.revision);
     rows.push({
       task,
       blockers,
@@ -112,6 +129,7 @@ export function buildTaskBoard(
       unmetDependencies: unmetDependencyIds(store, task.dependencies),
       evidenceCount: evidenceCountForTask(store, task.id),
       lastModel: lastAttemptModel(store, task.id),
+      checkSummary: taskCheckSummary(task, taskEvidence, currentSha),
     });
   }
   return rows;
