@@ -436,3 +436,261 @@ function reject(
     event,
   });
 }
+
+/** Which table actor a request's origin maps to (docs/state-machine.md §1). */
+export function actorRole(actor: TransitionActor): "engine_only" | "user" | "worker_request_then_engine" {
+  switch (actor.kind) {
+    case "engine":
+      return "engine_only";
+    case "user":
+      return "user";
+    case "worker":
+      return "worker_request_then_engine";
+  }
+}
+
+/**
+ * Success states no requester other than the engine may reach, however the
+ * request is spelled (docs/state-machine.md §2 and the §1 commit rules).
+ * Listed rather than derived, so adding a state cannot quietly open a route
+ * to completion.
+ */
+export const ENGINE_ONLY_SUCCESS_STATES = { task: ["done"], phase: ["done"] } as const;
+
+// ---------------------------------------------------------------------------
+// Task transitions
+// ---------------------------------------------------------------------------
+
+/**
+ * Request a task transition. The only writer of `Task.status`.
+ *
+ * Order of checks matters and mirrors §6: identity, terminal state, known
+ * state/trigger, listed edge, actor authorisation, snapshot freshness, then
+ * the guard conjunction. Everything runs against one snapshot read inside
+ * the transaction, and the state change plus its event are one commit.
+ */
+export function transitionTask(request: TaskTransitionRequest): TransitionResult<Task> {
+  const { store, now, newId } = request;
+  const evidenceRefs = request.evidenceRefs ?? [];
+  const gitRevision = request.gitRevision ?? null;
+
+  return store.write(() => {
+    const task = store.tasks.get(request.taskId);
+    if (task === undefined) {
+      throw new TransitionRejected({
+        message: `unknown task ${request.taskId}`,
+        code: "unknown_subject",
+      });
+    }
+    const workflow = store.workflows.require(task.workflowId) as Workflow;
+    const unresolvedBlockers = store.blockers
+      .unresolvedForSubject("task", task.id)
+      .map((blocker) => blocker.kind);
+    const before = hashRecord(task);
+    const base = {
+      workflow,
+      subjectKind: "task" as const,
+      subjectId: task.id,
+      fromState: task.status,
+      toState: String(request.to),
+      trigger: request.trigger,
+      actor: request.actor,
+      taskRevision: task.revision,
+      gitRevision,
+      evidenceRefs,
+      beforeHash: before,
+      afterHash: before,
+    };
+
+    const known = (TASK_STATES as readonly string[]).includes(String(request.to));
+    if (!known) {
+      reject(
+        store,
+        { ...base, transitionId: null, reasonCode: "unknown_state", failedGuards: [] },
+        `"${request.to}" is not a task state`,
+        now,
+        newId,
+      );
+    }
+    if ((TASK_TERMINAL_STATES as readonly string[]).includes(task.status)) {
+      reject(
+        store,
+        { ...base, transitionId: null, reasonCode: "terminal_subject", failedGuards: [] },
+        `task ${task.id} is ${task.status}: terminal states have no outgoing transitions`,
+        now,
+        newId,
+      );
+    }
+    if (!TASK_TRIGGERS.includes(request.trigger)) {
+      reject(
+        store,
+        { ...base, transitionId: null, reasonCode: "unknown_trigger", failedGuards: [] },
+        `"${request.trigger}" is not a task trigger`,
+        now,
+        newId,
+      );
+    }
+    const edge = findTaskTransition(task.status, request.to, request.trigger);
+    if (edge === undefined) {
+      reject(
+        store,
+        { ...base, transitionId: null, reasonCode: "unlisted_edge", failedGuards: [] },
+        `no listed task transition ${task.status} -> ${request.to} on "${request.trigger}"`,
+        now,
+        newId,
+      );
+    }
+    return commitTaskEdge({ request, task, workflow, edge, base, unresolvedBlockers });
+  });
+}
+
+interface CommitTaskArgs {
+  readonly request: TaskTransitionRequest;
+  readonly task: Task;
+  readonly workflow: Workflow;
+  readonly edge: Transition<TaskStatus>;
+  readonly base: Omit<EventDraft, "disposition" | "reasonCode" | "failedGuards" | "transitionId">;
+  readonly unresolvedBlockers: readonly string[];
+}
+
+/** Actor, snapshot, evidence and guard checks, then the single write. */
+function commitTaskEdge(args: CommitTaskArgs): TransitionResult<Task> {
+  const { request, task, workflow, edge, unresolvedBlockers } = args;
+  const { store, now, newId } = request;
+  const base = { ...args.base, transitionId: edge.id };
+
+  if (!edge.whoMayTrigger.includes(actorRole(request.actor))) {
+    reject(
+      store,
+      { ...base, reasonCode: "unauthorized_actor", failedGuards: [] },
+      `actor "${request.actor.kind}" may not trigger ${edge.id} (allowed: ${edge.whoMayTrigger.join(", ")})`,
+      now,
+      newId,
+    );
+  }
+  if (
+    request.expected !== undefined &&
+    ((request.expected.status !== undefined && request.expected.status !== task.status) ||
+      (request.expected.revision !== undefined && request.expected.revision !== task.revision))
+  ) {
+    reject(
+      store,
+      { ...base, reasonCode: "stale_snapshot", failedGuards: [] },
+      `task ${task.id} moved: expected ${request.expected.status ?? task.status}@${
+        request.expected.revision ?? task.revision
+      }, found ${task.status}@${task.revision}`,
+      now,
+      newId,
+    );
+  }
+  if (edge.requiredEvidence.length > 0 && base.evidenceRefs.length === 0) {
+    reject(
+      store,
+      { ...base, reasonCode: "missing_evidence", failedGuards: [] },
+      `${edge.id} requires evidence references (${edge.requiredEvidence.join("; ")}) and none were supplied`,
+      now,
+      newId,
+    );
+  }
+
+  const context: GuardContext = {
+    store,
+    workflow,
+    task,
+    phase: store.phases.get(task.phaseId) ?? null,
+    gitRevision: base.gitRevision,
+    actor: request.actor,
+    now: now(),
+    evidenceRefs: base.evidenceRefs,
+    unresolvedBlockers,
+  };
+  const guards = withStructuralGuards(request.guards ?? {}, context);
+  const evaluation = evaluateGuards(edge.preconditions, guards, context);
+  if (!evaluation.satisfied) {
+    reject(
+      store,
+      { ...base, reasonCode: "precondition_failed", failedGuards: evaluation.failed },
+      `${edge.id} rejected: unsatisfied precondition(s) ${evaluation.failed.join(", ")}`,
+      now,
+      newId,
+    );
+  }
+
+  const blockerKind = applyTaskBlockerSideEffects(args);
+  const updated = store.tasks.update(task.id, { status: request.to, blocker: blockerKind });
+  const event = appendEvent(
+    store,
+    {
+      ...base,
+      afterHash: hashRecord(updated),
+      disposition: "accepted",
+      reasonCode: null,
+      failedGuards: [],
+    },
+    now,
+    newId,
+  );
+  return { subject: updated, event, transitionId: edge.id, sideEffects: edge.sideEffects };
+}
+
+/**
+ * The blocker half of a task transition, and the reason `Task.blocker` is
+ * never a caller-supplied string:
+ *
+ * - Entering `blocked` **requires** a blocker row. The request's `blocker`
+ *   field creates one; if the caller supplied none, the unresolved rows that
+ *   already exist are what keep the task blocked (the `blocker_present`
+ *   structural guard has already refused the edge when there are neither).
+ * - Leaving `blocked` for `ready` resolves the rows that were holding it
+ *   — "clear resolved blocker" in the `task-ready` row. History is kept: the
+ *   rows are resolved, not deleted.
+ * - `Task.blocker` is then *derived* from the unresolved rows, so it cannot
+ *   disagree with them.
+ */
+function applyTaskBlockerSideEffects(args: CommitTaskArgs): string | null {
+  const { request, task } = args;
+  const { store } = request;
+  const at = request.now();
+
+  if (request.blocker !== undefined) {
+    store.blockers.insert({
+      blockerId: request.newId(),
+      createdAt: at,
+      workflowId: task.workflowId,
+      subjectKind: "task",
+      subjectId: task.id,
+      kind: request.blocker.kind,
+      detail: request.blocker.detail,
+      raisedBy: `${request.actor.kind}:${request.actor.identity}`,
+      resolvedAt: null,
+      resolvedBy: null,
+      resolutionDetail: null,
+    });
+  }
+
+  if (request.to === "ready" || request.to === "cancelled") {
+    for (const blocker of store.blockers.unresolvedForSubject("task", task.id)) {
+      store.blockers.resolve(blocker.blockerId, {
+        at,
+        by: `${request.actor.kind}:${request.actor.identity}`,
+        detail: `resolved by ${args.edge.id}`,
+      });
+    }
+  }
+
+  return deriveBlockerField(store, "task", task.id);
+}
+
+/**
+ * `Task.blocker`/`Phase` blocker text derived from the unresolved rows. The
+ * record field holds one string, so several simultaneous reasons are joined
+ * — the authoritative list is always the blocker table.
+ */
+export function deriveBlockerField(
+  store: Store,
+  subjectKind: TransitionSubjectKind,
+  subjectId: string,
+): string | null {
+  const kinds = store.blockers.unresolvedForSubject(subjectKind, subjectId).map((b) => b.kind);
+  return kinds.length === 0 ? null : [...new Set(kinds)].join(",");
+}
