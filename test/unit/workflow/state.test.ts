@@ -21,12 +21,16 @@ import {
 } from "../../../src/workflow/transitions.ts";
 import {
   TransitionRejected,
+  advanceGatingSubstage,
+  allPhaseTasksDone,
   evaluateGuards,
   findPhaseTransition,
   findTaskTransition,
   hasExecutableCheck,
+  isGateReviewStage,
   isLegalPhaseEdge,
   isLegalTaskEdge,
+  phaseDoneGuards,
   phaseLifecycleState,
   taskDoneGuards,
   transitionPhase,
@@ -739,5 +743,131 @@ describe("every attempt is audited, accepted or rejected", () => {
       unknownState = caught as TransitionRejected;
     }
     expect(unknownState?.code).toBe("unknown_state");
+  });
+});
+
+describe("phase gating is entered at its first substage and walked, not skipped", () => {
+  it("phase-gate stores `integrating`, not `review`", () => {
+    const store = freshStore();
+    store.phases.update(PH, { gateStatus: "running" });
+    store.tasks.insert(makeTask({ status: "done" }));
+    const result = transitionPhase({
+      store,
+      phaseId: PH,
+      to: "gating",
+      trigger: "tasks_completed",
+      actor: { kind: "engine", identity: "engine" },
+      guards: { all_tasks_done: allPhaseTasksDone, authorization_current: () => true },
+      evidenceRefs: ["ev:receipts"],
+      now: () => AT,
+      newId,
+    });
+    expect(result.subject.gateStatus).toBe("integrating");
+    expect(isGateReviewStage(result.subject)).toBe(false);
+  });
+
+  it("advances integrating -> verifying -> review and refuses to go past review", () => {
+    const store = freshStore();
+    store.phases.update(PH, { gateStatus: "integrating" });
+    expect(advanceGatingSubstage({ store, phaseId: PH, now: () => AT }).gateStatus).toBe("verifying");
+    const atReview = advanceGatingSubstage({ store, phaseId: PH, now: () => AT });
+    expect(atReview.gateStatus).toBe("review");
+    expect(isGateReviewStage(atReview)).toBe(true);
+    expect(() => advanceGatingSubstage({ store, phaseId: PH, now: () => AT })).toThrow(TransitionRejected);
+  });
+
+  it("refuses to advance substages on a phase that is not gating", () => {
+    const store = freshStore();
+    store.phases.update(PH, { gateStatus: "running" });
+    expect(() => advanceGatingSubstage({ store, phaseId: PH, now: () => AT })).toThrow(/not gating/);
+  });
+
+  it("all_tasks_done is false when any task of the phase is not done", () => {
+    const store = freshStore();
+    store.phases.update(PH, { gateStatus: "running" });
+    store.tasks.insert(makeTask({ status: "done" }));
+    store.tasks.insert(makeTask({ id: "tk-2" as TaskId, status: "failed" }));
+    expect(() =>
+      transitionPhase({
+        store,
+        phaseId: PH,
+        to: "gating",
+        trigger: "tasks_completed",
+        actor: { kind: "engine", identity: "engine" },
+        guards: { all_tasks_done: allPhaseTasksDone, authorization_current: () => true },
+        evidenceRefs: ["ev:receipts"],
+        now: () => AT,
+        newId,
+      }),
+    ).toThrow(/all_tasks_done/);
+  });
+
+  it("phase-done is unreachable with no gate hooks supplied", () => {
+    const store = freshStore();
+    store.phases.update(PH, { gateStatus: "review" });
+    expect(() =>
+      transitionPhase({
+        store,
+        phaseId: PH,
+        to: "done",
+        trigger: "phase_gate_passed",
+        actor: { kind: "engine", identity: "engine" },
+        guards: phaseDoneGuards(),
+        evidenceRefs: ["ev:1"],
+        now: () => AT,
+        newId,
+      }),
+    ).toThrow(TransitionRejected);
+    expect(store.phases.require(PH).gateStatus).toBe("review");
+  });
+
+  it("a cap pause stores paused_cap; an approval pause stores paused_approval", () => {
+    const capStore = freshStore();
+    capStore.phases.update(PH, { gateStatus: "running" });
+    const capped = transitionPhase({
+      store: capStore,
+      phaseId: PH,
+      to: "paused",
+      trigger: "all_candidates_capped",
+      actor: { kind: "engine", identity: "engine" },
+      guards: { all_eligible_models_capped: () => true },
+      evidenceRefs: ["ev:availability"],
+      now: () => AT,
+      newId,
+    });
+    expect(capped.subject.gateStatus).toBe("paused_cap");
+
+    const approvalStore = freshStore();
+    approvalStore.phases.update(PH, { gateStatus: "running" });
+    const paused = transitionPhase({
+      store: approvalStore,
+      phaseId: PH,
+      to: "paused",
+      trigger: "phase_stop",
+      actor: { kind: "user", identity: "owner" },
+      guards: { phase_stop_present: () => true },
+      evidenceRefs: ["ev:request"],
+      blocker: { kind: "user_pause", detail: "owner asked to stop" },
+      now: () => AT,
+      newId,
+    });
+    expect(paused.subject.gateStatus).toBe("paused_approval");
+  });
+
+  it("phase-stale-evidence returns the substage to verifying", () => {
+    const store = freshStore();
+    store.phases.update(PH, { gateStatus: "review" });
+    const result = transitionPhase({
+      store,
+      phaseId: PH,
+      to: "gating",
+      trigger: "git_revision_changed",
+      actor: { kind: "engine", identity: "engine" },
+      guards: { revision_changed: () => true },
+      evidenceRefs: ["ev:old-sha", "ev:new-sha"],
+      now: () => AT,
+      newId,
+    });
+    expect(result.subject.gateStatus).toBe("verifying");
   });
 });
