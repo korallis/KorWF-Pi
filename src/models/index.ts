@@ -16,6 +16,11 @@
  *   `src/decisions/questions/profile.ts` (domain/reasoningDepth/contextSize) with
  *   deterministic modality/risk signals into a `TaskProfile`; never imports this barrel's
  *   own catalog/cards/cap-detect/route modules and never handles a `ModelRef`.
+ * - `select.ts` — Jev selection against cards (#60): code computes the eligible set
+ *   (allowlist, hard constraints, route availability), Jev ranks it via `models.rank@1`
+ *   (`src/decisions/questions/models.ts`), and `enforcePolicy` re-checks the winner
+ *   against the allowlist/eligible-set/budget before it is ever used — a Jev answer can
+ *   only narrow, never widen, what selection returns.
  *
  *
  * **Re-export style: `export *`, deliberately.** A barrel listing every symbol is a
@@ -31,3 +36,4 @@ export * from "./hints.ts";
 export * from "./outcomes.ts";
 export * from "./profile.ts";
 export * from "./route.ts";
+export * from "./select.ts";
