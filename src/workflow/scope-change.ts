@@ -246,3 +246,154 @@ export function proposalIsNoop(proposal: ScopeChangeProposal): boolean {
 export function permittedActionFor(proposal: ScopeChangeProposal): string {
   return `${proposal.changeKind}:${proposal.digest}`;
 }
+
+// ---------------------------------------------------------------------------
+// Applying, only with an explicit approval
+// ---------------------------------------------------------------------------
+
+/** Why a proposal was refused. */
+export type ScopeChangeRefusal =
+  | "no_approval"
+  | "approval_invalid"
+  | "approval_wrong_action"
+  | "approval_stale_plan_revision"
+  | "approval_not_from_user"
+  | "noop";
+
+export class ScopeChangeRejected extends Error {
+  override readonly name = "ScopeChangeRejected";
+  readonly refusal: ScopeChangeRefusal;
+  constructor(refusal: ScopeChangeRefusal, message: string) {
+    super(message);
+    this.refusal = refusal;
+  }
+}
+
+/**
+ * Is this approval usable for this proposal, right now?
+ *
+ * Four independent conditions, each of which has to hold:
+ *
+ *  1. It is not invalidated, expired, or bound to a different plan/task
+ *     revision (`approvalInvalidReason`, the shared record helper).
+ *  2. Its `planRevision` is the revision the proposal was computed against —
+ *     so a plan that moved after the user approved needs a fresh approval.
+ *  3. Its `permittedAction` names *this* digest, so an approval for one
+ *     change cannot be spent on another.
+ *  4. It was granted by a **user**, not by policy: `scope_change` and
+ *     `replan` are `NO_AUTO_CLASSES`, so a policy grant is not sufficient in
+ *     any mode.
+ */
+export function approvalRefusalFor(
+  approval: Approval | undefined,
+  proposal: ScopeChangeProposal,
+  now: IsoTimestamp,
+): ScopeChangeRefusal | null {
+  if (approval === undefined) return "no_approval";
+  const invalid = approvalInvalidReason(approval, {
+    task: null,
+    planRevision: proposal.fromPlanRevision,
+    now,
+  });
+  if (invalid !== null) return "approval_invalid";
+  if (approval.planRevision !== proposal.fromPlanRevision) return "approval_stale_plan_revision";
+  if (approval.permittedAction !== permittedActionFor(proposal)) return "approval_wrong_action";
+  if (approval.actor.kind !== "user") return "approval_not_from_user";
+  return null;
+}
+
+export interface ApplyScopeChangeOptions {
+  readonly store: Store;
+  readonly proposal: ScopeChangeProposal;
+  /** Id of the `Approval` row the user granted for this exact proposal. */
+  readonly approvalId: string;
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: (kind: "phase" | "task") => string;
+  /** Planner-local ids blocked by the output budget (#124), passed through. */
+  readonly outputBudgetBlocked?: readonly string[];
+}
+
+/**
+ * Persist an approved proposal, as plan revision N+1.
+ *
+ * Refuses — **without writing** — when the approval is missing, invalid,
+ * for a different change, stale, or not from the user. On acceptance the
+ * write is `revisePlan`, which bumps the plan revision, supersedes dropped
+ * tasks and invalidates every approval pinned to the old revision in one
+ * transaction; the scope approval itself is consumed in that same
+ * transaction, so it cannot authorise a second change.
+ */
+export function applyScopeChange(options: ApplyScopeChangeOptions): PersistPlanResult {
+  const { store, proposal } = options;
+  if (proposalIsNoop(proposal)) {
+    throw new ScopeChangeRejected("noop", "proposal changes nothing; no revision is created");
+  }
+  return store.write(() => {
+    const workflow = store.workflows.require(proposal.workflowId);
+    if (workflow.planRevision !== proposal.fromPlanRevision) {
+      throw new ScopeChangeRejected(
+        "approval_stale_plan_revision",
+        `proposal was computed against plan revision ${proposal.fromPlanRevision}, ` +
+          `workflow is now at ${workflow.planRevision}; re-propose and re-approve`,
+      );
+    }
+    const approval = store.approvals.get(options.approvalId);
+    const refusal = approvalRefusalFor(approval, proposal, options.now());
+    if (refusal !== null) {
+      throw new ScopeChangeRejected(
+        refusal,
+        `${proposal.changeKind} refused (${refusal}): ${describeProposal(proposal)}`,
+      );
+    }
+
+    const result = revisePlan({
+      store,
+      workflowId: proposal.workflowId,
+      plan: proposal.candidate,
+      now: options.now,
+      newId: options.newId,
+      ...(options.outputBudgetBlocked === undefined ? {} : { outputBudgetBlocked: options.outputBudgetBlocked }),
+    });
+
+    // Single-use: the approval authorised this change and is now spent
+    // (`consumed` in APPROVAL_INVALIDATION_EVENTS). `revisePlan` may already
+    // have invalidated it as `plan_revision_changed`, which is equally final.
+    const after = store.approvals.get(options.approvalId);
+    if (after?.invalidation === null) {
+      store.approvals.invalidate(options.approvalId, {
+        reason: "consumed",
+        at: options.now(),
+        detail: permittedActionFor(proposal),
+      });
+    }
+    return result;
+  });
+}
+
+/** Human-readable summary of a proposal, for the approval prompt and `/korwf`. */
+export function describeProposal(proposal: ScopeChangeProposal): string {
+  const lines = [
+    `${proposal.changeKind} for plan revision ${proposal.fromPlanRevision} → ${proposal.toPlanRevision} ` +
+      `(approval class "${proposal.approvalClass}", never automatic)`,
+  ];
+  for (const entry of proposal.tasks) {
+    if (entry.kind === "unchanged") continue;
+    const paths = [
+      ...entry.addedPaths.map((path) => `+${path}`),
+      ...entry.removedPaths.map((path) => `-${path}`),
+    ];
+    lines.push(`  ${entry.kind} task ${entry.id}: ${entry.goal}${paths.length > 0 ? ` [${paths.join(" ")}]` : ""}`);
+  }
+  for (const entry of proposal.phases) {
+    if (entry.kind === "unchanged") continue;
+    lines.push(`  ${entry.kind} phase ${entry.id}: ${entry.goal}`);
+  }
+  if (proposal.expandsScope) {
+    lines.push(`  EXPANDS SCOPE: ${proposal.expansionReasons.join("; ")}`);
+  } else {
+    lines.push("  within existing scope (replan)");
+  }
+  lines.push(`  digest ${proposal.digest}`);
+  return lines.join("\n");
+}
