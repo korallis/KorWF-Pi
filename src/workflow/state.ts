@@ -310,3 +310,129 @@ export function phaseStorageStatus(state: PhaseState): PhaseGateStatus {
 
 /** Ordered gating substages; `phase-done` may only be requested from the last. */
 export const GATING_SUBSTAGES = PHASE_STORAGE_STATES.gating;
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+/** Shared inputs for any transition request. */
+export interface TransitionRequestBase {
+  readonly store: Store;
+  /** Who is asking. Only `engine` may commit; `user`/`worker` requests are mapped. */
+  readonly actor: TransitionActor;
+  readonly trigger: string;
+  /** Guard implementations. Omitted guards reject (see `evaluateGuards`). */
+  readonly guards?: GuardTable;
+  /** Sanitised evidence references; never raw payloads (docs/state-machine.md §6). */
+  readonly evidenceRefs?: readonly string[];
+  /** Exact Git SHA being certified, where the edge concerns one. */
+  readonly gitRevision?: string | null;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  /**
+   * Revision/status the caller last observed. When given and stale, the
+   * request is rejected with `stale_snapshot` rather than applied to a
+   * subject that moved underneath it.
+   */
+  readonly expected?: { readonly status?: string; readonly revision?: number };
+  /** Blocker to raise/resolve alongside the transition (see `blockers.ts`). */
+  readonly blocker?: {
+    readonly kind: string;
+    readonly detail: string;
+  };
+}
+
+export interface TaskTransitionRequest extends TransitionRequestBase {
+  readonly taskId: TaskId;
+  readonly to: TaskStatus;
+}
+
+export interface PhaseTransitionRequest extends TransitionRequestBase {
+  readonly phaseId: PhaseId;
+  readonly to: PhaseState;
+}
+
+/** What an accepted transition did. */
+export interface TransitionResult<TSubject> {
+  readonly subject: TSubject;
+  readonly event: TransitionEvent;
+  readonly transitionId: string;
+  /** Side-effect notes from the table row, for the caller to surface. */
+  readonly sideEffects: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
+// Event writing
+// ---------------------------------------------------------------------------
+
+interface EventDraft {
+  readonly workflow: Workflow;
+  readonly subjectKind: TransitionSubjectKind;
+  readonly subjectId: string;
+  readonly fromState: string;
+  readonly toState: string;
+  readonly transitionId: string | null;
+  readonly trigger: string;
+  readonly actor: TransitionActor;
+  readonly disposition: "accepted" | "rejected";
+  readonly reasonCode: RejectionCode | null;
+  readonly taskRevision: number | null;
+  readonly gitRevision: string | null;
+  readonly failedGuards: readonly string[];
+  readonly evidenceRefs: readonly string[];
+  readonly beforeHash: string;
+  readonly afterHash: string;
+}
+
+function appendEvent(
+  store: Store,
+  draft: EventDraft,
+  now: () => IsoTimestamp,
+  newId: () => string,
+): TransitionEvent {
+  const event: TransitionEvent = {
+    eventId: newId(),
+    createdAt: now(),
+    workflowId: draft.workflow.id,
+    subjectKind: draft.subjectKind,
+    subjectId: draft.subjectId,
+    fromState: draft.fromState,
+    toState: draft.toState,
+    transitionId: draft.transitionId,
+    trigger: draft.trigger,
+    actor: draft.actor,
+    disposition: draft.disposition,
+    reasonCode: draft.reasonCode,
+    taskRevision: draft.taskRevision,
+    planRevision: draft.workflow.planRevision,
+    gitRevision: draft.gitRevision,
+    mode: draft.workflow.mode,
+    policyVersion: draft.workflow.policyVersion,
+    failedGuards: draft.failedGuards,
+    evidenceRefs: draft.evidenceRefs,
+    beforeHash: draft.beforeHash,
+    afterHash: draft.afterHash,
+  };
+  return store.transitionLog.insert(event);
+}
+
+/**
+ * Reject: append the event, then throw. The append happens inside the
+ * caller's transaction; if it cannot persist, the throw propagates and
+ * nothing was mutated either — fail closed, as §6 requires.
+ */
+function reject(
+  store: Store,
+  draft: Omit<EventDraft, "disposition">,
+  message: string,
+  now: () => IsoTimestamp,
+  newId: () => string,
+): never {
+  const event = appendEvent(store, { ...draft, disposition: "rejected" }, now, newId);
+  throw new TransitionRejected({
+    message,
+    code: draft.reasonCode ?? "unlisted_edge",
+    failedGuards: draft.failedGuards as readonly Precondition[],
+    event,
+  });
+}
