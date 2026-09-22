@@ -7,9 +7,11 @@
  * - `availability.ts` — route-keyed caps and deterministic route selection (#125).
  * - `outcomes.ts` — per-route outcome attribution helpers (#125).
  * - `catalog.ts` — eligible-model catalog: registry ∩ enabled models ∩ allowlist, no credentials (#56).
+ * - `cards.ts` — four-layer model card merge: registry (excludes) < hints < user overrides < measured
+ *   outcomes with a Wilson interval (#57). Registry metadata never appears here as ranking
+ *   material — only hints, overrides, and outcomes rank.
  *
- * Model cards (#57), Jev selection and cap detection (#62), health/breakers
- * (#123) build on these and key on `RouteId`.
+ * Jev selection and cap detection (#62), health/breakers (#123) build on these and key on `RouteId`.
  *
  * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
  * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
@@ -18,6 +20,7 @@
  * duplicate-name clash still fails the build, which is what we want to hear about.
  */
 export * from "./availability.ts";
+export * from "./cards.ts";
 export * from "./catalog.ts";
 export * from "./outcomes.ts";
 export * from "./route.ts";
