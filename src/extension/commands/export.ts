@@ -18,6 +18,7 @@ export type ExportCommandStore = WorkflowReadStore & Pick<Store, "phases" | "tas
 export type ExportFormat = "plan" | "todo";
 
 export interface ExportCommandArgs {
+  readonly ok: true;
   readonly format: ExportFormat;
   readonly path: string;
   readonly workflowId?: string;
@@ -49,7 +50,7 @@ export function parseExportArgs(argv: readonly string[]): ExportCommandArgs | Ex
   if (path === undefined) {
     return { ok: false, message: "Usage: /korwf export [--plan|--todo] <path> [--workflow <id>]" };
   }
-  return workflowId === undefined ? { format, path } : { format, path, workflowId };
+  return workflowId === undefined ? { ok: true, format, path } : { ok: true, format, path, workflowId };
 }
 
 function checksBlock(task: Task): string {
