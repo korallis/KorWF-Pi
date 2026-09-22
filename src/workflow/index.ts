@@ -162,3 +162,20 @@ export type {
   GraphValidationResult,
   TopoOrderResult,
 } from "./graph.ts";
+export {
+  composeTaskReadiness,
+  evaluatePlan,
+  evaluateRequirementCoverage,
+  evaluateTaskSemantics,
+  formatPlanEvaluation,
+  formatSemanticField,
+  formatTaskEvaluation,
+  NOT_EVALUATED,
+} from "./evaluate-plan.ts";
+export type {
+  IntakeRequirement,
+  PlanEvaluation,
+  RequirementCoverage,
+  SemanticResult,
+  TaskEvaluation,
+} from "./evaluate-plan.ts";
