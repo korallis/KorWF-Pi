@@ -55,3 +55,74 @@ export function keywordOverlapScore(task: string, description: string): 0 | 1 | 
   if (overlap < 3) return 1;
   return 2;
 }
+
+// ---------------------------------------------------------------------------
+// capability.relevance@1
+// ---------------------------------------------------------------------------
+
+export const RELEVANCE_LEVELS = ["Not relevant to the task", "Somewhat relevant", "Highly relevant"] as const;
+
+export const capabilityRelevanceQuestion: QuestionDefinition<CapabilityQuestionState, number> = defineScore<
+  CapabilityQuestionState,
+  number
+>({
+  id: "capability.relevance",
+  version: "1",
+  prompt:
+    "Given `task` (a description of work to be done) and one optional capability's `name`/`kind`/`description`, " +
+    "how relevant is this capability to accomplishing the task? A capability is relevant if using it would " +
+    "materially help; it is not relevant merely because its domain overlaps in passing.",
+  levels: [...RELEVANCE_LEVELS],
+  minConfidence: 0.5,
+  state: toJevState,
+  decide: (answer) => ({
+    value: Math.round(answer.score),
+    rule: `relevance:${Math.round(answer.score)}`,
+    action: String(Math.round(answer.score)),
+  }),
+  fallback: (input) => {
+    const value = keywordOverlapScore(input.task, input.description);
+    return { value, rule: "keyword_overlap", action: String(value) };
+  },
+  replay: (action) => (/^[0-2]$/.test(action) ? Number(action) : null),
+  boundaries: [
+    { name: "no shared keywords", state: emptyState({ task: "frobnicate the widget", description: "handles PDF forms" }), expectFallback: 0 },
+    {
+      name: "one shared keyword",
+      state: emptyState({ task: "write documentation for the api", description: "formats documentation pages" }),
+      expectFallback: 1,
+    },
+    {
+      name: "several shared keywords",
+      state: emptyState({ task: "extract text tables from pdf documents", description: "extracts text and tables from pdf files" }),
+      expectFallback: 2,
+    },
+  ],
+});
+
+// ---------------------------------------------------------------------------
+// registry
+// ---------------------------------------------------------------------------
+
+export const CAPABILITY_QUESTION_HASHES: Readonly<Record<string, string>> = Object.freeze({
+  "capability.relevance@1": capabilityRelevanceQuestion.contentHash,
+});
+
+export const capabilityQuestionRegistry = new QuestionRegistry();
+capabilityQuestionRegistry.register(capabilityRelevanceQuestion as QuestionDefinition<unknown, unknown>, {
+  pinnedHash: capabilityRelevanceQuestion.contentHash,
+});
+
+// ---------------------------------------------------------------------------
+// test/boundary helper
+// ---------------------------------------------------------------------------
+
+function emptyState(overrides: Partial<CapabilityQuestionState>): CapabilityQuestionState {
+  return {
+    task: "t",
+    name: "n",
+    kind: "skill",
+    description: "d",
+    ...overrides,
+  };
+}
