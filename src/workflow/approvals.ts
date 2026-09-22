@@ -48,6 +48,7 @@ import {
   type ApprovalScope,
   type IsoTimestamp,
   type Revision,
+  type RiskClass,
   type TaskId,
   type WorkflowId,
 } from "../storage/records.ts";
@@ -544,4 +545,138 @@ export function validApprovalsFor(options: {
  */
 export function isActionApproved(options: Parameters<typeof validApprovalsFor>[0]): boolean {
   return validApprovalsFor({ ...options, requireUserActor: true }).length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Gate condition 3 (PLAN §2.4): what the policy demands of a task
+// ---------------------------------------------------------------------------
+
+/**
+ * The shape `evaluateTaskGate` reads for condition 3 (#46
+ * `PolicyReviewResult`). Restated structurally rather than imported, so
+ * `src/workflow/` does not depend on `src/verification/`.
+ */
+export interface PolicyReviewDecision {
+  readonly modelReview: boolean;
+  readonly humanApproval: boolean;
+  readonly changeClass: string;
+  readonly policyVersion: string;
+  readonly revision: string;
+  readonly taskRevision: Revision;
+}
+
+/**
+ * Decide what condition 3 requires for a task, from the classes its change
+ * actually falls into.
+ *
+ * `humanApproval` is `true` whenever **any** class of the change is high risk,
+ * or the task itself is high risk. Note the direction: this function can only
+ * *raise* the requirement. `evaluateTaskGate` independently forces
+ * `humanApproval` for a high-risk task, so a policy result claiming `false`
+ * changes nothing — which is the PLAN §2.4 sentence "Jev cannot waive (1) or
+ * (3)" made true twice over.
+ *
+ * `changeClass` is the most restrictive class present, so the recorded result
+ * names the reason rather than a sample of it.
+ */
+export function evaluatePolicyReview(options: {
+  readonly classes: readonly ApprovalClassId[];
+  readonly taskRiskClass: RiskClass;
+  readonly policyVersion: string;
+  readonly revision: string;
+  readonly taskRevision: Revision;
+  /** Classes for which the policy also wants an independent model review. */
+  readonly modelReviewClasses?: readonly ApprovalClassId[];
+}): PolicyReviewDecision {
+  const highRisk = options.classes.filter((id) => isHighRiskClass(id));
+  const noAuto = options.classes.filter((id) => tierOf(id) === "no_auto");
+  const changeClass = highRisk[0] ?? noAuto[0] ?? options.classes[0] ?? "none";
+  const modelReviewClasses = options.modelReviewClasses ?? [];
+  return {
+    modelReview: options.classes.some((id) => modelReviewClasses.includes(id)),
+    humanApproval: highRisk.length > 0 || options.taskRiskClass === "high",
+    changeClass,
+    policyVersion: options.policyVersion,
+    revision: options.revision,
+    taskRevision: options.taskRevision,
+  };
+}
+
+/**
+ * Queue the `complete_task` approval a high-risk task needs before the gate
+ * can pass condition 3.
+ *
+ * The gate looks for an approval whose `permittedAction` is exactly
+ * `complete_task` (docs/gates.md §2), so that constant lives here once. The
+ * class used is `complete_task` for an ordinary task and the high-risk class
+ * of the change when there is one — which is what pins the request to `stop`
+ * in every mode.
+ */
+export const COMPLETE_TASK_ACTION = "complete_task";
+
+export function requestTaskCompletionApproval(options: {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  readonly taskId: TaskId;
+  /** Most restrictive class of the change; defaults to `complete_task`. */
+  readonly classId?: ApprovalClassId;
+  readonly summary: string;
+  readonly now: IsoTimestamp;
+  readonly newId: () => string;
+  readonly ttlMs?: number | null;
+  readonly table?: ApprovalClassTable;
+}): RequestApprovalResult {
+  const task = options.store.tasks.require(options.taskId);
+  return requestApproval({
+    store: options.store,
+    workflowId: options.workflowId,
+    classId: options.classId ?? "complete_task",
+    scope: { kind: "task", taskId: options.taskId },
+    permittedAction: COMPLETE_TASK_ACTION,
+    summary: options.summary,
+    taskRevision: task.revision,
+    now: options.now,
+    newId: options.newId,
+    ttlMs: options.ttlMs ?? null,
+    ...(options.table === undefined ? {} : { table: options.table }),
+  });
+}
+
+/**
+ * Queue the approval a `human` check needs (#45 `PendingApprovalRequest`).
+ *
+ * `src/verification/checks.ts` deliberately cannot produce evidence for a
+ * `human` check; it produces a request. This is where that request becomes a
+ * durable row. The class is `complete_task` unless the caller classifies the
+ * act more restrictively — a human check guarding a release is `publishing`.
+ */
+export function requestHumanCheckApproval(options: {
+  readonly store: Store;
+  readonly pending: {
+    readonly workflowId: WorkflowId;
+    readonly taskId: TaskId;
+    readonly taskRevision: Revision;
+    readonly permittedAction: string;
+    readonly instruction: string;
+  };
+  readonly classId?: ApprovalClassId;
+  readonly now: IsoTimestamp;
+  readonly newId: () => string;
+  readonly ttlMs?: number | null;
+  readonly table?: ApprovalClassTable;
+}): RequestApprovalResult {
+  const { pending } = options;
+  return requestApproval({
+    store: options.store,
+    workflowId: pending.workflowId,
+    classId: options.classId ?? "complete_task",
+    scope: { kind: "task", taskId: pending.taskId },
+    permittedAction: pending.permittedAction,
+    summary: pending.instruction,
+    taskRevision: pending.taskRevision,
+    now: options.now,
+    newId: options.newId,
+    ttlMs: options.ttlMs ?? null,
+    ...(options.table === undefined ? {} : { table: options.table }),
+  });
 }
