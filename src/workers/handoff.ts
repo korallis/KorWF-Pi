@@ -30,6 +30,14 @@ import { OutboundPolicy, type FilteredPayload } from "../security/outbound.ts";
 import { canonicalJson } from "../storage/repos/base.ts";
 import { recordCompletedAction } from "../workflow/reconcile.ts";
 import { actionIdFor } from "../storage/action-log.ts";
+import {
+  restoreCheckpointTree,
+  worktreeIdentity,
+  CheckpointError,
+  type GitEnvRunner,
+  type WorktreeIdentity,
+} from "../git/checkpoint.ts";
+import { isMainTree } from "../workflow/checkpoint.ts";
 
 /** Resolve the policy for one task kind, falling back to `default`. */
 export function midTaskPolicyFor(
@@ -122,7 +130,16 @@ export interface ApplyRestartOptions extends HandoffDeps {
   readonly substituteModel: Attempt["usedModel"];
   /** Last checkpoint for the task; discard is to here. `null` = nothing to discard to. */
   readonly lastCheckpointCommit: string | null;
+  /** Worktree to discard uncommitted work in. Never the user's main tree (refused if it is). */
+  readonly worktreeCwd: string;
+  readonly mainTree?: WorktreeIdentity | null;
+  readonly runner?: GitEnvRunner;
 }
+
+/** What `applyRestart` did to the worktree. */
+export type RestartDiscard =
+  | { readonly kind: "discarded"; readonly changedPaths: readonly string[] }
+  | { readonly kind: "skipped"; readonly reason: "no_checkpoint" | "target_is_main_tree" | "not_a_repository" }; 
 
 /**
  * Apply `restart`: uncommitted work in flight is discarded down to the
@@ -134,10 +151,12 @@ export interface ApplyRestartOptions extends HandoffDeps {
  * (`recordCompletedAction`) so the choice is visible even before any
  * approval completes, and opens the new attempt clean.
  */
-export function applyRestart(options: ApplyRestartOptions): { readonly newAttempt: Attempt; readonly discardedFrom: AttemptId } {
+export function applyRestart(options: ApplyRestartOptions): { readonly newAttempt: Attempt; readonly discardedFrom: AttemptId; readonly discard: RestartDiscard } {
   const { store, oldAttempt } = options;
   const at = options.now();
   const attemptId = options.newId() as AttemptId;
+
+  const discard = discardToLastCheckpoint(options);
 
   const actionId = actionIdFor({
     workflowId: options.workflowId,
@@ -154,7 +173,8 @@ export function applyRestart(options: ApplyRestartOptions): { readonly newAttemp
       sessionId: options.sessionId,
       summary:
         `restarted task ${oldAttempt.taskId} on cap; discarded uncommitted work from attempt ${oldAttempt.id} ` +
-        `to checkpoint ${options.lastCheckpointCommit ?? "none (no prior checkpoint)"} per midTaskPolicy=restart`,
+        `to checkpoint ${options.lastCheckpointCommit ?? "none (no prior checkpoint)"} per midTaskPolicy=restart ` +
+        `(${discard.kind}${discard.kind === "skipped" ? `: ${discard.reason}` : `: ${discard.changedPaths.length} path(s) discarded`})`,
       now: options.now,
       subjectId: oldAttempt.taskId,
       gitRevision: options.lastCheckpointCommit,
@@ -179,5 +199,32 @@ export function applyRestart(options: ApplyRestartOptions): { readonly newAttemp
     handedOffFromAttemptId: null,
   };
   store.write(() => store.attempts.insert(newAttempt));
-  return { newAttempt, discardedFrom: oldAttempt.id };
+  return { newAttempt, discardedFrom: oldAttempt.id, discard };
+}
+
+/**
+ * Actually discard uncommitted work in `options.worktreeCwd` down to
+ * `options.lastCheckpointCommit`. Refuses (returns `skipped`, never throws)
+ * when there is nothing to discard to, the path is not a repository, or the
+ * path resolves to the user's main tree — the same main-tree guard
+ * `src/workflow/checkpoint.ts` uses, applied here too because a restart is
+ * exactly the kind of destructive act that guard exists for.
+ */
+function discardToLastCheckpoint(options: ApplyRestartOptions): RestartDiscard {
+  if (options.lastCheckpointCommit === null) return { kind: "skipped", reason: "no_checkpoint" };
+  const identity = worktreeIdentity(options.worktreeCwd, options.runner);
+  if (identity === null) return { kind: "skipped", reason: "not_a_repository" };
+  if (isMainTree(identity, options.mainTree ?? null)) return { kind: "skipped", reason: "target_is_main_tree" };
+  try {
+    const restored = restoreCheckpointTree({
+      cwd: identity.toplevel,
+      commit: options.lastCheckpointCommit,
+      preservationId: options.newId(),
+      ...(options.runner === undefined ? {} : { runner: options.runner }),
+    });
+    return { kind: "discarded", changedPaths: restored.changedPaths };
+  } catch (error) {
+    if (error instanceof CheckpointError) return { kind: "skipped", reason: "not_a_repository" };
+    throw error;
+  }
 }
