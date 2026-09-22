@@ -52,3 +52,17 @@ export type {
   RestoreResult,
   WorktreeIdentity,
 } from "./checkpoint.ts";
+export {
+  addWorktree,
+  listWorktrees,
+  removeWorktree,
+  WorktreeError,
+  WORKTREE_ERROR_CODES,
+} from "./worktree.ts";
+export type {
+  AddWorktreeOptions,
+  CreatedWorktree,
+  RemoveWorktreeOptions,
+  WorktreeErrorCode,
+  WorktreeListEntry,
+} from "./worktree.ts";
