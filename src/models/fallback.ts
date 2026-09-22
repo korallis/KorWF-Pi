@@ -1,18 +1,30 @@
 /**
  * Fallback ranking on a cap (issue #63; PLAN §3.D "Caps and fallback").
+ * Extended by #65 with the task-boundary-scoped recovery policies.
  *
  * On a cap, code filters the pre-cap eligible set down to still-available
  * routes and `selectModel` (#60) re-ranks it for the task profile — Jev when
  * enabled, `fallback.staticOrder` when not. This module adds the policies
  * `selectModel` does not know about because they are specific to a cap
  * event, not to ordinary dispatch:
- *   - anti-oscillation dwell (do not re-rank every turn once on a fallback)
+ *   - anti-oscillation dwell (do not re-rank every turn once on a fallback);
+ *     `atTaskBoundary` (#65) is the only thing that ever lapses a
+ *     `remainder_of_task` dwell — a mid-task call always holds it, so the
+ *     primary is never re-probed except at a task boundary (PLAN §3.D
+ *     "Recovery: ... do not re-probe every task").
  *   - all-candidates-capped / no-adequate-substitute → pause, not a failure
  *   - prefer-wait-if-reset-within-N-minutes vs switching to a substitute
  *   - a pinned model that is capped is never silently substituted (#61)
  *   - the recorded `fallbackReason` is the cap kind that caused the switch,
  *     not the generic `jev_selected_substitute`/`static_fallback_order`
- *     `selectModel` uses for ordinary dispatch (see scenario 04 step A4).
+ *     `selectModel` uses for ordinary dispatch (see scenario 04 step A4);
+ *     recovery back to the primary records `fallbackReason: null` (#65),
+ *     since the fallback has ended, not begun.
+ *   - primary preference (#65): at a task boundary once the primary clears,
+ *     it is ranked ahead of other still-eligible candidates rather than
+ *     left to accidental input order, satisfying "prefer it again at the
+ *     next boundary" without ever overriding an inadequate/policy-rejected
+ *     primary.
  */
 import type { AskContext } from "../decisions/ask.ts";
 import type { DecisionRecorder } from "../decisions/record.ts";
