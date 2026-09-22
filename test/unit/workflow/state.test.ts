@@ -436,3 +436,147 @@ describe("AC2: done is unreachable without the gate preconditions", () => {
     expect(store.tasks.require(TK).status).toBe("done");
   });
 });
+
+describe("ready requires at least one executable check, at transition time too", () => {
+  it("refuses ready for a task with no checks", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "proposed", checks: [] }));
+    expect(() =>
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "ready",
+        trigger: "readiness_validated",
+        actor: { kind: "engine", identity: "engine" },
+        guards: allGuardsTrue(),
+        evidenceRefs: ["ev:1"],
+        now: () => AT,
+        newId,
+      }),
+    ).toThrow(/checks_registered/);
+    expect(store.tasks.require(TK).status).toBe("proposed");
+  });
+
+  it("refuses ready for a task whose only check is an optional human check", () => {
+    const store = freshStore();
+    store.tasks.insert(
+      makeTask({
+        status: "proposed",
+        checks: [
+          {
+            id: "chk-h",
+            kind: "human",
+            command: "reviewer confirms the acceptance criterion",
+            cwd: ".",
+            expectedExitCode: 0,
+            coversCriteria: ["ac-1"],
+            required: false,
+          },
+        ],
+      }),
+    );
+    expect(hasExecutableCheck(store.tasks.require(TK))).toBe(false);
+    expect(() =>
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "ready",
+        trigger: "readiness_validated",
+        actor: { kind: "engine", identity: "engine" },
+        guards: allGuardsTrue(),
+        evidenceRefs: ["ev:1"],
+        now: () => AT,
+        newId,
+      }),
+    ).toThrow(/checks_registered/);
+  });
+
+  it("accepts a required human check as a registered means of verification", () => {
+    const store = freshStore();
+    store.tasks.insert(
+      makeTask({
+        status: "proposed",
+        checks: [
+          {
+            id: "chk-h",
+            kind: "human",
+            command: "reviewer confirms the acceptance criterion",
+            cwd: ".",
+            expectedExitCode: 0,
+            coversCriteria: ["ac-1"],
+            required: true,
+          },
+        ],
+      }),
+    );
+    expect(hasExecutableCheck(store.tasks.require(TK))).toBe(true);
+  });
+
+  it("refuses ready while a dependency is not done, whatever the caller claims", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ id: "tk-dep" as TaskId, status: "running" }));
+    store.tasks.insert(makeTask({ status: "proposed", dependencies: ["tk-dep" as TaskId] }));
+    expect(() =>
+      transitionTask({
+        store,
+        taskId: TK,
+        to: "ready",
+        trigger: "readiness_validated",
+        actor: { kind: "engine", identity: "engine" },
+        guards: allGuardsTrue(),
+        evidenceRefs: ["ev:1"],
+        now: () => AT,
+        newId,
+      }),
+    ).toThrow(/readiness_valid/);
+  });
+
+  it("accepts ready once the dependency is done", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ id: "tk-dep" as TaskId, status: "done" }));
+    store.tasks.insert(makeTask({ status: "proposed", dependencies: ["tk-dep" as TaskId] }));
+    const result = transitionTask({
+      store,
+      taskId: TK,
+      to: "ready",
+      trigger: "readiness_validated",
+      actor: { kind: "engine", identity: "engine" },
+      guards: allGuardsTrue(),
+      evidenceRefs: ["ev:1"],
+      now: () => AT,
+      newId,
+    });
+    expect(result.subject.status).toBe("ready");
+  });
+});
+
+describe("guard evaluation fails closed in every shape", () => {
+  const context = {} as GuardContext;
+
+  it("an omitted evaluator is a failure, not a pass", () => {
+    expect(evaluateGuards(["checks_registered"], {}, context)).toEqual({
+      satisfied: false,
+      failed: ["checks_registered"],
+    });
+  });
+
+  it("false, unknown and throwing all fail, and all failures are reported", () => {
+    const result = evaluateGuards(
+      ["checks_registered", "readiness_valid", "authorization_current"],
+      {
+        checks_registered: () => false,
+        readiness_valid: () => "unknown",
+        authorization_current: () => {
+          throw new Error("boom");
+        },
+      },
+      context,
+    );
+    expect(result.satisfied).toBe(false);
+    expect(result.failed).toHaveLength(3);
+  });
+
+  it("only an explicit `true` satisfies a guard", () => {
+    expect(evaluateGuards(["checks_registered"], { checks_registered: () => true }, context).satisfied).toBe(true);
+  });
+});
