@@ -78,6 +78,22 @@ describe("AC2: guard 2 — /korwf run is refused inside a worker", () => {
     expect(source).toContain("ACTIVE_SUBCOMMANDS");
     expect(source).toContain("RUN_AVAILABILITY.available");
   });
+
+  it("withholds the whole worker-control surface inside a worker, not just `run` (#71)", () => {
+    // pause/resume/cancel supervise workers. A worker that can pause or
+    // cancel workers is a worker that supervises them, so guard 2 must cover
+    // all four, not only the spawn verb.
+    const source = readFileSync(
+      fileURLToPath(new URL("../../src/extension/index.ts", import.meta.url)),
+      "utf8",
+    );
+    const surface = /const WORKER_SURFACE: readonly Subcommand\[\] = \[([^\]]*)\]/.exec(source);
+    expect(surface).not.toBeNull();
+    for (const sub of ["run", "pause", "resume", "cancel"]) {
+      expect(surface?.[1]).toContain(`"${sub}"`);
+    }
+    expect(source).toContain("!WORKER_SURFACE.includes(s) || RUN_AVAILABILITY.available");
+  });
 });
 
 describe("AC2: guard 1 — the orchestration extension is never loaded in a worker", () => {

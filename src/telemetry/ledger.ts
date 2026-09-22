@@ -275,6 +275,14 @@ export interface Reservation {
   /** The estimate that was charged against the caps while the call runs. */
   readonly estimate: Usage;
   readonly reservedAt: IsoTimestamp;
+  /**
+   * Free-text attribution carried from `reserve()` onto the terminal row
+   * (issue #71). Route attribution (#125) uses it: a settlement must name the
+   * route it settles, or a per-route report has to join back to the
+   * reservation row to find out, and any read path that forgets to join
+   * silently attributes nothing.
+   */
+  readonly label: string | null;
 }
 
 /** Which scope levels a channel is capped by. Jev spend is its own channel (PLAN §2.6). */
@@ -404,6 +412,7 @@ export class Ledger {
         channel,
         estimate,
         reservedAt: at,
+        label: params.label ?? null,
       };
     });
   }
@@ -429,7 +438,9 @@ export class Ledger {
         reservationId: reservation.id,
         usage: actual,
         elapsedMs: options.elapsedMs ?? 0,
-        label: null,
+        // Attribution follows the charge (#71/#125), so a per-route total can
+        // be read from settlements alone.
+        label: reservation.label,
         reason: options.reason ?? null,
       });
     });
@@ -448,7 +459,7 @@ export class Ledger {
         reservationId: reservation.id,
         usage: noUsage(),
         elapsedMs: 0,
-        label: null,
+        label: reservation.label,
         reason,
       });
     });
