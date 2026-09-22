@@ -75,6 +75,15 @@ describe("AC1: every mutation route is blocked for a read-only role", () => {
     }
   }
 
+  it("routes every built-in mutation tool away from 'read'", () => {
+    for (const tool of ["write", "edit", "multiedit", "apply_patch", "bash", "git_commit"]) {
+      expect(routeOf(tool), tool).not.toBe("read");
+    }
+    // Default-deny: a name nobody enumerated is a custom tool, never a read.
+    expect(routeOf("acme_unknown")).toBe("custom_tool");
+    expect(routeOf("read")).toBe("read");
+  });
+
   it("covers every route in MUTATION_ROUTES — no route is left untested", () => {
     const covered = new Set(MUTATION_ATTEMPTS.map((a) => a.route));
     for (const route of MUTATION_ROUTES) {
@@ -163,6 +172,53 @@ describe("AC2: an implementer writing outside its worktree is blocked and audite
   });
 });
 
+describe("path helpers: the boundary is computed, not trusted", () => {
+  it("normalise resolves traversal without touching the filesystem", () => {
+    expect(normalise("/a/b/../c")).toBe("/a/c");
+    expect(normalise("/a/./b//c/")).toBe("/a/b/c");
+    expect(normalise("/a/../../etc")).toBe("/etc");
+    expect(normalise("a/b/../c")).toBe("a/c");
+  });
+
+  it("withinRoots resolves a relative path against the worktree first", () => {
+    const roots = [WORKTREE];
+    expect(withinRoots("src/a.ts", WORKTREE, roots)).toBe(true);
+    expect(withinRoots("../other/a.ts", WORKTREE, roots)).toBe(false);
+    expect(withinRoots("/etc/passwd", WORKTREE, roots)).toBe(false);
+    // A sibling directory sharing a name prefix is not inside the worktree.
+    expect(withinRoots(`${WORKTREE}-other/a.ts`, WORKTREE, roots)).toBe(false);
+  });
+
+  it("writableRoots is the worktree plus this attempt's artifact directory only", () => {
+    expect(writableRoots(ctxFor("implementer"))).toEqual([WORKTREE, `${STORAGE}/artifacts/attempt-1`]);
+    // With no attempt id there is no artifact root to write to.
+    expect(writableRoots({ role: "implementer", worktree: WORKTREE })).toEqual([WORKTREE]);
+  });
+
+  it("extractPaths finds paths under every conventional key and in edit arrays", () => {
+    expect(extractPaths({ path: "a", file_path: "b", paths: ["c"], edits: [{ path: "d" }] })).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+    ]);
+    expect(extractPaths({ content: "not a path" })).toEqual([]);
+  });
+});
+
+describe("sandbox presence is recorded, never relied on", () => {
+  it("reports no sandbox by default (ADR 0001 row 3: KorWF ships none)", () => {
+    expect(detectSandbox([{ name: "bash", description: "runs a shell command" }])).toEqual(NO_SANDBOX);
+    expect(NO_SANDBOX.present).toBe(false);
+  });
+
+  it("detects a sandboxing bash override from its tool metadata", () => {
+    const status = detectSandbox([{ name: "bash", description: "sandbox-exec wrapped shell" }]);
+    expect(status.present).toBe(true);
+    expect(status.mechanism).toBe("sandbox-exec");
+  });
+});
+
 describe("PLAN §7: permissions come from rules and isolation, never from semantic confidence", () => {
   it("no field of ExecutionContext or ToolCallFacts carries a score or confidence", () => {
     // Structural, not textual: the policy is a function of (call, role, paths)
@@ -193,6 +249,17 @@ describe("PLAN §7: permissions come from rules and isolation, never from semant
       );
       expect(bribed.allow, `${attempt.label} was allowed once a confidence field was attached`).toBe(bare.allow);
       expect(bribed.allow).toBe(false);
+    }
+  });
+
+  it("detecting a sandbox does not relax anything", () => {
+    const sandboxed: ExecutionContext = {
+      ...ctxFor("scout"),
+      sandbox: detectSandbox([{ name: "bash", description: "runs in a bubblewrap sandbox" }]),
+    };
+    expect(sandboxed.sandbox?.present).toBe(true);
+    for (const attempt of MUTATION_ATTEMPTS) {
+      expect(decideToolCall(attempt.call, sandboxed).allow, attempt.label).toBe(false);
     }
   });
 
