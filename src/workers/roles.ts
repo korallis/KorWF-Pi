@@ -72,3 +72,126 @@ export function loadRole(id: RoleId): WorkerRoleContract {
 export function loadAllRoles(): readonly WorkerRoleContract[] {
   return ROLE_IDS.map(loadRole);
 }
+
+/* ------------------------------------------------------------------ *
+ * Role -> tool allowlist (issue #68; ADR 0004 "How recursive spawning
+ * is prevented", guard 3; PLAN §3.E "explicit worker contracts: …
+ * tools …").
+ * ------------------------------------------------------------------ */
+
+/**
+ * Tool names that create or change something the worker can observe
+ * outside its own transcript. Read-only roles get none of them.
+ */
+export const MUTATION_TOOL_NAMES = ["write", "edit", "multiedit", "apply_patch", "bash"] as const;
+
+/**
+ * Tool names that could start another agent. **No role may list one.**
+ * `roleTools()` asserts this at load, so adding a spawn tool to a role
+ * table is a build failure rather than a recursion.
+ */
+export const SPAWN_TOOL_NAMES = [
+  "korwf_spawn_worker",
+  "korwf_run",
+  "agent",
+  "subagent",
+  "spawn",
+  "task",
+  "dispatch_agent",
+] as const;
+
+/**
+ * Roles that may not change anything: no write, no edit, no shell. The
+ * planner is *not* here — its contract has it produce the plan documents, so
+ * it gets `write`/`edit` but never a shell; the verifier is not here either —
+ * it runs the registered checks, so it gets a shell but never `write`.
+ * "Read-only" therefore means read-only in the strong sense, and the two
+ * partial roles are expressed by their tool lists rather than by a flag.
+ */
+export const READ_ONLY_ROLES = ["scout", "reviewer"] as const satisfies readonly RoleId[];
+
+/** True when the role is one of {@link READ_ONLY_ROLES}. */
+export function isReadOnlyRole(id: RoleId): boolean {
+  return (READ_ONLY_ROLES as readonly string[]).includes(id);
+}
+
+/**
+ * The shipped per-role `--tools` allowlist. Passed verbatim to
+ * `pi --tools`, which is a strict allowlist across built-in, extension and
+ * custom tools (Pi `docs/usage.md`), so anything absent here is not merely
+ * discouraged — it is unreachable in the worker.
+ */
+const ROLE_TOOL_TABLE: Readonly<Record<RoleId, readonly string[]>> = {
+  scout: ["read", "grep", "find", "ls"],
+  // Writes the plan and its documents; never runs anything.
+  planner: ["read", "grep", "find", "ls", "write", "edit"],
+  reviewer: ["read", "grep", "find", "ls"],
+  implementer: ["read", "grep", "find", "ls", "write", "edit", "multiedit", "bash"],
+  verifier: ["read", "grep", "find", "ls", "bash"],
+  integrator: ["read", "grep", "find", "ls", "write", "edit", "multiedit", "bash"],
+};
+
+/**
+ * Tools allowed for a role, checked on every call against both invariants:
+ * no spawn tool anywhere, and no mutation tool in a read-only role.
+ * Deliberately re-checked rather than asserted once at module load, so a
+ * caller cannot reach a stale, already-validated copy of the table.
+ */
+export function roleTools(id: RoleId): readonly string[] {
+  const tools = ROLE_TOOL_TABLE[id];
+  if (tools === undefined) throw new Error(`roleTools: unknown role '${id}'`);
+  const spawn = tools.filter((t) => (SPAWN_TOOL_NAMES as readonly string[]).includes(t));
+  if (spawn.length > 0) {
+    throw new Error(`role '${id}' lists spawn tool(s) ${spawn.join(", ")}: workers may not spawn workers`);
+  }
+  if (isReadOnlyRole(id)) {
+    const mutating = tools.filter((t) => (MUTATION_TOOL_NAMES as readonly string[]).includes(t));
+    if (mutating.length > 0) {
+      throw new Error(`read-only role '${id}' lists mutation tool(s) ${mutating.join(", ")}`);
+    }
+  }
+  return tools;
+}
+
+/**
+ * The heading each role contract uses to restate its tool allowlist. The
+ * contract is what the worker reads; the table is what `--tools` enforces. If
+ * they disagree the worker is told one thing and permitted another, so
+ * `loadRoleDefinition` checks them against each other.
+ */
+export const TOOL_ALLOWLIST_HEADING = "## Tool allowlist (enforced by `--tools`)";
+
+/** Parse the tool list a contract declares, or `null` when it declares none. */
+export function declaredTools(body: string): readonly string[] | null {
+  const start = body.indexOf(TOOL_ALLOWLIST_HEADING);
+  if (start < 0) return null;
+  const rest = body.slice(start + TOOL_ALLOWLIST_HEADING.length);
+  const match = /`([^`]+)`/.exec(rest);
+  if (match === null) return null;
+  return match[1]!
+    .split(",")
+    .map((t) => t.trim())
+    .filter((t) => t !== "");
+}
+
+/** A role's full shipped definition: its contract text plus its tool allowlist. */
+export interface WorkerRoleDefinition extends WorkerRoleContract {
+  readonly tools: readonly string[];
+  readonly readOnly: boolean;
+}
+
+/** Load a role contract together with its tool allowlist. */
+export function loadRoleDefinition(id: RoleId): WorkerRoleDefinition {
+  const contract = loadRole(id);
+  const tools = roleTools(id);
+  const declared = declaredTools(contract.body);
+  if (declared === null) {
+    throw new Error(`role contract '${id}' does not declare its tool allowlist (${TOOL_ALLOWLIST_HEADING})`);
+  }
+  if (declared.join(",") !== tools.join(",")) {
+    throw new Error(
+      `role '${id}' declares tools [${declared.join(", ")}] but is launched with [${tools.join(", ")}]`,
+    );
+  }
+  return { ...contract, tools, readOnly: isReadOnlyRole(id) };
+}

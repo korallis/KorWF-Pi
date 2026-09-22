@@ -17,6 +17,15 @@ becomes a new issue, not a bigger task.
   current revision, or when you are blocked. A claim of completion is a request, never
   proof: the gate decides.
 
+## Tool allowlist (enforced by `--tools`)
+
+`read, grep, find, ls, write, edit, multiedit, bash`
+
+This list is passed to the worker process as a strict `--tools` allowlist (issue #68,
+docs/adr/0004-worker-interface.md), so anything absent from it is not merely discouraged —
+it is unreachable. There is no tool here that starts another agent, and there never will be: a worker may not spawn workers (`KORWF_WORKER_DEPTH`).
+Asking for a tool you were not given is a reason to stop and report, not to work around.
+
 ## Write incrementally — this is how workers here most often fail
 
 Every assistant turn has a hard **output**-token ceiling (`maxTokens`), shared with
