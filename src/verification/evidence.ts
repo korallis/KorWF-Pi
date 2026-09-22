@@ -314,3 +314,60 @@ export function capturedOutput(raw: string, limitBytes = DEFAULT_OUTPUT_LIMIT_BY
   const text = `${head}${TRUNCATION_MARKER}${tail}`;
   return { text, truncated: true, originalBytes, contentHash: sha256(text) };
 }
+
+/**
+ * An `Evidence` row minus the envelope fields the store owns (`id`,
+ * `createdAt`, `updatedAt`, `schemaVersion`, `kind`).
+ *
+ * `runCheck` returns a draft rather than appending, for the same reason
+ * `src/workflow/state.ts` separates transition from persistence: the caller
+ * owns the store handle and the transaction, and a check runner that wrote
+ * rows itself could not be used to *preview* a check.
+ */
+export type EvidenceDraft = Omit<Evidence, EnvelopeFields>;
+
+/** Everything a draft needs that is about the workflow rather than the run. */
+export interface EvidenceSubject {
+  readonly workflowId: WorkflowId;
+  readonly taskId: TaskId;
+  /** `Task.revision` the check definition was read at (`docs/gates.md` §2). */
+  readonly taskRevision: Revision;
+  readonly attemptId: AttemptId | null;
+  /** Acceptance-criterion id this evidence supports. */
+  readonly requirementId: string;
+  /** Evidence this run re-verifies, if any. */
+  readonly supersedesId?: Evidence["supersedesId"];
+}
+
+/** Build the append-ready evidence draft for one executed check. */
+export function buildEvidenceDraft(args: {
+  readonly subject: EvidenceSubject;
+  readonly check: CheckDefinition;
+  readonly revision: GitSha;
+  readonly fingerprint: EnvironmentFingerprint;
+  readonly exitStatus: EvidenceExitStatus;
+  readonly artifact: ArtifactRef | null;
+  readonly caveats: readonly string[];
+}): EvidenceDraft {
+  const { subject, check, revision, fingerprint, exitStatus, artifact, caveats } = args;
+  return {
+    workflowId: subject.workflowId,
+    taskId: subject.taskId,
+    taskRevision: subject.taskRevision,
+    attemptId: subject.attemptId,
+    requirementId: subject.requirementId,
+    checkId: check.id,
+    artifact,
+    revision,
+    commandIdentity: commandIdentityOf(check, fingerprint),
+    exitStatus,
+    // A command the engine ran is deterministic evidence by construction. A
+    // `human` check never reaches this function (see `checks.ts`): it is
+    // satisfied only through an Approval, so nothing can self-certify by
+    // claiming `reviewer.kind = "human"` here.
+    reviewer: { kind: "deterministic" },
+    caveats,
+    provenance: [],
+    supersedesId: subject.supersedesId ?? null,
+  };
+}
