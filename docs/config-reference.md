@@ -96,6 +96,16 @@ Card layer 3 (PLAN §3.D). Empty by default because bundled aptitude hints and r
 metadata already give every model a card; user notes only refine ranking. `disabled: true`
 removes the model from the effective allowlist (tightening only).
 
+### 2.3 `models.routeMainSession`
+
+`boolean`, default `false`. PLAN §3.D "Main session": opt-in routing of the *user's own*
+Pi session, never the reverse. `false` (the shipped default) means `src/extension/main-session-routing.ts`
+never queues or applies a switch — the module is a documented no-op, not merely inactive by
+configuration accident. Set `true` to allow a switch, and only ever at a safe boundary
+(Pi's `agent_settled` event — not mid-turn, not mid-tool-call, not while a worker holds the
+store lock), always with a visible notice and a `korwf/main-session-switch` session entry
+carrying the handoff summary (from-model, to-model, reason, task context).
+
 ## 3. `budgets`
 
 PLAN §2.6: per-phase and per-workflow caps with **hard stop**. Every cap uses the
