@@ -38,6 +38,7 @@ import type {
   WorkflowId,
 } from "../storage/records.ts";
 import type { TransitionActor } from "../storage/transition-log.ts";
+import { canonicalJson } from "../storage/repos/base.ts";
 import { APPROVAL_INVALIDATION_EVENTS, type ApprovalInvalidationEvent } from "./transitions.ts";
 import { BLOCKER_KINDS } from "./blockers.ts";
 import {
@@ -380,17 +381,46 @@ export function reviseTask(options: {
   const { store } = options;
   return store.write(() => {
     const before = store.tasks.require(options.taskId) as Task;
+    // Only fields that actually differ are patched. Passing an unchanged
+    // `goal` would otherwise trip the store's revision rule (which treats the
+    // *presence* of a revisioned key as a change) and bump the revision — and
+    // a no-op edit must not invalidate anybody's approval.
+    const effective: {
+      goal?: string;
+      acceptanceCriteria?: Task["acceptanceCriteria"];
+      checks?: Task["checks"];
+      ownership?: Task["ownership"];
+    } = {};
+    if (options.patch.goal !== undefined && options.patch.goal !== before.goal) {
+      effective.goal = options.patch.goal;
+    }
+    if (
+      options.patch.acceptanceCriteria !== undefined &&
+      canonicalJson(options.patch.acceptanceCriteria) !== canonicalJson(before.acceptanceCriteria)
+    ) {
+      effective.acceptanceCriteria = options.patch.acceptanceCriteria;
+    }
+    if (options.patch.checks !== undefined && canonicalJson(options.patch.checks) !== canonicalJson(before.checks)) {
+      effective.checks = options.patch.checks;
+    }
+    if (
+      options.patch.ownership !== undefined &&
+      canonicalJson(options.patch.ownership) !== canonicalJson(before.ownership)
+    ) {
+      effective.ownership = options.patch.ownership;
+    }
+
     const definitionChanged =
-      (options.patch.goal !== undefined && options.patch.goal !== before.goal) ||
-      options.patch.acceptanceCriteria !== undefined ||
-      options.patch.checks !== undefined;
-    const ownershipOnly = !definitionChanged && options.patch.ownership !== undefined;
+      effective.goal !== undefined || effective.acceptanceCriteria !== undefined || effective.checks !== undefined;
+    const ownershipOnly = !definitionChanged && effective.ownership !== undefined;
+    if (!definitionChanged && !ownershipOnly) {
+      return { task: before, effect: null, revisionBumped: false };
+    }
 
     const task = store.tasks.update(options.taskId, {
-      ...options.patch,
+      ...effective,
       ...(definitionChanged ? { revision: (before.revision + 1) as Revision } : {}),
     });
-    if (!definitionChanged && !ownershipOnly) return { task, effect: null, revisionBumped: false };
 
     const effect = applyInvalidation({
       store,

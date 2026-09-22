@@ -199,3 +199,107 @@ describe("by_approval_class: queue-and-continue versus stop-the-phase", () => {
     expect(store.approvals.require("ap-2").invalidation).toBeNull();
   });
 });
+
+describe("a revision change invalidates the evidence and approvals bound to the old revision", () => {
+  it("bumps the revision when the definition of done changes, and blocks the task", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "running" }));
+    store.approvals.insert(makeApproval({ id: "ap-1" as ApprovalId, taskRevision: 1 }));
+    const result = reviseTask({
+      store,
+      taskId: TK,
+      patch: { goal: "Write the thing, correctly" },
+      actor: { kind: "user", identity: "owner" },
+      detail: "goal clarified",
+      now: () => AT,
+      newId: () => `id-${(counter += 1)}`,
+    });
+    expect(result.revisionBumped).toBe(true);
+    expect(result.task.revision).toBe(2);
+    expect(store.approvals.require("ap-1").invalidation?.reason).toBe("task_revision_changed");
+    expect(store.tasks.require(TK).status).toBe("blocked");
+  });
+
+  it("does not bump the revision for an ownership-only change, but still invalidates", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "running" }));
+    store.approvals.insert(makeApproval({ id: "ap-1" as ApprovalId, taskRevision: 1 }));
+    const result = reviseTask({
+      store,
+      taskId: TK,
+      patch: { ownership: { paths: ["src/other.ts"], components: ["other"] } },
+      actor: { kind: "user", identity: "owner" },
+      detail: "ownership moved",
+      now: () => AT,
+      newId: () => `id-${(counter += 1)}`,
+    });
+    expect(result.revisionBumped).toBe(false);
+    expect(result.task.revision).toBe(1);
+    expect(store.approvals.require("ap-1").invalidation?.reason).toBe("task_revision_changed");
+    expect(store.tasks.require(TK).status).toBe("blocked");
+  });
+
+  it("does nothing when the patch changes nothing", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "running" }));
+    store.approvals.insert(makeApproval({ id: "ap-1" as ApprovalId }));
+    const result = reviseTask({
+      store,
+      taskId: TK,
+      patch: { goal: "Write the thing" },
+      actor: { kind: "user", identity: "owner" },
+      detail: "no-op",
+      now: () => AT,
+      newId: () => `id-${(counter += 1)}`,
+    });
+    expect(result.effect).toBeNull();
+    expect(store.approvals.require("ap-1").invalidation).toBeNull();
+    expect(store.tasks.require(TK).status).toBe("running");
+  });
+
+  it("excludes old-revision evidence from current gates while retaining it on disk", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "running" }));
+    store.evidence.insert(makeEvidence({ id: "ev-old" as EvidenceId, taskRevision: 1, attemptId: null }));
+    reviseTask({
+      store,
+      taskId: TK,
+      patch: { goal: "Write the thing, differently" },
+      actor: { kind: "user", identity: "owner" },
+      detail: "goal changed",
+      now: () => AT,
+      newId: () => `id-${(counter += 1)}`,
+    });
+    const task = store.tasks.require(TK);
+    expect(task.revision).toBe(2);
+    // Retained...
+    expect(store.evidence.get("ev-old")).toBeDefined();
+    // ...but not usable by a current gate.
+    expect(evidenceForCurrentRevision(store, task)).toEqual([]);
+    expect(excludedEvidence(store, task).map((e) => e.id)).toEqual(["ev-old"]);
+  });
+
+  it("reports the excluded evidence ids on the invalidation effect", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "running", revision: 2, goal: "g2" }));
+    store.evidence.insert(makeEvidence({ id: "ev-old" as EvidenceId, taskRevision: 1, attemptId: null }));
+    store.evidence.insert(makeEvidence({ id: "ev-new" as EvidenceId, taskRevision: 2, attemptId: null }));
+    const effect = applyInvalidation({
+      ...base(store),
+      reason: "task_revision_changed",
+      detail: "content changed",
+      taskId: TK,
+    });
+    expect(effect.excludedEvidence).toEqual(["ev-old"]);
+  });
+
+  it("evidence from a different Git SHA cannot be borrowed for the current one", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ status: "running" }));
+    store.evidence.insert(makeEvidence({ id: "ev-1" as EvidenceId, taskRevision: 1, revision: SHA, attemptId: null }));
+    const task = store.tasks.require(TK);
+    expect(evidenceForCurrentRevision(store, task, SHA).map((e) => e.id)).toEqual(["ev-1"]);
+    expect(evidenceForCurrentRevision(store, task, "c".repeat(40))).toEqual([]);
+    expect(excludedEvidence(store, task, "c".repeat(40)).map((e) => e.id)).toEqual(["ev-1"]);
+  });
+});
