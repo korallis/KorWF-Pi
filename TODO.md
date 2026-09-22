@@ -56,7 +56,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Dependency validation and cycle detection.
 - [x] Task and phase transitions, blockers, revision tracking, reapproval, scope-change handling. (#41 → `src/workflow/state.ts`, `blockers.ts`, `invalidation.ts`, `scope-change.ts`)
 - [x] Session resume/reload/fork/tree reconciliation with live repo state. (#42 → `src/workflow/reconcile.ts`, `src/extension/session-hooks.ts`, `src/git/revision.ts`, `src/storage/action-log.ts`, `docs/session-reconciliation.md`)
-- [ ] `tasks` and `phases` boards; plan/TODO export.
+- [x] `tasks` and `phases` boards; plan/TODO export. (#43)
 - [x] Prompt-injection and misleading-description tests. (#44 → `test/security/injection-stage3.test.ts`, `test/fixtures/repo-injection/`, `src/workflow/weak-checks.ts`)
 - [x] Output-budget awareness: planner sizes tasks against the model's `maxTokens`; `stopReason: "length"` recorded and classified as a harness failure that neither consumes the attempt budget nor feeds "criteria unmet" back; repeated truncation bounded separately; role contracts instruct incremental writes and per-file commits (#124 → `docs/output-budget.md`).
 

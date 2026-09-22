@@ -22,10 +22,26 @@ import { guardHandler, redactedUi } from "./redacted-ui.ts";
 import { jevStatusMessage } from "./commands/jev-status.ts";
 import { purgeMessage, whyMessage } from "./commands/why.ts";
 import { runPlanIntake } from "./commands/plan.ts";
+import { tasksMessage, parseTasksArgs } from "./commands/tasks.ts";
+import { phasesMessage, parsePhasesArgs } from "./commands/phases.ts";
+import { runExport, parseExportArgs } from "./commands/export.ts";
 import { openStore, resolveStorageRoot } from "../storage/index.ts";
 import { registerSessionHooks } from "./session-hooks.ts";
 
-const SUBCOMMANDS = ["version", "models", "status", "config", "disclosure", "jev", "why", "purge", "plan"] as const;
+const SUBCOMMANDS = [
+  "version",
+  "models",
+  "status",
+  "config",
+  "disclosure",
+  "jev",
+  "why",
+  "purge",
+  "plan",
+  "tasks",
+  "phases",
+  "export",
+] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 function isSubcommand(value: string): value is Subcommand {
@@ -117,6 +133,37 @@ export default function korwfExtension(pi: ExtensionAPI): void {
               sessionId: ctx.sessionManager.getSessionId(),
             });
             ui.notify(result.message, result.ok ? "info" : "error");
+            return;
+          }
+          case "tasks":
+          case "phases":
+          case "export": {
+            const result = loadForProject(ctx.cwd);
+            if (!result.ok) {
+              ui.notify(configMessage(result), "error");
+              return;
+            }
+            const storageRoot = resolveStorageRoot(ctx.cwd, result.config.storage.path ?? undefined);
+            const { store } = openStore({ storageRoot, writable: false });
+            try {
+              if (sub === "tasks") {
+                const outcome = tasksMessage(store, parseTasksArgs(rest));
+                ui.notify(outcome.message, outcome.ok ? "info" : "error");
+              } else if (sub === "phases") {
+                const outcome = phasesMessage(store, parsePhasesArgs(rest));
+                ui.notify(outcome.message, outcome.ok ? "info" : "error");
+              } else {
+                const parsed = parseExportArgs(rest);
+                if (!parsed.ok) {
+                  ui.notify(parsed.message, "error");
+                } else {
+                  const outcome = runExport(store, parsed);
+                  ui.notify(outcome.message, outcome.ok ? "info" : "error");
+                }
+              }
+            } finally {
+              store.close();
+            }
             return;
           }
           case "disclosure": {
