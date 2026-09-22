@@ -12,6 +12,7 @@
  * `export *` is additive, so modules added in parallel do not conflict; a genuine
  * duplicate-name clash still fails the build, which is what we want to hear about.
  */
+export * from "./action-log.ts";
 export * from "./artifacts.ts";
 export * from "./db.ts";
 export * from "./decision-cache.ts";

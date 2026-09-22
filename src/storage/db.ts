@@ -22,6 +22,7 @@ import { ArtifactStore } from "./artifacts.ts";
 import { DecisionCacheStore } from "./decision-cache.ts";
 import { DecisionTraceStore } from "./trace-store.ts";
 import { BlockerStore, TransitionLogStore } from "./transition-log.ts";
+import { ActionLogStore } from "./action-log.ts";
 import { reconcileAbandonedAttempts, type ReconcileOptions, type ReconciliationReport } from "./reconcile.ts";
 import type { AuditEntry, AuditEntryId, IsoTimestamp, RecordTable, WorkflowId } from "./records.ts";
 import { RECORDS_SCHEMA_VERSION } from "./records.ts";
@@ -110,6 +111,8 @@ export class Store {
   readonly transitionLog: TransitionLogStore;
   /** First-class blockers (#41); `blocked` is derived from unresolved rows here. */
   readonly blockers: BlockerStore;
+  /** Completed-action receipts and refused replays (#42), see action-log.ts. */
+  readonly actions: ActionLogStore;
 
   readonly #db: Database;
   readonly #lock: LockHandle | null;
@@ -159,6 +162,7 @@ export class Store {
     this.decisionTraces = new DecisionTraceStore(this.#db);
     this.transitionLog = new TransitionLogStore(this.#db);
     this.blockers = new BlockerStore(this.#db);
+    this.actions = new ActionLogStore(this.#db);
   }
 
   #context(audit: AuditSink | null): RepoContext {
