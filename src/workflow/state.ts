@@ -694,3 +694,197 @@ export function deriveBlockerField(
   const kinds = store.blockers.unresolvedForSubject(subjectKind, subjectId).map((b) => b.kind);
   return kinds.length === 0 ? null : [...new Set(kinds)].join(",");
 }
+
+// ---------------------------------------------------------------------------
+// Phase transitions
+// ---------------------------------------------------------------------------
+
+/**
+ * Request a phase transition. The only writer of `Phase.gateStatus`.
+ *
+ * Mirrors `transitionTask` row for row. The one extra concern is the
+ * lifecycle/storage projection: the request names a lifecycle state
+ * (`gating`), and the stored status is its first substage (`integrating`),
+ * because "the projection is not permission to skip gating substages".
+ */
+export function transitionPhase(request: PhaseTransitionRequest): TransitionResult<Phase> {
+  const { store, now, newId } = request;
+  const evidenceRefs = request.evidenceRefs ?? [];
+  const gitRevision = request.gitRevision ?? null;
+
+  return store.write(() => {
+    const phase = store.phases.get(request.phaseId);
+    if (phase === undefined) {
+      throw new TransitionRejected({ message: `unknown phase ${request.phaseId}`, code: "unknown_subject" });
+    }
+    const workflow = store.workflows.require(phase.workflowId) as Workflow;
+    const from = phaseLifecycleState(phase.gateStatus);
+    const before = hashRecord(phase);
+    const base = {
+      workflow,
+      subjectKind: "phase" as const,
+      subjectId: phase.id,
+      fromState: from ?? phase.gateStatus,
+      toState: String(request.to),
+      trigger: request.trigger,
+      actor: request.actor,
+      taskRevision: null,
+      gitRevision,
+      evidenceRefs,
+      beforeHash: before,
+      afterHash: before,
+    };
+
+    if (from === undefined || !(PHASE_STATES as readonly string[]).includes(String(request.to))) {
+      reject(
+        store,
+        { ...base, transitionId: null, reasonCode: "unknown_state", failedGuards: [] },
+        from === undefined
+          ? `phase ${phase.id} has unmapped gate status "${phase.gateStatus}"`
+          : `"${request.to}" is not a phase state`,
+        now,
+        newId,
+      );
+    }
+    if ((PHASE_TERMINAL_STATES as readonly string[]).includes(from)) {
+      reject(
+        store,
+        { ...base, transitionId: null, reasonCode: "terminal_subject", failedGuards: [] },
+        `phase ${phase.id} is ${from}: terminal states have no outgoing transitions`,
+        now,
+        newId,
+      );
+    }
+    if (!PHASE_TRIGGERS.includes(request.trigger)) {
+      reject(
+        store,
+        { ...base, transitionId: null, reasonCode: "unknown_trigger", failedGuards: [] },
+        `"${request.trigger}" is not a phase trigger`,
+        now,
+        newId,
+      );
+    }
+    const edge = findPhaseTransition(from, request.to, request.trigger);
+    if (edge === undefined) {
+      reject(
+        store,
+        { ...base, transitionId: null, reasonCode: "unlisted_edge", failedGuards: [] },
+        `no listed phase transition ${from} -> ${request.to} on "${request.trigger}"`,
+        now,
+        newId,
+      );
+    }
+    return commitPhaseEdge({ request, phase, workflow, edge, base, from });
+  });
+}
+
+interface CommitPhaseArgs {
+  readonly request: PhaseTransitionRequest;
+  readonly phase: Phase;
+  readonly workflow: Workflow;
+  readonly edge: Transition<PhaseState>;
+  readonly base: Omit<EventDraft, "disposition" | "reasonCode" | "failedGuards" | "transitionId">;
+  readonly from: PhaseState;
+}
+
+function commitPhaseEdge(args: CommitPhaseArgs): TransitionResult<Phase> {
+  const { request, phase, workflow, edge } = args;
+  const { store, now, newId } = request;
+  const base = { ...args.base, transitionId: edge.id };
+
+  if (!edge.whoMayTrigger.includes(actorRole(request.actor))) {
+    reject(
+      store,
+      { ...base, reasonCode: "unauthorized_actor", failedGuards: [] },
+      `actor "${request.actor.kind}" may not trigger ${edge.id} (allowed: ${edge.whoMayTrigger.join(", ")})`,
+      now,
+      newId,
+    );
+  }
+  if (request.expected?.status !== undefined && request.expected.status !== args.from) {
+    reject(
+      store,
+      { ...base, reasonCode: "stale_snapshot", failedGuards: [] },
+      `phase ${phase.id} moved: expected ${request.expected.status}, found ${args.from}`,
+      now,
+      newId,
+    );
+  }
+  if (edge.requiredEvidence.length > 0 && base.evidenceRefs.length === 0) {
+    reject(
+      store,
+      { ...base, reasonCode: "missing_evidence", failedGuards: [] },
+      `${edge.id} requires evidence references (${edge.requiredEvidence.join("; ")}) and none were supplied`,
+      now,
+      newId,
+    );
+  }
+
+  const context: GuardContext = {
+    store,
+    workflow,
+    task: null,
+    phase,
+    gitRevision: base.gitRevision,
+    actor: request.actor,
+    now: now(),
+    evidenceRefs: base.evidenceRefs,
+    unresolvedBlockers: store.blockers.unresolvedForSubject("phase", phase.id).map((b) => b.kind),
+  };
+  const evaluation = evaluateGuards(edge.preconditions, withStructuralGuards(request.guards ?? {}, context), context);
+  if (!evaluation.satisfied) {
+    reject(
+      store,
+      { ...base, reasonCode: "precondition_failed", failedGuards: evaluation.failed },
+      `${edge.id} rejected: unsatisfied precondition(s) ${evaluation.failed.join(", ")}`,
+      now,
+      newId,
+    );
+  }
+
+  if (request.blocker !== undefined) {
+    store.blockers.insert({
+      blockerId: newId(),
+      createdAt: now(),
+      workflowId: phase.workflowId,
+      subjectKind: "phase",
+      subjectId: phase.id,
+      kind: request.blocker.kind,
+      detail: request.blocker.detail,
+      raisedBy: `${request.actor.kind}:${request.actor.identity}`,
+      resolvedAt: null,
+      resolvedBy: null,
+      resolutionDetail: null,
+    });
+  }
+
+  const updated = store.phases.update(phase.id, { gateStatus: phaseGateStatusFor(request, edge) });
+  const event = appendEvent(
+    store,
+    { ...base, afterHash: hashRecord(updated), disposition: "accepted", reasonCode: null, failedGuards: [] },
+    now,
+    newId,
+  );
+  return { subject: updated, event, transitionId: edge.id, sideEffects: edge.sideEffects };
+}
+
+/**
+ * Stored gate status for an accepted phase edge.
+ *
+ * `paused` is stored as `paused_cap` when the pause is a cap or budget stop
+ * and `paused_approval` otherwise (docs/state-machine.md §1: "Budget stops
+ * use `paused_cap` with a **budget** reason, not `all_candidates_capped`").
+ * `phase-stale-evidence` returns the substage to `verifying` rather than
+ * leaving it where it was.
+ */
+function phaseGateStatusFor(request: PhaseTransitionRequest, edge: Transition<PhaseState>): PhaseGateStatus {
+  if (edge.id === "phase-stale-evidence") return "verifying";
+  if (request.to === "paused") {
+    const capLike = edge.trigger === "all_candidates_capped" || CAP_BLOCKER_KINDS.includes(request.blocker?.kind ?? "");
+    return capLike ? "paused_cap" : "paused_approval";
+  }
+  return phaseStorageStatus(request.to);
+}
+
+/** Blocker kinds that store a phase pause as `paused_cap` rather than `paused_approval`. */
+export const CAP_BLOCKER_KINDS: readonly string[] = ["all_candidates_capped", "budget_hard_stop"];
