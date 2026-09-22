@@ -266,7 +266,7 @@ function writePlan(args: WriteArgs): PersistPlanResult {
   return result;
 }
 
-interface WriteTasksArgs extends WriteArgs {
+interface WriteTasksArgs extends Omit<WriteArgs, "now"> {
   readonly now: IsoTimestamp;
   readonly planRevision: number;
   readonly phaseIds: ReadonlyMap<string, PhaseId>;
@@ -415,4 +415,79 @@ function supersedeDroppedTasks(
     superseded.push(updated.id);
   }
   return superseded;
+}
+
+/**
+ * Write the invalidations a plan revision forces (docs/records.md §6, Stage 1
+ * rules in `src/workflow/transitions.ts`), inside the same transaction as the
+ * change that caused them.
+ *
+ * - A task whose revision was bumped invalidates its own approvals with
+ *   `task_revision_changed`, and so do the approvals of a task this revision
+ *   dropped.
+ * - Every other still-valid approval in the workflow is pinned to the old
+ *   `planRevision` and is invalidated with `plan_revision_changed`.
+ *
+ * A first-time plan (`isRevision === false`) invalidates nothing: there was
+ * no approved plan to invalidate.
+ */
+function invalidateApprovals(args: {
+  store: Store;
+  workflowId: WorkflowId;
+  now: IsoTimestamp;
+  planRevision: number;
+  revisedTasks: readonly TaskId[];
+  supersededTasks: readonly TaskId[];
+  isRevision: boolean;
+}): readonly { approvalId: string; reason: ApprovalInvalidation["reason"] }[] {
+  if (!args.isRevision) return [];
+  const changed = new Set<string>([...args.revisedTasks, ...args.supersededTasks]);
+  const out: { approvalId: string; reason: ApprovalInvalidation["reason"] }[] = [];
+  for (const approval of args.store.approvals.findBy("workflowId", args.workflowId)) {
+    if (approval.invalidation !== null) continue;
+    const touchesChangedTask = approval.scope.kind === "task" && changed.has(approval.scope.taskId);
+    const reason: ApprovalInvalidation["reason"] = touchesChangedTask
+      ? "task_revision_changed"
+      : "plan_revision_changed";
+    args.store.approvals.invalidate(approval.id, {
+      reason,
+      at: args.now,
+      detail: `plan revision ${args.planRevision}`,
+    });
+    out.push({ approvalId: approval.id, reason });
+  }
+  return out;
+}
+
+/**
+ * Persist a new revision of an existing plan (issue #37 Scope: "re-running
+ * produces revision N+1 and marks superseded tasks").
+ *
+ * Everything happens in one transaction: phases, tasks, the workflow's
+ * `planRevision` bump, supersessions and approval invalidations either all
+ * land or none do.
+ */
+export function revisePlan(options: PersistPlanOptions): PersistPlanResult {
+  const { store, workflowId } = options;
+  return store.write(() => {
+    const workflow = store.workflows.require(workflowId) as Workflow;
+    const previousPhases = store.phases.forWorkflow(workflowId);
+    const previousTasks = store.tasks.findBy("workflowId", workflowId);
+    if (previousPhases.length === 0 && previousTasks.length === 0) {
+      throw new PlanPersistError(
+        `workflow ${workflowId} has no plan to revise; use persistPlan for the first revision`,
+      );
+    }
+    return writePlan({ ...options, workflow, previousPhases, previousTasks });
+  });
+}
+
+/** Persist a first plan, or revise an existing one, whichever applies. */
+export function persistOrRevisePlan(options: PersistPlanOptions): PersistPlanResult {
+  const { store, workflowId } = options;
+  return store.write(() => {
+    const hasPlan =
+      store.phases.forWorkflow(workflowId).length > 0 || store.tasks.findBy("workflowId", workflowId).length > 0;
+    return hasPlan ? revisePlan(options) : persistPlan(options);
+  });
 }
