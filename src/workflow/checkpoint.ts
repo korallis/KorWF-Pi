@@ -47,7 +47,7 @@ import type {
   RollbackProposalRow,
 } from "../storage/checkpoints.ts";
 import { actionIdFor } from "../storage/action-log.ts";
-import { isActionApproved, requestApproval } from "./approvals.ts";
+import { isActionApproved, requestApproval, validApprovalsFor } from "./approvals.ts";
 import { guardAction, recordCompletedAction } from "./reconcile.ts";
 import { readLiveRepoState } from "../git/revision.ts";
 import {
@@ -550,18 +550,28 @@ export function applyRollback(options: ApplyRollbackOptions): ApplyRollbackResul
   }
 
   // The approval must exist as a record, granted by a user, valid now.
-  const approved = isActionApproved({
+  const approvalQuery = {
     store,
     workflowId: options.workflowId,
     permittedAction: rollbackPermittedAction(proposal.proposalId),
     ...(proposal.taskId === null ? {} : { taskId: proposal.taskId as TaskId }),
     now: options.now(),
-  });
-  if (!approved) {
+  };
+  if (!isActionApproved(approvalQuery)) {
     return refuse(
       ROLLBACK_REFUSALS.noApproval,
       `no valid user-granted ${ROLLBACK_APPROVAL_CLASS} approval covers ${rollbackPermittedAction(proposal.proposalId)}`,
     );
+  }
+  // Link the record to the proposal before anything is restored. The database
+  // refuses to mark a proposal `applied` while `approvalId` is null, so this
+  // is not bookkeeping: it is the row that lets the trigger let the act pass.
+  const approvalId = proposal.approvalId ?? (validApprovalsFor({ ...approvalQuery, requireUserActor: true })[0]?.id ?? null);
+  if (approvalId === null) {
+    return refuse(ROLLBACK_REFUSALS.noApproval, "the approval record disappeared between the two reads");
+  }
+  if (proposal.approvalId === null) {
+    store.write(() => store.rollbackProposals.attachApproval(proposal.proposalId, approvalId, options.now()));
   }
 
   // #42: a forked or resumed conversation must not replay the restore.
@@ -652,7 +662,7 @@ export function applyRollback(options: ApplyRollbackOptions): ApplyRollbackResul
     now: options.now,
     subjectId: proposal.taskId,
     gitRevision: checkpoint.commitSha,
-    approvalId: proposal.approvalId,
+    approvalId,
     externalEffect: false,
   });
 

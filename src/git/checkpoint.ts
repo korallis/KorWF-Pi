@@ -324,9 +324,16 @@ export interface RestoreCheckpointOptions {
  *    undone is indistinguishable from data loss;
  *  - the diff is computed, so the caller records what actually changed.
  *
- * `git checkout <tree> -- .` followed by a clean of paths the checkpoint does
- * not contain gives an exact tree, including removing files created since.
- * Those files are in the preservation checkpoint, which is why this is safe.
+ * The restore is two `read-tree` steps, and the first one matters: the index
+ * is first set to the *preservation* tree, which (like every checkpoint here)
+ * has untracked files staged in it. Only then does `read-tree -u --reset` of
+ * the checkpoint tree remove files created since — `--reset` deletes what the
+ * old index held and the new one does not, and a file git never knew about is
+ * not in the old index. Without the seeding step a restore would silently
+ * leave behind exactly the files the proposal told the user it would delete.
+ * Everything it removes is in the preservation checkpoint, which is why this
+ * is safe. Files ignored by `.gitignore` are in neither tree and are never
+ * touched.
  *
  * This function performs no authorisation of its own. It is unexported from
  * the package barrel's point of view *as policy*: `src/workflow/checkpoint.ts`
@@ -355,10 +362,12 @@ export function restoreCheckpointTree(options: RestoreCheckpointOptions): Restor
   );
   const changedPaths = diff === null ? [] : diff.split("\n").map((s) => s.trim()).filter((s) => s.length > 0);
 
-  // `read-tree -u --reset` makes the index *and* the working tree match the
-  // checkpoint exactly: tracked modifications revert, files the checkpoint
-  // does not have are removed. Everything removed is in `preservation`.
   try {
+    // Step 1: index := the tree as it is now (untracked files included). No
+    // `-u`, so nothing on disk changes — the working tree already matches it.
+    run(runner, ["read-tree", "--reset", preservation.tree], root);
+    // Step 2: index *and* working tree := the checkpoint. Tracked
+    // modifications revert and anything added since is removed.
     run(runner, ["read-tree", "-u", "--reset", `${options.commit}^{tree}`], root);
   } catch (error) {
     throw new CheckpointError("git_failed", `restore failed: ${(error as Error).message}`);
