@@ -10,6 +10,8 @@
  * `approvals-gate.test.ts`.
  */
 import { describe, it, expect, afterEach } from "vitest";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { openStore, type Store } from "../../../src/storage/db.ts";
 import {
   COMPLETE_TASK_ACTION,
@@ -610,5 +612,54 @@ describe("AC3 (continue half): the queue is readable and says what stops a phase
     });
     expect(result.request?.permittedAction).toBe("verify_check:chk-migrate");
     expect(store.approvalRequests.pendingForTask(TK)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A config that tries to configure a high-risk class down must be rejected
+// ---------------------------------------------------------------------------
+
+describe("AC1: a high-risk class cannot be configured down to auto", () => {
+  it("loading a project config that sets one to auto fails validation", async () => {
+    const { loadConfig } = await import("../../../src/config/load.ts");
+    const dir = makeTempDir("korwf-approvals-config-");
+    try {
+      const projectRoot = join(dir.path, "project");
+      mkdirSync(join(projectRoot, ".korwf"), { recursive: true });
+      writeFileSync(
+        join(projectRoot, ".korwf", "config.json"),
+        JSON.stringify({
+          approvals: {
+            classes: {
+              destructive_git: {
+                shadow: "stop",
+                advisory: "stop",
+                supervised: "stop",
+                bounded_autonomous: "auto",
+              },
+            },
+          },
+        }),
+      );
+      const result = loadConfig(projectRoot, { userConfigDir: null, env: {} });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(
+        result.errors.some((e) => e.path.startsWith("approvals.classes.destructive_git")),
+      ).toBe(true);
+    } finally {
+      dir.cleanup();
+    }
+  });
+
+  it("every high-risk class is rejected at `auto` in every mode", async () => {
+    const { validateApprovalClasses } = await import("../../../src/workflow/approval-classes.ts");
+    for (const classId of HIGH_RISK_CLASSES) {
+      for (const mode of WORKFLOW_MODES) {
+        const row = Object.fromEntries(WORKFLOW_MODES.map((m) => [m, m === mode ? "auto" : "stop"]));
+        const violations = validateApprovalClasses({ [classId]: row } as never);
+        expect(violations.map((v) => v.rule)).toContain("V10");
+      }
+    }
   });
 });
