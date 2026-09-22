@@ -949,3 +949,75 @@ export function nonterminalPhases(store: Store, workflowId: WorkflowId): readonl
     return state !== undefined && !(PHASE_TERMINAL_STATES as readonly string[]).includes(state);
   });
 }
+
+// ---------------------------------------------------------------------------
+// The gate hook: present, and rejecting by default
+// ---------------------------------------------------------------------------
+
+/**
+ * The three non-structural halves of the TASK_DONE conjunction. Stage 4
+ * (#46–#49) supplies the real evaluators; this issue supplies the hook and
+ * its default.
+ *
+ * `checks_registered` is absent on purpose: it is structural and already
+ * computed from the record, so no evaluator can be asked for it.
+ */
+export interface TaskGateHooks {
+  readonly allChecksPassAtExactRevision?: GuardEvaluator;
+  readonly noJevGapOrDisabled?: GuardEvaluator;
+  readonly policyReviewSatisfied?: GuardEvaluator;
+}
+
+export interface PhaseGateHooks {
+  readonly allTasksDone?: GuardEvaluator;
+  readonly integratedChecksPassAtExactRevision?: GuardEvaluator;
+  readonly phaseNoJevGapOrDisabled?: GuardEvaluator;
+  readonly phasePolicyReviewSatisfied?: GuardEvaluator;
+}
+
+/**
+ * A guard table for `task-done` from the Stage 4 hooks.
+ *
+ * **Every omitted hook stays omitted**, and `evaluateGuards` treats an
+ * omitted guard as failed. So `taskDoneGuards({})` cannot reach `done`: the
+ * default is reject, which is the acceptance criterion "`done` is unreachable
+ * without evidence records satisfying the gate preconditions … the
+ * precondition hook exists and defaults to reject".
+ */
+export function taskDoneGuards(hooks: TaskGateHooks = {}): GuardTable {
+  const table: GuardTable = {};
+  if (hooks.allChecksPassAtExactRevision !== undefined) {
+    table.all_checks_pass_exact_revision = hooks.allChecksPassAtExactRevision;
+  }
+  if (hooks.noJevGapOrDisabled !== undefined) table.no_jev_gap_or_disabled = hooks.noJevGapOrDisabled;
+  if (hooks.policyReviewSatisfied !== undefined) table.policy_review_satisfied = hooks.policyReviewSatisfied;
+  return table;
+}
+
+/** The same, for `phase-done`. Omitted hooks reject. */
+export function phaseDoneGuards(hooks: PhaseGateHooks = {}): GuardTable {
+  const table: GuardTable = {};
+  if (hooks.allTasksDone !== undefined) table.all_tasks_done = hooks.allTasksDone;
+  if (hooks.integratedChecksPassAtExactRevision !== undefined) {
+    table.integrated_checks_pass_exact_revision = hooks.integratedChecksPassAtExactRevision;
+  }
+  if (hooks.phaseNoJevGapOrDisabled !== undefined) table.phase_no_jev_gap_or_disabled = hooks.phaseNoJevGapOrDisabled;
+  if (hooks.phasePolicyReviewSatisfied !== undefined) {
+    table.phase_policy_review_satisfied = hooks.phasePolicyReviewSatisfied;
+  }
+  return table;
+}
+
+/**
+ * The deterministic half of `all_tasks_done`, as a guard: every task of the
+ * phase is `done` at its current revision. Supplied here (rather than left
+ * to Stage 4) because it is a fact about records, not an evaluation — and
+ * because a phase with a failed, blocked or cancelled task must never pass
+ * it, whatever an evaluator claims.
+ */
+export function allPhaseTasksDone(context: GuardContext): GuardOutcome {
+  if (context.phase === null) return "unknown";
+  const tasks = context.store.tasks.forPhase(context.phase.id);
+  if (tasks.length === 0) return false;
+  return tasks.every((task) => task.status === "done");
+}
