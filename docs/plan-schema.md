@@ -103,3 +103,68 @@ The most common way a model satisfies PLAN §2.3 in appearance only is to emit
 `{"kind": "command", "command": "run the tests and confirm they pass"}`. The
 deterministic gate cannot run that, so it would pass the plan and then block forever at
 execution. The check is rejected at planning time instead.
+
+## 4. Generation, parsing and retry
+
+`generatePlan` (`src/workflow/planner.ts`) runs prompt → parse → retry, bounded by
+`maxAttempts` (default 3):
+
+1. `buildPlannerPrompt` embeds the intake, every retrieved excerpt **with its full
+   provenance** (revision, path, range, retrieval method, content hash — PLAN §3.B),
+   the schema, and the rules above.
+2. The caller's `PlannerModel` returns either a parsed object (the structured-output
+   tool-call path from the reuse table, `docs/pi-integration-map.md` row 13) or text.
+   `parsePlanOutput` accepts both: bare JSON, a fenced ```json block, or a balanced
+   `{...}` span inside prose. Brace scanning is string-aware, so a brace inside a check
+   command does not truncate the document.
+3. On rejection, `buildRetryPrompt` quotes the **actual** path-qualified findings, so
+   attempt N+1 is not a blind re-roll. A failed run returns errors and no plan: there is
+   no code path that returns a partially valid document.
+
+With **no model at all**, `deterministicPlanSkeleton` returns a valid single-phase plan
+whose one task carries an explicitly required `human` check and states plainly that
+nothing was analysed. Every Jev- or model-assisted decision in this project has a
+deterministic fallback (AGENTS.md §4); this is planning's.
+
+## 5. Output-budget sizing (#124)
+
+Generated tasks are sized against the *worker* model's per-turn **output** ceiling
+(`maxTokens`), not its context window, using `sizePlan`/`sizeTaskOutput` from
+`src/workflow/output-budget.ts`. `sizePlanTasks(plan, limits, thinking)` returns a
+verdict per task; `tasksNeedingDecomposition` lists the ones whose declared artifacts
+cannot be produced in one turn as planned, together with concrete write-then-edit step
+plans. An unreported `maxTokens` is treated as the conservative floor — unreported is
+not unlimited. See [output-budget.md](output-budget.md).
+
+## 6. Persistence and revisions
+
+`plan-store.ts` writes the document into `Phase` and `Task` records
+([records.md](records.md)) inside **one** `store.write()` transaction: a rejected row
+rolls the whole plan back, so nothing partial ever lands.
+
+- `persistPlan` — first plan. Sets `Workflow.planRevision` to 1 and moves the workflow
+  from `planning` to `ready`. Refuses if a plan already exists.
+- `revisePlan` — revision N+1. Refuses if there is no plan.
+- `persistOrRevisePlan` — picks the right one.
+
+Across revisions:
+
+| Situation | Effect |
+|---|---|
+| Task recognised as the same work | Keeps its record id (docs/records.md §5.1). Matched by exact goal, else by an *unambiguous* ownership-path overlap; an ambiguous match is treated as new work rather than inventing continuity. |
+| Its `goal`/`acceptanceCriteria`/`checks` changed | `Task.revision` bumps by exactly one; the store enforces this. Listed in `revisedTasks`. |
+| Only `ownership`/`dependencies`/`riskClass` changed | No revision bump (docs/records.md §5.1). |
+| Task dropped from the new revision | `status: cancelled`, `blocker: superseded`. Never deleted — its attempts, evidence and audit trail stay readable for `/korwf why` and replay. |
+| Any approval on a changed or dropped task | Invalidated `task_revision_changed`. |
+| Any other still-valid approval in the workflow | Invalidated `plan_revision_changed` (it was pinned to the old `planRevision`). |
+
+Invalidations are written in the same transaction as the change that caused them, only
+ever `null → reason`, and are never cleared (docs/records.md §6). A first plan
+invalidates nothing: there was no approved plan to invalidate.
+
+## 7. Related
+
+- [records.md](records.md) — `Phase`, `Task`, `CheckDefinition`, revision rules.
+- [state-machine.md](state-machine.md) — the `ready` guard `checks_registered`.
+- [output-budget.md](output-budget.md) — why tasks are sized against `maxTokens`.
+- [gates.md](gates.md) — what the deterministic gate does with these checks.
