@@ -442,3 +442,89 @@ export function classifyFailureByRules(signal: FailureSignal): RuleClassificatio
 export function classifyFailure(signal: FailureSignal): FailureClassification {
   return classifyFailureByRules(signal).classification;
 }
+
+// ---------------------------------------------------------------------------
+// building a signal from a caught error
+// ---------------------------------------------------------------------------
+
+/** Normalise a caught exception into a `FailureSignal`. */
+export function signalFromError(error: unknown, extra: FailureSignal = {}): FailureSignal {
+  if (error instanceof Error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    const status = (error as { status?: unknown }).status;
+    return {
+      ...extra,
+      errorName: error.name,
+      errorMessage: error.message,
+      errorCode: typeof code === "string" ? code : extra.errorCode,
+      httpStatus: typeof status === "number" ? status : (extra.httpStatus ?? null),
+    };
+  }
+  return { ...extra, errorMessage: typeof error === "string" ? error : JSON.stringify(error) };
+}
+
+// ---------------------------------------------------------------------------
+// quota events (feed ModelAvailability, Stage 5 / #62)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emitted when a failure is classified `quota`. Stage 5's ModelAvailability
+ * consumes this to pause a route.
+ *
+ * **Keyed by route, not by model id.** AGENTS.md §4: a downloaded user may
+ * configure two subscriptions to the same vendor as two providers exposing
+ * the same model id with separate quotas. Keying on the model id alone
+ * mis-attributes the limit and can pause a healthy route.
+ */
+export interface QuotaEvent {
+  readonly kind: "quota";
+  /** Provider id as configured by the user; never a hardcoded vendor name. */
+  readonly providerId: string;
+  /** Model id as the provider exposes it. */
+  readonly modelId: string;
+  /** `providerId::modelId` — the availability key. */
+  readonly routeKey: string;
+  /** Seconds from `Retry-After`, when the response supplied one. */
+  readonly retryAfterSeconds: number | null;
+  readonly rule: string;
+  readonly reason: string;
+}
+
+const RETRY_AFTER_RE = /retry[-_ ]?after["']?\s*[:=]?\s*["']?(\d+(?:\.\d+)?)/i;
+
+/** Parse a `Retry-After` delay in seconds out of an error body or header text. */
+export function parseRetryAfterSeconds(text: string | undefined): number | null {
+  if (text === undefined) return null;
+  const match = RETRY_AFTER_RE.exec(text);
+  if (match === null) return null;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+}
+
+/** Stable availability key for a route. Exported so callers cannot invent their own. */
+export function routeKey(providerId: string, modelId: string): string {
+  return `${providerId}::${modelId}`;
+}
+
+/**
+ * Build the quota event for a classified failure, or `null` when the failure
+ * was not a quota failure. Returning `null` rather than a best guess keeps
+ * availability from being paused on a service error.
+ */
+export function quotaEventFor(
+  classification: FailureClassification,
+  signal: FailureSignal,
+  route: { readonly providerId: string; readonly modelId: string },
+): QuotaEvent | null {
+  if (classification.category !== "quota") return null;
+  const text = [signal.stderr, signal.stdout, signal.errorMessage].filter((p) => typeof p === "string").join("\n");
+  return Object.freeze({
+    kind: "quota" as const,
+    providerId: route.providerId,
+    modelId: route.modelId,
+    routeKey: routeKey(route.providerId, route.modelId),
+    retryAfterSeconds: parseRetryAfterSeconds(text),
+    rule: classification.rule,
+    reason: classification.reason,
+  });
+}
