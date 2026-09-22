@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "pattern": "claude",
+      "family": "Claude",
+      "aptitudes": ["deep-reasoning", "large-refactors", "tool-use"],
+      "caveats": ["Slower and costlier than lighter models for simple, small edits."]
+    },
+    {
+      "pattern": "gpt-?[0-9]|^o[0-9]",
+      "family": "GPT / o-series",
+      "aptitudes": ["deep-reasoning", "tool-use"],
+      "caveats": ["Reasoning-tier variants (o-series) trade speed for depth."]
+    },
+    {
+      "pattern": "gemini",
+      "family": "Gemini",
+      "aptitudes": ["front-end-ui", "speed", "large-context"],
+      "caveats": []
+    },
+    {
+      "pattern": "llama",
+      "family": "Llama",
+      "aptitudes": ["speed"],
+      "caveats": ["Open-weight family; aptitude varies widely by fine-tune and quantisation."]
+    },
+    {
+      "pattern": "qwen",
+      "family": "Qwen",
+      "aptitudes": ["tool-use", "speed"],
+      "caveats": []
+    },
+    {
+      "pattern": "deepseek",
+      "family": "DeepSeek",
+      "aptitudes": ["deep-reasoning", "large-refactors"],
+      "caveats": []
+    },
+    {
+      "pattern": "mistral|mixtral",
+      "family": "Mistral",
+      "aptitudes": ["speed"],
+      "caveats": []
+    },
+    {
+      "pattern": "kimi",
+      "family": "Kimi",
+      "aptitudes": ["large-context", "tool-use"],
+      "caveats": []
+    }
+  ]
+}
