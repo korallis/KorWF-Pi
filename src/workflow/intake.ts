@@ -14,6 +14,9 @@
  */
 import type { RepoDetection } from "../git/status.ts";
 import type { Budget, RepoIdentity, Workflow, WorkflowId, WorkflowMode } from "../storage/records.ts";
+import { classifyByRules, type IntakeClass } from "./intake-rules.ts";
+import { ask, type AskContext } from "../decisions/ask.ts";
+import { intakeClassifyQuestion, type IntakeClassifyResult } from "../decisions/questions/intake.ts";
 
 /** Policy version stamped on every Workflow created by this intake path. */
 export const CURRENT_POLICY_VERSION = "1";
@@ -347,4 +350,65 @@ export function intakeSummary(args: {
 
   lines.push("", "Status: intake recorded. Investigation and plan generation are the next step (separate command).");
   return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Free-text intake classification (issue #34; PLAN §3.A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Advisory classification of a free-text message that did *not* arrive via a
+ * `/korwf` command. This is a secondary convenience (PLAN §3.A) — it never
+ * gates, blocks, or substitutes for the command-driven `plan`/`run` paths,
+ * and the caller is expected to only *show* the result, never act on it
+ * directly. Deterministic rules run first (`classifyByRules`); Jev is only
+ * consulted when they find nothing, and only when an `AskContext` is
+ * supplied — callers with no Jev context get the rules-only behaviour for
+ * free.
+ */
+export interface FreeTextClassification {
+  readonly intakeClass: IntakeClass | "unknown";
+  /** `true` for the deterministic trivial fast path (PLAN §3.A "short path for trivial work"). */
+  readonly trivial: boolean;
+  /** Which rule, or `"intake.classify"`/`"fallback"`, produced this. */
+  readonly rule: string;
+  readonly source: "rules" | "jev" | "fallback";
+}
+
+/**
+ * Classify one free-text message. Pure with respect to side effects: this
+ * function does not invoke any tool, worker, or workflow action — it returns
+ * a value for the caller to display. When `ask` is supplied it may perform
+ * one Jev call (already filtered through the outbound policy and recorded as
+ * a Decision by `ask.ts`); with no `ask` it is 100% deterministic and
+ * synchronous in effect, never blocking on the network.
+ */
+export async function classifyFreeText(
+  text: string,
+  ctx?: AskContext,
+): Promise<FreeTextClassification> {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return { intakeClass: "clarification", trivial: true, rule: "empty_text", source: "rules" };
+  }
+
+  const ruleMatch = classifyByRules(trimmed);
+  if (ruleMatch !== null) {
+    return { intakeClass: ruleMatch.intakeClass, trivial: ruleMatch.trivial, rule: ruleMatch.rule, source: "rules" };
+  }
+
+  if (ctx === undefined) {
+    // No Jev context: rules found nothing, and there is no semantic
+    // classifier available — an explicit unknown that asks, never a guess.
+    return { intakeClass: "unknown", trivial: false, rule: "no_ask_context", source: "fallback" };
+  }
+
+  const result = await ask(ctx, intakeClassifyQuestion, { text: trimmed });
+  const value: IntakeClassifyResult = result.value;
+  return {
+    intakeClass: value,
+    trivial: false,
+    rule: result.rule,
+    source: result.source,
+  };
 }
