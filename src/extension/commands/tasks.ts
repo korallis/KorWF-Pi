@@ -8,7 +8,7 @@
 import type { Store } from "../../storage/db.ts";
 import type { WorkflowId } from "../../storage/records.ts";
 import { buildTaskBoard, type TaskBoardFilter, type TaskBoardRow } from "../../workflow/boards.ts";
-import { renderBoardTable, type BoardTable } from "../ui/board.ts";
+import { checkStateMarker, renderBoardTable, type BoardTable } from "../ui/board.ts";
 import { resolveBoardWorkflow, type WorkflowReadStore } from "./workflow-select.ts";
 
 export type TasksCommandStore = WorkflowReadStore & Pick<Store, "tasks" | "phases" | "evidence" | "attempts" | "blockers">;
@@ -18,6 +18,8 @@ export interface TasksCommandArgs {
   readonly status?: string;
   readonly blocked?: boolean;
   readonly workflowId?: string;
+  /** Current worktree revision (issue #51), from `src/git/`; `null` if unknown. */
+  readonly currentSha?: string | null;
 }
 
 /** Parse `/korwf tasks [--phase <id>] [--status <status>] [--blocked] [--workflow <id>]`. */
@@ -55,6 +57,21 @@ function dependencySummary(row: TaskBoardRow): string {
   return row.dependencies.map((d) => (unmet.has(d) ? `${d}*` : d)).join(", ");
 }
 
+/**
+ * One entry per check plus one per uncovered criterion, so `flaky`,
+ * `missing`, `unavailable` and an uncovered criterion are all visibly
+ * distinct on the board (issue #51; PLAN §3.F).
+ */
+function checksSummary(row: TaskBoardRow): string {
+  const parts: string[] = row.checkSummary.checks.map(
+    (c) => `${c.checkId}:${checkStateMarker(c.status)}`,
+  );
+  for (const criterionId of row.checkSummary.uncoveredCriteria) {
+    parts.push(`${criterionId}:UNCOVERED`);
+  }
+  return parts.length === 0 ? "-" : parts.join(", ");
+}
+
 /** Build the `BoardTable` for `/korwf tasks`. Pure, so it is tested without a store. */
 export function taskBoardTable(rows: readonly TaskBoardRow[]): BoardTable {
   return {
@@ -65,6 +82,7 @@ export function taskBoardTable(rows: readonly TaskBoardRow[]): BoardTable {
       { header: "phase" },
       { header: "dependencies" },
       { header: "blockers" },
+      { header: "checks" },
       { header: "evidence", align: "right" },
       { header: "model" },
       { header: "goal" },
@@ -75,6 +93,7 @@ export function taskBoardTable(rows: readonly TaskBoardRow[]): BoardTable {
       row.task.phaseId,
       dependencySummary(row),
       blockerSummary(row),
+      checksSummary(row),
       String(row.evidenceCount),
       row.lastModel ?? "-",
       row.task.goal,
@@ -94,6 +113,11 @@ export function tasksMessage(
   if (args.phase !== undefined) filter.phaseId = args.phase;
   if (args.status !== undefined) filter.status = args.status;
   if (args.blocked !== undefined) filter.blockedOnly = args.blocked;
-  const rows = buildTaskBoard(store, resolved.workflowId as WorkflowId, filter as TaskBoardFilter);
+  const rows = buildTaskBoard(
+    store,
+    resolved.workflowId as WorkflowId,
+    filter as TaskBoardFilter,
+    args.currentSha ?? null,
+  );
   return { ok: true, message: renderBoardTable(taskBoardTable(rows)) };
 }

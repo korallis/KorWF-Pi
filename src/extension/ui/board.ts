@@ -59,3 +59,25 @@ export function renderBoardTable(table: BoardTable): string {
 export function renderBoardSections(sections: readonly string[]): string {
   return sections.filter((s) => s.trim() !== "").join("\n\n");
 }
+
+/**
+ * Distinct, greppable markers per check state (issue #51; PLAN §3.F).
+ *
+ * ASCII rather than glyphs (`board.ts`'s own rule: no rendering that would
+ * defeat `grep`/`diff`), and every non-pass state gets its *own* marker so
+ * `flaky`/`missing`/`unavailable`/`timeout` can never be told apart from a
+ * plain `fail` by a reader skimming the board.
+ */
+export const CHECK_STATE_MARKERS: Readonly<Record<string, string>> = {
+  pass: "PASS",
+  fail: "FAIL",
+  flaky: "FLAKY",
+  missing: "MISSING",
+  unavailable: "UNAVAIL",
+  timeout: "TIMEOUT",
+};
+
+/** Render one check's state as its board marker. Unknown states pass through verbatim. */
+export function checkStateMarker(status: string): string {
+  return CHECK_STATE_MARKERS[status] ?? status.toUpperCase();
+}

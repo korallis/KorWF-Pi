@@ -8,3 +8,4 @@
  */
 export * from "./evidence.ts";
 export * from "./checks.ts";
+export * from "./flaky.ts";
