@@ -56,3 +56,55 @@ export interface PlannerIntake {
   /** Clarification answers gathered by `intake.ts`, already filtered of skips. */
   readonly clarifications: readonly { readonly prompt: string; readonly answer: string }[];
 }
+
+// ---------------------------------------------------------------------------
+// The schema, as the planner is told it
+// ---------------------------------------------------------------------------
+
+/**
+ * The plan schema in the exact shape a model is asked to produce. Generated
+ * from the constants in `plan-schema.ts` rather than retyped, so the prompt
+ * and the validator can never describe different contracts.
+ */
+export function planSchemaText(): string {
+  return [
+    "{",
+    `  "schemaVersion": ${PLAN_SCHEMA_VERSION},`,
+    '  "architectureSummary": "<prose: the architecture this plan assumes or creates>",',
+    '  "openQuestions": ["<anything you could not settle>"],',
+    '  "phases": [',
+    "    {",
+    '      "id": "p1",',
+    '      "order": 0,',
+    '      "goal": "<what this phase delivers>",',
+    '      "acceptanceCriteria": [{ "id": "pac1", "text": "<observable outcome>" }],',
+    '      "integrationBranch": "<optional branch name>"',
+    "    }",
+    "  ],",
+    '  "tasks": [',
+    "    {",
+    '      "id": "t1",',
+    '      "phaseId": "p1",',
+    '      "goal": "<one atomic, observable unit of work>",',
+    '      "acceptanceCriteria": [{ "id": "ac1", "text": "<observable outcome>" }],',
+    '      "checks": [',
+    "        {",
+    '          "id": "c1",',
+    `          "kind": "${PLAN_CHECK_KINDS.join(" | ")}",`,
+    '          "command": "<exact command line; for kind=human, the instruction>",',
+    '          "cwd": ".",',
+    '          "expectedExitCode": 0,',
+    '          "coversCriteria": ["ac1"],',
+    '          "required": true,',
+    '          "rationale": "<why this is the right evidence>"',
+    "        }",
+    "      ],",
+    '      "ownership": { "paths": ["src/example.ts"], "components": ["example"] },',
+    '      "dependencies": [],',
+    `      "riskClass": "${PLAN_RISK_CLASSES.join(" | ")}",`,
+    '      "expectedArtifacts": [{ "path": "src/example.ts", "estimate": { "unit": "lines", "value": 120 } }]',
+    "    }",
+    "  ]",
+    "}",
+  ].join("\n");
+}
