@@ -49,6 +49,16 @@ export interface ShellVerdict {
 
 /** Commands that mutate, escalate, or hand execution to something unclassifiable. */
 export const DESTRUCTIVE_RULES: readonly ShellRule[] = [
+  // --- evaluated first, so the reported rule names the real objection -------
+  // `sudo rm` is a privilege escalation that also deletes; the audit row
+  // should say "privilege", not "rm". Likewise `pip install` is a package
+  // manager, not install(1). Order changes the *label*, never the verdict.
+  { id: "privilege", re: /\b(sudo|doas|su)\b/i, why: "privilege escalation is never permitted" },
+  { id: "pip", re: /\bpip3?\s+(install|uninstall)\b/i, why: "pip installs packages" },
+  { id: "npm-mutate", re: /\bnpm\s+(install|i|uninstall|remove|rm|update|ci|link|publish|run|exec|init|pack|version)\b/i, why: "npm can install or run arbitrary code" },
+  { id: "yarn-mutate", re: /\byarn\s+(add|remove|install|publish|run)\b/i, why: "yarn can install or run arbitrary code" },
+  { id: "pnpm-mutate", re: /\bpnpm\s+(add|remove|install|publish|run|exec)\b/i, why: "pnpm can install or run arbitrary code" },
+  { id: "brew", re: /\bbrew\s+(install|uninstall|upgrade|link|tap)\b/i, why: "brew changes the machine" },
   // --- writing to the filesystem -------------------------------------------
   { id: "redirect", re: /(^|[^0-9<>&|])>(?!>)/, why: "output redirection writes a file" },
   { id: "redirect-append", re: />>/, why: "appending redirection writes a file" },
@@ -76,8 +86,8 @@ export const DESTRUCTIVE_RULES: readonly ShellRule[] = [
   { id: "patch", re: /\bpatch\b/i, why: "patch edits files in place" },
   // In-place editors. `sed -n` is allowlisted below; `sed -i` is not, and the
   // denylist wins, so no ordering of flags can smuggle it through.
-  { id: "sed-in-place", re: /\bsed\b[^|;]*\s-[A-Za-z]*i/i, why: "sed -i edits files in place" },
-  { id: "perl-in-place", re: /\bperl\b[^|;]*\s-[A-Za-z]*i/i, why: "perl -i edits files in place" },
+  { id: "sed-in-place", re: /\bsed\b[^|;]*\s--?[A-Za-z-]*i/i, why: "sed -i edits files in place" },
+  { id: "perl-in-place", re: /\bperl\b[^|;]*\s--?[A-Za-z-]*i/i, why: "perl -i edits files in place" },
   { id: "editor", re: /\b(vim?|nano|emacs|ed|pico|code|subl)\b/i, why: "interactive editors mutate files" },
   // --- indirection: unclassifiable by construction --------------------------
   { id: "eval", re: /\b(eval|source|exec)\b/i, why: "eval/source/exec run text this gate cannot classify" },
@@ -90,17 +100,11 @@ export const DESTRUCTIVE_RULES: readonly ShellRule[] = [
   { id: "process-substitution", re: /[<>]\(/, why: "process substitution runs a nested command" },
   { id: "command-substitution", re: /\$\(|`/, why: "command substitution runs a nested command" },
   // --- package managers and system state ------------------------------------
-  { id: "npm-mutate", re: /\bnpm\s+(install|i|uninstall|remove|rm|update|ci|link|publish|run|exec|init|pack|version)\b/i, why: "npm can install or run arbitrary code" },
   { id: "npx", re: /\b(npx|pnpx|bunx)\b/i, why: "npx downloads and runs arbitrary code" },
-  { id: "yarn-mutate", re: /\byarn\s+(add|remove|install|publish|run)\b/i, why: "yarn can install or run arbitrary code" },
-  { id: "pnpm-mutate", re: /\bpnpm\s+(add|remove|install|publish|run|exec)\b/i, why: "pnpm can install or run arbitrary code" },
-  { id: "pip", re: /\bpip3?\s+(install|uninstall)\b/i, why: "pip installs packages" },
   { id: "system-package", re: /\b(apt|apt-get|dnf|yum|pacman|apk|zypper)\b/i, why: "system package managers change the machine" },
-  { id: "brew", re: /\bbrew\s+(install|uninstall|upgrade|link|tap)\b/i, why: "brew changes the machine" },
   { id: "cargo-go", re: /\b(cargo|go)\s+(install|build|get|run|test)\b/i, why: "build tools write artefacts" },
   { id: "make", re: /\b(make|cmake|ninja|gradle|mvn)\b/i, why: "build tools write artefacts and run scripts" },
   { id: "docker", re: /\b(docker|podman|kubectl|helm|terraform)\b/i, why: "container and infrastructure tools mutate external state" },
-  { id: "privilege", re: /\b(sudo|doas|su)\b/i, why: "privilege escalation is never permitted" },
   { id: "signal", re: /\b(kill|pkill|killall)\b/i, why: "signalling processes mutates system state" },
   { id: "power", re: /\b(reboot|shutdown|halt|poweroff)\b/i, why: "power commands mutate system state" },
   { id: "service", re: /\b(systemctl|launchctl|service)\b/i, why: "service control mutates system state" },
@@ -188,8 +192,11 @@ export const SAFE_PATTERNS: readonly RegExp[] = [
   // wins, so `git log && git commit` cannot pass by matching here.
   /^git\s+(status|log|diff|show|blame|describe|branch\s*$|branch\s+--list|branch\s+-v|shortlog|rev-parse|rev-list|cat-file|ls-files|ls-tree|ls-remote|grep|for-each-ref|merge-base|name-rev|count-objects|verify-commit|whatchanged|reflog\s*$|reflog\s+show)\b/,
   /^npm\s+(list|ls|view|info|search|outdated|audit|why|explain|--version|-v)\b/,
-  /^node\s+--version$/,
-  /^python3?\s+--version$/,
+  // Note: `node --version`, `python --version` and the like are *not*
+  // allowlisted. The `interpreter` denylist rule fires on the binary name and
+  // the denylist wins, deliberately: distinguishing `node --version` from
+  // `node --version; node -e "..."` by regex is exactly the fragility this
+  // gate must not depend on, and a version string is not worth the exception.
   /^tsc\s+--version$/,
   // `sed -n` prints; `sed -i` is caught by the denylist regardless of order.
   /^sed\s+-n\b/,
