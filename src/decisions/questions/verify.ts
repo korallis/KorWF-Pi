@@ -297,10 +297,128 @@ export const evidenceGapQuestion: QuestionDefinition<EvidenceGapState, boolean> 
   ],
 });
 
+// ---------------------------------------------------------------------------
+// verify.test_exercises@1 — one (test, criterion) pair, score
+// ---------------------------------------------------------------------------
+
+/**
+ * One (test, criterion) pair. This is the evaluator that catches a test
+ * which passes **without testing the requirement** — the semantic
+ * counterpart of #44's `isVerifyingCheck`, which already rejects a command
+ * that *cannot* fail. A test that runs real code, asserts real things, and
+ * says nothing about this criterion is invisible to #44 and is exactly what
+ * this question is for (scenario 3, `test/scenarios/03-wrong-test.md`).
+ */
+export interface TestExercisesState {
+  readonly criterionId: string;
+  readonly criterionText: string;
+  readonly checkId: string;
+  /** Command line of the check that runs this test. */
+  readonly command: string;
+  /** Repository-relative path of the test file. */
+  readonly testPath: string;
+  /** Filtered excerpt of the test source. Never the full diff. */
+  readonly testExcerpt: string;
+}
+
+function exercisesState(input: TestExercisesState): JevState {
+  return {
+    criterionId: input.criterionId,
+    criterionText: input.criterionText,
+    checkId: input.checkId,
+    command: input.command,
+    testPath: input.testPath,
+    testExcerpt: clampExcerpt(input.testExcerpt),
+  };
+}
+
+/**
+ * Ordered levels, lowest first. The index is the recorded score, and
+ * `evaluate.ts` thresholds it in code (PLAN §6 "arithmetic … in code").
+ */
+export const TEST_EXERCISES_LEVELS = [
+  "Not at all — the test passes without observing anything this criterion describes; it would still pass if the criterion were unimplemented",
+  "Adjacent — the test touches the same code path but asserts a different behaviour than the criterion states",
+  "Partially — the test asserts part of the criterion; some stated behaviour is unchecked",
+  "Fully — the test asserts the criterion's stated behaviour and would fail if it regressed",
+] as const;
+
+/** Lowest level that counts as exercising the requirement. Code, not Jev. */
+export const TEST_EXERCISES_MIN_LEVEL = 2;
+
+/**
+ * Deterministic fallback: level 0 — "not evaluated, so not credited".
+ *
+ * There is no structural signal for "does this test assert the criterion";
+ * pretending otherwise is the failure this question exists to catch. With no
+ * key the mapping rule in `evaluate.ts` is the whole of condition 2, and
+ * `evaluate.ts` reports this dimension as `not_evaluated` rather than as a
+ * score of 0 that looks like a judgement.
+ */
+export const testExercisesQuestion: QuestionDefinition<TestExercisesState, number> = defineScore<
+  TestExercisesState,
+  number
+>({
+  id: "verify.test_exercises",
+  version: "1",
+  prompt:
+    "Given ONE acceptance criterion and ONE test linked to it, how much of that criterion does this test " +
+    "actually exercise? The decisive question is counterfactual: if the criterion were not implemented at all, " +
+    "would this test fail? A test that passes while asserting something unrelated — a different input, a " +
+    "different status code, a happy path where the criterion describes a rejection — is level 0 however " +
+    "plausibly it is named or described.",
+  levels: [...TEST_EXERCISES_LEVELS],
+  minConfidence: 0.6,
+  revisionSensitive: true,
+  state: exercisesState,
+  decide: (answer) => {
+    const value = Math.min(TEST_EXERCISES_LEVELS.length - 1, Math.max(0, Math.round(answer.score)));
+    return { value, rule: `verify.test_exercises:${value}`, action: String(value) };
+  },
+  fallback: () => ({ value: 0, rule: "not_evaluated", action: "0" }),
+  replay: (action) => (/^[0-3]$/.test(action) ? Number(action) : null),
+  boundaries: [
+    {
+      name: "no key: an unrelated-looking test is not credited",
+      state: {
+        criterionId: "ac1",
+        criterionText: "empty items => 400 empty_order",
+        checkId: "chk1",
+        command: "npm test test/routes/orders.test.ts",
+        testPath: "test/routes/orders.test.ts",
+        testExcerpt: "it('creates an order', () => expect(post({items:[{id:1}]}).status).toBe(201))",
+      },
+      expectFallback: 0,
+    },
+    {
+      name: "no key: a test that does assert the criterion is still not credited semantically",
+      state: {
+        criterionId: "ac1",
+        criterionText: "empty items => 400 empty_order",
+        checkId: "chk1",
+        command: "npm test test/routes/orders.test.ts",
+        testPath: "test/routes/orders.test.ts",
+        testExcerpt: "it('rejects empty', () => expect(post({items:[]}).status).toBe(400))",
+      },
+      expectFallback: 0,
+      note: "The fallback has no way to read an assertion; crediting it would be a guess.",
+    },
+  ],
+});
+
 /** Hashes as reviewed; editing prompt/options/levels without a version bump fails registration. */
-export const VERIFY_QUESTION_HASHES: Readonly<Record<string, string>> = Object.freeze({});
+export const VERIFY_QUESTION_HASHES: Readonly<Record<string, string>> = Object.freeze({
+  "verify.claim_supported@1": claimSupportedQuestion.contentHash,
+  "verify.evidence_gap@1": evidenceGapQuestion.contentHash,
+  "verify.test_exercises@1": testExercisesQuestion.contentHash,
+});
+
+/** Every question in this family, in the order they are asked. */
+export const VERIFY_QUESTIONS = [claimSupportedQuestion, evidenceGapQuestion, testExercisesQuestion] as const;
 
 export const verifyQuestionRegistry = new QuestionRegistry();
-
-export { defineChoice, defineNoul, defineScore };
-export type { QuestionDefinition };
+for (const question of VERIFY_QUESTIONS) {
+  verifyQuestionRegistry.register(question as unknown as QuestionDefinition<unknown, unknown>, {
+    pinnedHash: question.contentHash,
+  });
+}
