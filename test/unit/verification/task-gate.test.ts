@@ -500,3 +500,211 @@ describe("T2.C3: policy-required review", () => {
     expect(result.pass).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 4. Bypass scenarios (docs/gates.md §8) — every one is refused
+// ---------------------------------------------------------------------------
+
+describe("AC1/AC2/AC3: bypass attempts are refused with a reason code", () => {
+  it("B2 — Jev 'no gap' cannot substitute for a failing check", () => {
+    const result = evaluateWithNoGap({
+      evidence: [passEvidence(CHK1), stateEvidence(CHK2, { kind: "exited", code: 1 })],
+    });
+    expect(result.pass).toBe(false);
+    expect(codes(result)).toContain("check_fail");
+    // C2 really was satisfied; it simply has no authority over C1.
+    expect(result.conditions.find((c) => c.id === "C2")?.satisfied).toBe(true);
+    expect(result.conditions.find((c) => c.id === "C1")?.satisfied).toBe(false);
+  });
+
+  it("B3 — evidence recorded at a previous SHA is invisible", () => {
+    const result = evaluateWithNoGap({
+      evidence: [passEvidence(CHK1, { revision: OLD_SHA }), passEvidence(CHK2, { revision: OLD_SHA })],
+    });
+    expect(codes(result)).toContain("check_missing");
+    const detail = result.reasons.find((r) => r.reasonCode === "check_missing")?.detail ?? "";
+    expect(detail).toContain("evidence_stale_revision");
+  });
+
+  it("B4 — evidence at the right SHA but an older task revision is stale", () => {
+    const result = evaluateWithNoGap({
+      evidence: [passEvidence(CHK1, { taskRevision: 2 }), passEvidence(CHK2, { taskRevision: 2 })],
+    });
+    const detail = result.reasons.find((r) => r.reasonCode === "check_missing")?.detail ?? "";
+    expect(detail).toContain("evidence_stale_task_revision");
+  });
+
+  const trivialCommands = ["true", "exit 0", ":", "/bin/true", "echo ok", "cd x && true", "npm test || true"];
+  for (const command of trivialCommands) {
+    it(`B5 — a check that cannot fail is not a registered check: ${JSON.stringify(command)}`, () => {
+      const task = taskInReview({ checks: [CHK1, { ...CHK2, command }] });
+      const result = evaluateWithNoGap({ task, evidence: [passEvidence(CHK1), passEvidence({ ...CHK2, command })] });
+      expect(codes(result)).toContain("check_trivial");
+      // And it covers nothing, so ac2 is uncovered as well.
+      expect(codes(result)).toContain("criterion_uncovered");
+    });
+  }
+
+  it("B6 — evidence produced by a different command than the registered one", () => {
+    const forged = passEvidence(CHK2, { commandIdentity: { command: "true", cwd: ".", environmentHash: HASH } });
+    const result = evaluateWithNoGap({ evidence: [passEvidence(CHK1), forged] });
+    expect(codes(result)).toContain("command_identity_mismatch");
+    expect(result.checkStates).toContainEqual({ checkId: "chk2", state: "fail" });
+  });
+
+  it("B6.cwd — the same command run somewhere else is not the registered check", () => {
+    const forged = passEvidence(CHK2, {
+      commandIdentity: { command: CHK2.command, cwd: "vendor", environmentHash: HASH },
+    });
+    const result = evaluateWithNoGap({ evidence: [passEvidence(CHK1), forged] });
+    expect(codes(result)).toContain("command_identity_mismatch");
+  });
+
+  it("B7 — a review from the authoring attempt is not independent", () => {
+    const author = authorAttempt();
+    const review = passEvidence(CHK1, {
+      checkId: null,
+      commandIdentity: null,
+      reviewer: { kind: "model", model: "example-provider/example-model", attemptId: author.id },
+    });
+    const result = evaluateWithNoGap({
+      evidence: [passEvidence(CHK1), passEvidence(CHK2), review],
+      attempts: [author],
+      policy: policyNone({ modelReview: true }),
+    });
+    expect(codes(result)).toContain("review_not_independent");
+  });
+
+  it("B7.handoffChain — nor is a handoff of the authoring attempt", () => {
+    const author = authorAttempt();
+    const handoff = makeAttempt({
+      id: "at-handoff" as Attempt["id"],
+      taskId: TK,
+      taskRevision: 3,
+      role: "reviewer",
+      outcome: "succeeded",
+      handedOffFromAttemptId: author.id,
+    });
+    const review = passEvidence(CHK1, {
+      checkId: null,
+      commandIdentity: null,
+      reviewer: { kind: "model", model: "example-provider/example-model", attemptId: handoff.id },
+    });
+    const result = evaluateWithNoGap({
+      evidence: [passEvidence(CHK1), passEvidence(CHK2), review],
+      attempts: [author, handoff],
+      policy: policyNone({ modelReview: true }),
+    });
+    expect(codes(result)).toContain("review_not_independent");
+  });
+
+  it("B8 — a policy actor cannot supply a high-risk human approval", () => {
+    const approval = makeApproval({
+      actor: { kind: "policy", identity: "unattended-policy" },
+      scope: { kind: "task", taskId: TK },
+      taskRevision: 3,
+      planRevision: 1,
+      permittedAction: "complete_task",
+      riskClass: "high",
+    });
+    const result = evaluateWithNoGap({ task: taskInReview({ riskClass: "high" }), approvals: [approval] });
+    expect(codes(result)).toContain("approval_actor_not_user");
+  });
+
+  it("B8.scope — an approval scoped to another task does not count", () => {
+    const approval = makeApproval({
+      scope: { kind: "task", taskId: "tk-other" as TaskId },
+      taskRevision: 3,
+      planRevision: 1,
+      permittedAction: "complete_task",
+      riskClass: "high",
+    });
+    const result = evaluateWithNoGap({ task: taskInReview({ riskClass: "high" }), approvals: [approval] });
+    expect(codes(result)).toContain("approval_missing");
+  });
+
+  it("B8.planRevision — an approval from an older plan revision is invalid", () => {
+    const approval = makeApproval({
+      scope: { kind: "task", taskId: TK },
+      taskRevision: 3,
+      planRevision: 0,
+      permittedAction: "complete_task",
+      riskClass: "high",
+    });
+    const result = evaluateWithNoGap({ task: taskInReview({ riskClass: "high" }), approvals: [approval] });
+    expect(codes(result)).toContain("approval_invalid:plan_revision_changed");
+  });
+
+  it("B8.expired — an expired approval is invalid", () => {
+    const approval = makeApproval({
+      scope: { kind: "task", taskId: TK },
+      taskRevision: 3,
+      planRevision: 1,
+      permittedAction: "complete_task",
+      riskClass: "high",
+      expiresAt: "2025-01-01T00:00:00.000Z",
+    });
+    const result = evaluateWithNoGap({ task: taskInReview({ riskClass: "high" }), approvals: [approval] });
+    expect(codes(result)).toContain("approval_invalid:expired");
+  });
+
+  it("B8.consumed — a single-use approval cannot certify a second completion", () => {
+    const approval = makeApproval({
+      scope: { kind: "task", taskId: TK },
+      taskRevision: 3,
+      planRevision: 1,
+      permittedAction: "complete_task",
+      riskClass: "high",
+      invalidation: { reason: "consumed", at: AT, detail: null },
+    });
+    const result = evaluateWithNoGap({ task: taskInReview({ riskClass: "high" }), approvals: [approval] });
+    expect(codes(result)).toContain("approval_invalid:consumed");
+  });
+
+  it("B9 — required=false is reporting only, never an exemption", () => {
+    const task = taskInReview({ checks: [CHK1, { ...CHK2, required: false }] });
+    const result = evaluateWithNoGap({ task, evidence: [passEvidence(CHK1)] });
+    expect(codes(result)).toContain("check_missing");
+  });
+
+  it("B10 — Jev disabled with no decision row at all: absence is not a state", () => {
+    const input = buildInput({ jev: JEV_DISABLED });
+    const result = evaluateTaskGate({ ...input, decisions: [] });
+    expect(codes(result)).toEqual(["jev_decision_missing"]);
+    expect(result.pass).toBe(false);
+  });
+
+  it("B11 — fallback row present but a criterion has no passing evidence row", () => {
+    const input = buildInput({
+      jev: JEV_DISABLED,
+      evidence: [passEvidence(CHK1), passEvidence(CHK2, { requirementId: "ac1" })],
+    });
+    const result = evaluateTaskGate({ ...input, decisions: [fallbackDecision(input, "jev_disabled")] });
+    expect(codes(result)).toContain("fallback_coverage_gap");
+  });
+
+  it("B11.provenance — a check whose provenance touches no owned path fails DET_COVERAGE", () => {
+    const outside = passEvidence(CHK2, {
+      provenance: [
+        { revision: SHA, path: "vendor/other.ts", range: null, retrievalMethod: "explicit", contentHash: HASH },
+      ],
+    });
+    const input = buildInput({ jev: JEV_DISABLED, evidence: [passEvidence(CHK1), outside] });
+    const result = evaluateTaskGate({ ...input, decisions: [fallbackDecision(input, "jev_disabled")] });
+    const gap = result.reasons.find((r) => r.reasonCode === "fallback_coverage_gap");
+    expect(gap?.detail).toContain("ownership");
+  });
+
+  const presentedAsSuccess: { label: string; exitStatus: EvidenceExitStatus; code: string }[] = [
+    { label: "flaky", exitStatus: { kind: "flaky", runs: [0, 1] }, code: "check_flaky" },
+    { label: "timeout", exitStatus: { kind: "timed_out" }, code: "check_timeout" },
+    { label: "unavailable", exitStatus: { kind: "unavailable", reason: "command_not_found" }, code: "check_unavailable" },
+  ];
+  for (const { label, exitStatus, code } of presentedAsSuccess) {
+    it(`B12 — a ${label} result reported as "all green" is still refused`, () => {
+      const result = evaluateWithNoGap({ evidence: [passEvidence(CHK1), stateEvidence(CHK2, exitStatus)] });
+      expect(codes(result)).toContain(code);
+      expect(result.pass).toBe(false);
+    });
+  }
+});
