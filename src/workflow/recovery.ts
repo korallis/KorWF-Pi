@@ -40,6 +40,9 @@
 import type { FailureCategory, FailureClassification } from "./failure.ts";
 import type { StallEvent } from "./stall.ts";
 import type { RecoveryConfig, TerminalRecoveryResponse } from "../config/types.ts";
+import type { Store } from "../storage/db.ts";
+import type { RecoverySubjectKind } from "../storage/recovery-log.ts";
+import type { IsoTimestamp, WorkflowId } from "../storage/records.ts";
 
 // ---------------------------------------------------------------------------
 // the fixed menu
@@ -456,4 +459,234 @@ function ladderReason(
     `Failure classified ${category} by ${input.classification.rule}; at attempt ${input.attemptsUsed} the ` +
     `${category} ladder gives ${response}: ${RECOVERY_RESPONSE_DESCRIPTIONS[response]}${stall}`
   );
+}
+
+// ---------------------------------------------------------------------------
+// reconciling an uncertain outcome
+// ---------------------------------------------------------------------------
+
+/** Runs a declared probe. Read-only by contract; it must not repair anything. */
+export type ProbeRunner = (probe: ReconciliationProbe, step: RecoverableStep) => ProbeVerdict;
+
+/** What a probe reports. `throw` is treated as `unknown`, never as "not applied". */
+export interface ProbeVerdict {
+  readonly applied: boolean | "partial" | "unknown";
+  readonly detail: string;
+}
+
+/**
+ * Establish what happened to a step's effect, **before** any retry (AC2).
+ *
+ * The order matters and is not arbitrary:
+ *
+ * 1. A step with no side effect needs no reconciliation at all (`none`).
+ * 2. The #42 receipt is consulted first when the step names an `actionId`.
+ *    A receipt is a *fact*: the action completed, in this session or in the
+ *    one this conversation was forked from. No probe can overrule it, and
+ *    this module does not re-derive the idea of refusing a replay — it reads
+ *    the log that already does.
+ * 3. Only then is the declared probe run. A probe that throws yields
+ *    `unknown`, because a failed observation is not evidence of absence.
+ * 4. A side-effecting step with no receipt and no probe is `unknown`. There
+ *    is no fallback that assumes the effect did not land.
+ */
+export function reconcileStep(
+  step: RecoverableStep,
+  options: {
+    /** `true` when a completed-action receipt exists for `step.actionId` (#42). */
+    readonly hasReceipt?: (actionId: string) => boolean;
+    readonly runProbe?: ProbeRunner;
+  } = {},
+): ReconciliationOutcome {
+  if (!step.sideEffect) {
+    return Object.freeze({
+      status: "none" as const,
+      source: "no_side_effect" as const,
+      detail: `Step ${step.stepId} is declared free of side effects; there is nothing to reconcile.`,
+    });
+  }
+
+  const actionId = step.actionId ?? null;
+  if (actionId !== null && options.hasReceipt?.(actionId) === true) {
+    return Object.freeze({
+      status: "already_applied" as const,
+      source: "action_receipt" as const,
+      detail:
+        `A completed-action receipt exists for ${actionId} (src/storage/action-log.ts), so the effect of ` +
+        `${step.stepId} already happened. Re-running it would be a second effect.`,
+    });
+  }
+
+  const probe = step.reconciliationProbe ?? null;
+  if (probe === null || options.runProbe === undefined) {
+    return Object.freeze({
+      status: "unknown" as const,
+      source: "unreconciled" as const,
+      detail:
+        `Step ${step.stepId} is flagged as having side effects but declares ` +
+        `${probe === null ? "no reconciliation probe" : "a probe that no runner was supplied for"}, ` +
+        "so whether its effect landed cannot be established.",
+    });
+  }
+
+  let verdict: ProbeVerdict;
+  try {
+    verdict = options.runProbe(probe, step);
+  } catch (error) {
+    return Object.freeze({
+      status: "unknown" as const,
+      source: "probe" as const,
+      detail:
+        `Reconciliation probe ${probe.probeId} failed (${error instanceof Error ? error.name : "error"}); ` +
+        "a failed observation is not evidence that the effect did not land.",
+    });
+  }
+
+  const status: SideEffectStatus =
+    verdict.applied === true
+      ? "already_applied"
+      : verdict.applied === false
+        ? "not_applied"
+        : verdict.applied === "partial"
+          ? "partially_applied"
+          : "unknown";
+  return Object.freeze({
+    status,
+    source: "probe" as const,
+    detail: `Probe ${probe.probeId} (${probe.description}): ${verdict.detail}`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// the shell: reconcile, decide, audit
+// ---------------------------------------------------------------------------
+
+/** Per-response usage read back out of the recovery log for one subject. */
+export function usageFromLog(store: Store, subjectKind: RecoverySubjectKind, subjectId: string): ResponseUsage {
+  const usage: Partial<Record<RecoveryResponse, number>> = {};
+  for (const row of store.recoveries.forSubject(subjectKind, subjectId)) {
+    const response = row.response as RecoveryResponse;
+    if (!RECOVERY_RESPONSES.includes(response)) continue;
+    usage[response] = (usage[response] ?? 0) + 1;
+  }
+  return Object.freeze(usage);
+}
+
+export interface RecoverFromFailureOptions {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  readonly subjectKind: RecoverySubjectKind;
+  readonly subjectId: string;
+  readonly classification: FailureClassification;
+  readonly attemptsUsed: number;
+  readonly config: RecoveryConfig;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  readonly step?: RecoverableStep;
+  readonly runProbe?: ProbeRunner;
+  readonly stalls?: readonly StallEvent[];
+  /**
+   * Per-response usage. Omit to read it from the recovery log, which is what
+   * makes the per-response caps survive a resumed or forked session.
+   */
+  readonly usage?: ResponseUsage;
+}
+
+/** A decision together with the audit row that records it. */
+export interface RecordedRecovery {
+  readonly decision: RecoveryDecision;
+  readonly rowId: string;
+  readonly reconciliation: ReconciliationOutcome | null;
+}
+
+/**
+ * Reconcile, decide, and record — in that order (AC2, AC3).
+ *
+ * Reconciliation happens **before** `chooseRecovery` sees the input, so the
+ * decision is taken with the side-effect verdict already in hand rather than
+ * after committing to a retry. The audit row is written on *every* path,
+ * including the terminal ones: a recovery that stopped is exactly the
+ * decision someone will later need explained.
+ *
+ * The receipt lookup is `store.actions.isCompleted` (#42) — the same log that
+ * refuses a replay. There is no second idempotency mechanism here.
+ */
+export function recoverFromFailure(options: RecoverFromFailureOptions): RecordedRecovery {
+  const { store, config } = options;
+  const reconciliation =
+    options.step === undefined
+      ? null
+      : reconcileStep(options.step, {
+          hasReceipt: (actionId) => store.actions.isCompleted(actionId),
+          ...(options.runProbe === undefined ? {} : { runProbe: options.runProbe }),
+        });
+
+  const decision = chooseRecovery(
+    {
+      classification: options.classification,
+      attemptsUsed: options.attemptsUsed,
+      subjectKind: options.subjectKind,
+      usage: options.usage ?? usageFromLog(store, options.subjectKind, options.subjectId),
+      ...(options.step === undefined ? {} : { step: options.step }),
+      ...(reconciliation === null ? {} : { reconciliation }),
+      ...(options.stalls === undefined ? {} : { stalls: options.stalls }),
+    },
+    config,
+  );
+
+  const rowId = options.newId();
+  store.write(() => {
+    store.recoveries.insert({
+      decisionRowId: rowId,
+      createdAt: options.now(),
+      workflowId: options.workflowId,
+      subjectKind: options.subjectKind,
+      subjectId: options.subjectId,
+      attemptsUsed: decision.attemptsUsed,
+      maxAttempts: decision.maxAttempts,
+      failureCategory: decision.failureCategory,
+      failureRule: options.classification.rule,
+      response: decision.response,
+      policyRule: decision.policyRule,
+      reason: decision.reason,
+      terminal: decision.terminal,
+      sideEffectStatus: reconciliation?.status ?? null,
+      actionId: options.step?.actionId ?? null,
+    });
+  });
+
+  return { decision, rowId, reconciliation };
+}
+
+// ---------------------------------------------------------------------------
+// surfacing it
+// ---------------------------------------------------------------------------
+
+/** One line for the status widget / `/korwf why`. Never fabricated rationale. */
+export function describeRecovery(decision: RecoveryDecision): string {
+  return (
+    `${decision.response} (${decision.policyRule}) — attempt ${decision.attemptsUsed}/${decision.maxAttempts}, ` +
+    `${decision.failureCategory}: ${decision.reason}`
+  );
+}
+
+/**
+ * The whole remaining ladder for a subject, for a user asking "what happens
+ * if this keeps failing?".
+ *
+ * It terminates by construction: the loop is bounded by `maxAttempts`, and
+ * the last element is always terminal. A projection that could run forever
+ * would mean a policy that could run forever.
+ */
+export function projectRecovery(input: RecoveryInput, config: RecoveryConfig): readonly RecoveryDecision[] {
+  const out: RecoveryDecision[] = [];
+  const usage: Partial<Record<RecoveryResponse, number>> = { ...(input.usage ?? {}) };
+  const maxAttempts = maxAttemptsFor(input.subjectKind, config);
+  for (let attempt = input.attemptsUsed; attempt <= maxAttempts; attempt += 1) {
+    const decision = chooseRecovery({ ...input, attemptsUsed: attempt, usage: Object.freeze({ ...usage }) }, config);
+    out.push(decision);
+    if (decision.terminal) break;
+    usage[decision.response] = (usage[decision.response] ?? 0) + 1;
+  }
+  return Object.freeze(out);
 }

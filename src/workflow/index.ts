@@ -20,6 +20,8 @@
  * - `failure.ts` / `stall.ts` — the PLAN §3.G failure taxonomy (deterministic rules first,
  *   `unknown` asks for evidence, truncation folded in from #124 as the `harness` category)
  *   and stall/scope-drift detection over the attempt stream (#52).
+ * - `recovery.ts` — bounded recovery policies chosen from that taxonomy, and side-effect
+ *   reconciliation (over #42's receipts) before any retry (#53).
  *
  * **Re-export style: `export *`, deliberately.** This barrel previously listed every symbol
  * explicitly, which made it a guaranteed merge conflict: four consecutive PRs (#37, #38,
@@ -47,6 +49,7 @@ export * from "./plan-parse.ts";
 export * from "./plan-schema.ts";
 export * from "./plan-store.ts";
 export * from "./reconcile.ts";
+export * from "./recovery.ts";
 export * from "./planner.ts";
 export * from "./scope-change.ts";
 export * from "./state.ts";
