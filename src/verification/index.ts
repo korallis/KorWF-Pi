@@ -15,3 +15,4 @@ export * from "./checks.ts";
 export * from "./evidence.ts";
 export * from "./flaky.ts";
 export * from "./task-gate.ts";
+export * from "./invalidate.ts";
