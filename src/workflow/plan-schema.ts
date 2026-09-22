@@ -789,3 +789,80 @@ export function taskReadiness(task: Pick<PlanTask, "id" | "checks">): TaskReadin
 export function hasRegisteredChecks(checks: readonly CheckDefinition[]): boolean {
   return checks.length > 0;
 }
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate an arbitrary parsed value as a `PlanDocument`.
+ *
+ * Collects **every** finding rather than stopping at the first, so a retry
+ * prompt can tell the planner about all of its mistakes at once. Returns a
+ * result object; never throws on planner output.
+ */
+export function validatePlanDocument(raw: unknown): PlanValidation {
+  const bag = new IssueBag();
+  if (!isRecord(raw)) {
+    bag.error("type", "", `expected a plan object, got ${typeName(raw)}`);
+    return { ok: false, errors: bag.errors, warnings: bag.warnings };
+  }
+
+  const versionRaw = raw["schemaVersion"];
+  const schemaVersion = versionRaw === undefined ? PLAN_SCHEMA_VERSION : requireInteger(bag, versionRaw, "schemaVersion");
+  if (schemaVersion !== null && schemaVersion !== PLAN_SCHEMA_VERSION) {
+    bag.error(
+      "range",
+      "schemaVersion",
+      `unsupported plan schema version ${schemaVersion}; this build understands ${PLAN_SCHEMA_VERSION}`,
+    );
+  }
+
+  const architectureSummary = requireString(bag, raw["architectureSummary"], "architectureSummary");
+  const phases = validatePhases(bag, raw["phases"]);
+  const phaseIds = new Set(phases.map((p) => p.id));
+  const tasks = validateTasks(bag, raw["tasks"], phaseIds);
+
+  const openQuestionsRaw = raw["openQuestions"];
+  let openQuestions: string[] | undefined;
+  if (openQuestionsRaw !== undefined) {
+    const items = requireArray(bag, openQuestionsRaw, "openQuestions");
+    if (items !== null) {
+      openQuestions = [];
+      items.forEach((q, i) => {
+        if (typeof q !== "string") bag.error("type", `openQuestions[${i}]`, `expected string, got ${typeName(q)}`);
+        else openQuestions?.push(q);
+      });
+    }
+  }
+
+  // Phases with no tasks are a planning mistake worth surfacing, not a reason
+  // to discard the document.
+  for (const [i, phase] of phases.entries()) {
+    if (!tasks.some((t) => t.phaseId === phase.id)) {
+      bag.warn("range", `phases[${i}]`, `phase "${phase.id}" has no tasks`);
+    }
+  }
+
+  const graph = validateDependencyGraph(tasks, phases);
+  bag.errors.push(...graph.errors);
+  bag.warnings.push(...ownershipOverlaps(tasks));
+
+  if (!bag.ok) return { ok: false, errors: bag.errors, warnings: bag.warnings };
+
+  const plan: PlanDocument = {
+    schemaVersion: PLAN_SCHEMA_VERSION,
+    architectureSummary: architectureSummary as string,
+    phases: [...phases].sort((a, b) => a.order - b.order),
+    tasks,
+    ...(openQuestions === undefined ? {} : { openQuestions }),
+  };
+  return { ok: true, plan, warnings: bag.warnings };
+}
+
+/** Render findings as one path-qualified line each, for a message or a retry prompt. */
+export function formatPlanIssues(issues: readonly PlanIssue[]): string {
+  return issues
+    .map((issue) => `  ${issue.severity === "error" ? "!" : "~"} ${issue.path === "" ? "<root>" : issue.path}: ${issue.message} [${issue.rule}]`)
+    .join("\n");
+}
