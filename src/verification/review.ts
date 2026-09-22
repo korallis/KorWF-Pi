@@ -195,3 +195,177 @@ export function assertClaimFree(prompt: string, claims: readonly string[]): void
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Findings and dispositions
+// ---------------------------------------------------------------------------
+
+/** What the reviewer returns, before Jev grades it. Untrusted structured text. */
+export interface RawFinding {
+  readonly id: string;
+  readonly path: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  readonly description: string;
+  /** The reviewer's own opinion of severity; normalised on ingest. */
+  readonly suggestedSeverity: string;
+  /** Acceptance criterion the finding bears on, when it names one. */
+  readonly criterionId: string | null;
+}
+
+/**
+ * What the user or policy decided to do about a finding (issue #48 Scope).
+ *
+ * `open` is the initial state and is deliberately included: a finding with no
+ * decision yet is not "accepted", and the gate must see the difference.
+ */
+export type FindingDisposition = "open" | "fix" | "accept_with_reason" | "reject";
+
+export const FINDING_DISPOSITIONS: readonly FindingDisposition[] = Object.freeze([
+  "open",
+  "fix",
+  "accept_with_reason",
+  "reject",
+]);
+
+/**
+ * A finding after grading and disposition.
+ *
+ * `severity` is the *effective* severity: Jev's answer when it answered and
+ * did not soften a reviewer blocker, otherwise the reviewer's suggestion.
+ * Both are kept, because "Jev downgraded this" is exactly the thing an audit
+ * needs to see.
+ */
+export interface ReviewFinding {
+  readonly id: string;
+  readonly location: { readonly path: string; readonly startLine: number; readonly endLine: number };
+  readonly description: string;
+  readonly suggestedSeverity: ReviewSeverity;
+  readonly severity: ReviewSeverity;
+  /** `"jev"` when the graded severity came from a validated Jev answer. */
+  readonly severitySource: "jev" | "reviewer";
+  readonly criterionId: string | null;
+  readonly disposition: FindingDisposition;
+  /** Required for `accept_with_reason` and `reject`; `null` otherwise. */
+  readonly dispositionReason: string | null;
+  /** Who dispositioned it. A `policy` actor can never clear a blocker. */
+  readonly dispositionBy: { readonly kind: "user" | "policy"; readonly identity: string } | null;
+  /** `Decision.id` of the `review.severity@1` row, when one was written. */
+  readonly severityDecisionId: string | null;
+}
+
+/** Normalise a raw reviewer finding; an unknown severity stays `unknown`. */
+export function ingestFinding(raw: RawFinding): ReviewFinding {
+  const suggested = normaliseSeverity(raw.suggestedSeverity);
+  return {
+    id: raw.id,
+    location: { path: raw.path, startLine: raw.startLine, endLine: raw.endLine },
+    description: raw.description,
+    suggestedSeverity: suggested,
+    severity: suggested,
+    severitySource: "reviewer",
+    criterionId: raw.criterionId,
+    disposition: "open",
+    dispositionReason: null,
+    dispositionBy: null,
+    severityDecisionId: null,
+  };
+}
+
+/**
+ * Apply a graded severity to a finding.
+ *
+ * **Jev may raise a severity but never lower a reviewer's `blocker`.** PLAN
+ * §2.4 says Jev cannot waive condition 3; a severity downgrade from `blocker`
+ * to `nit` on a Jev answer alone would be exactly that waiver wearing a
+ * different name. Lowering a blocker is a *disposition* — a human act with a
+ * recorded reason — not a scoring outcome.
+ */
+export function applyGradedSeverity(
+  finding: ReviewFinding,
+  graded: { readonly severity: ReviewSeverity; readonly source: "jev" | "fallback"; readonly decisionId: string | null },
+): ReviewFinding {
+  const fromJev = graded.source === "jev";
+  const wouldSoftenBlocker = finding.suggestedSeverity === "blocker" && graded.severity !== "blocker";
+  const severity = !fromJev || wouldSoftenBlocker ? finding.suggestedSeverity : graded.severity;
+  return {
+    ...finding,
+    severity,
+    severitySource: severity === graded.severity && fromJev ? "jev" : "reviewer",
+    severityDecisionId: graded.decisionId,
+  };
+}
+
+/** Raised when a disposition is not a usable record. */
+export class DispositionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DispositionError";
+  }
+}
+
+/**
+ * Record a disposition against a finding.
+ *
+ * Two rules, both structural:
+ *
+ * - `accept_with_reason` and `reject` need a non-empty reason. "Accepted"
+ *   with no reason is indistinguishable from "ignored", and an audit cannot
+ *   tell them apart later.
+ * - A **blocking** finding can only be accepted or rejected by a `user`.
+ *   Policy may dispose of a nit; it may not decide that a blocker does not
+ *   matter, because that is the decision the human-approval class exists for
+ *   (`src/workflow/approvals.ts`, #49).
+ */
+export function disposeFinding(
+  finding: ReviewFinding,
+  disposition: FindingDisposition,
+  by: { readonly kind: "user" | "policy"; readonly identity: string },
+  reason: string | null = null,
+): ReviewFinding {
+  if (disposition === "open") {
+    throw new DispositionError("`open` is the initial state and cannot be applied as a disposition");
+  }
+  const needsReason = disposition === "accept_with_reason" || disposition === "reject";
+  if (needsReason && (reason === null || reason.trim().length === 0)) {
+    throw new DispositionError(`disposition ${disposition} on finding ${finding.id} requires a reason`);
+  }
+  if (needsReason && by.kind !== "user" && isBlockingSeverity(finding.severity)) {
+    throw new DispositionError(
+      `finding ${finding.id} is ${finding.severity}: only a user may ${disposition} it, not policy actor ${by.identity}`,
+    );
+  }
+  return { ...finding, disposition, dispositionReason: reason, dispositionBy: by };
+}
+
+/**
+ * Severities that block the gate. `unknown` is blocking on purpose: an
+ * ungradable finding is an open question, and PLAN §2.4's whole point is that
+ * an open question is not a pass.
+ */
+export function isBlockingSeverity(severity: ReviewSeverity): boolean {
+  return severity === "blocker" || severity === "unknown";
+}
+
+/**
+ * Is this finding still holding the gate?
+ *
+ * A blocking finding is unresolved unless it was explicitly accepted or
+ * rejected by a user with a reason. `fix` does **not** resolve it: a claimed
+ * fix is a claim, and the only thing that clears it is a recheck at a newer
+ * revision (`recheckOutcome`).
+ */
+export function isUnresolvedBlocking(finding: ReviewFinding): boolean {
+  if (!isBlockingSeverity(finding.severity)) return false;
+  return !(
+    (finding.disposition === "accept_with_reason" || finding.disposition === "reject") &&
+    finding.dispositionBy?.kind === "user"
+  );
+}
+
+/** Every unresolved blocking finding, most severe first then by id. */
+export function blockingFindings(findings: readonly ReviewFinding[]): readonly ReviewFinding[] {
+  return [...findings]
+    .filter(isUnresolvedBlocking)
+    .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.id.localeCompare(b.id));
+}
