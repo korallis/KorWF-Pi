@@ -311,6 +311,37 @@ export interface RecoveryConfig {
 }
 
 // ---------------------------------------------------------------------------
+// verification
+// ---------------------------------------------------------------------------
+
+/**
+ * Thresholds for one risk class (issue #47). Every field is optional: an
+ * omitted field keeps the shipped default, and a present field may only make
+ * the threshold **stricter**. `src/verification/evaluate.ts` enforces that
+ * direction in code, so a config that tries to lower a floor is ignored on
+ * that field rather than obeyed.
+ */
+export interface VerificationThresholdsConfig {
+  readonly claimConfidence?: number;
+  readonly gapCeiling?: number;
+  readonly testExercisesMinLevel?: number;
+  readonly requireExercisingTest?: boolean;
+}
+
+/**
+ * `verification` — the evidence-gap evaluators (PLAN §2.4 (2), §3.F).
+ *
+ * These are condition 2 of the task gate. Nothing here can waive condition 1
+ * or 3: the gate computes those from `Evidence`, `Approval` and
+ * `CheckDefinition` rows and reads no `Decision` at all.
+ */
+export interface VerificationConfig {
+  readonly thresholds: Readonly<Record<RiskClass, VerificationThresholdsConfig>>;
+  /** Largest excerpt the evaluator puts into a question state, in bytes. */
+  readonly maxExcerptBytes: number;
+}
+
+// ---------------------------------------------------------------------------
 // root
 // ---------------------------------------------------------------------------
 
@@ -327,6 +358,7 @@ export interface KorwfConfig {
   readonly notifications: NotificationsConfig;
   readonly storage: StorageConfig;
   readonly recovery: RecoveryConfig;
+  readonly verification: VerificationConfig;
 }
 
 /** Raw user input as read from the config file. `{}` is valid. */
@@ -344,4 +376,5 @@ export const CONFIG_SECTIONS = [
   "notifications",
   "storage",
   "recovery",
+  "verification",
 ] as const satisfies readonly (keyof KorwfConfig)[];

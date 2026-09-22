@@ -40,6 +40,7 @@ import {
   type EvidenceSummary,
 } from "../decisions/questions/verify.ts";
 import { FALLBACK_USAGE, UNPRICED_JEV_USAGE } from "../decisions/record.ts";
+import type { VerificationConfig, VerificationThresholdsConfig } from "../config/types.ts";
 import { RECORDS_SCHEMA_VERSION, type Decision, type RiskClass, type TaskId } from "../storage/records.ts";
 // The gate owns the question id; importing it means the writer and the reader
 // cannot drift apart into two rows that never match.
@@ -112,7 +113,7 @@ export const DEFAULT_EVALUATOR_THRESHOLDS: Readonly<Record<RiskClass, EvaluatorT
  */
 export function thresholdsFor(
   riskClass: RiskClass,
-  overrides?: Partial<Record<RiskClass, Partial<EvaluatorThresholds>>>,
+  overrides?: Partial<Record<RiskClass, VerificationThresholdsConfig>>,
 ): EvaluatorThresholds {
   const base = DEFAULT_EVALUATOR_THRESHOLDS[riskClass];
   const over = overrides?.[riskClass];
@@ -123,6 +124,21 @@ export function thresholdsFor(
     testExercisesMinLevel: Math.max(base.testExercisesMinLevel, over.testExercisesMinLevel ?? base.testExercisesMinLevel),
     requireExercisingTest: base.requireExercisingTest || (over.requireExercisingTest ?? false),
   });
+}
+
+/**
+ * `EvaluateOptions` from the resolved `verification` config section.
+ *
+ * Config supplies thresholds and the excerpt ceiling; it supplies nothing
+ * that could turn a gap into a pass, because there is no such key. The
+ * ceiling is applied by the caller when it builds the input, and again by
+ * the questions themselves (`clampExcerpt`), and a third time by the
+ * outbound policy (#28) — three independent caps, none of them the only one.
+ */
+export function optionsFromConfig(
+  config: Pick<VerificationConfig, "thresholds">,
+): Pick<EvaluateOptions, "thresholds"> {
+  return { thresholds: config.thresholds };
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +352,7 @@ export interface EvaluateOptions {
   /** Omit to run the deterministic mapping rule only (no key, no transport). */
   readonly ctx?: AskContext;
   /** Per-risk-class threshold overrides; may only make a floor stricter. */
-  readonly thresholds?: Partial<Record<RiskClass, Partial<EvaluatorThresholds>>>;
+  readonly thresholds?: Partial<Record<RiskClass, VerificationThresholdsConfig>>;
   /** Recorded on every Decision this evaluation writes. */
   readonly subject?: { readonly taskId: string; readonly taskRevision: number };
 }

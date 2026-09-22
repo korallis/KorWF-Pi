@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://korwf.dev/schema/config/v1.json",
   "title": "KorWF-Pi configuration",
-  "description": "All user-facing policy for KorWF-Pi (PLAN §3.J). Every field has a default; an empty object `{}` is a valid, working, no-Jev configuration. Cross-field rules that JSON Schema cannot express are listed in docs/config-reference.md §Validation rules and enforced by src/config validation.",
+  "description": "All user-facing policy for KorWF-Pi (PLAN \u00a73.J). Every field has a default; an empty object `{}` is a valid, working, no-Jev configuration. Cross-field rules that JSON Schema cannot express are listed in docs/config-reference.md \u00a7Validation rules and enforced by src/config validation.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -54,6 +54,10 @@
     "recovery": {
       "$ref": "#/$defs/Recovery",
       "default": {}
+    },
+    "verification": {
+      "$ref": "#/$defs/Verification",
+      "default": {}
     }
   },
   "$defs": {
@@ -78,7 +82,7 @@
           "type": "object",
           "additionalProperties": false,
           "default": {},
-          "description": "Optional filter over the models Pi already has configured (PLAN §3.D). Empty lists mean 'all configured'. The system never uses a provider or model outside this list.",
+          "description": "Optional filter over the models Pi already has configured (PLAN \u00a73.D). Empty lists mean 'all configured'. The system never uses a provider or model outside this list.",
           "properties": {
             "providers": {
               "type": "array",
@@ -102,7 +106,7 @@
             "pins": {
               "type": "object",
               "default": {},
-              "description": "Task kind → model ref. A pinned model is never overridden by fallback without asking (PLAN §3.D).",
+              "description": "Task kind \u2192 model ref. A pinned model is never overridden by fallback without asking (PLAN \u00a73.D).",
               "propertyNames": {
                 "$ref": "#/$defs/TaskKind"
               },
@@ -115,7 +119,7 @@
         "overrides": {
           "type": "object",
           "default": {},
-          "description": "Per-model card overrides (PLAN §3.D layer 3). Keys are model refs.",
+          "description": "Per-model card overrides (PLAN \u00a73.D layer 3). Keys are model refs.",
           "propertyNames": {
             "$ref": "#/$defs/ModelRef"
           },
@@ -183,7 +187,7 @@
     "Budgets": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Hard-stop caps (PLAN §2.6). Exceeding any cap stops the scope and surfaces a resumable state. Task <= phase <= workflow is enforced by the validator when both are non-null.",
+      "description": "Hard-stop caps (PLAN \u00a72.6). Exceeding any cap stops the scope and surfaces a resumable state. Task <= phase <= workflow is enforced by the validator when both are non-null.",
       "properties": {
         "workflow": {
           "$ref": "#/$defs/BudgetCaps",
@@ -229,7 +233,7 @@
         "costEstimateBeforeRun": {
           "type": "boolean",
           "default": true,
-          "description": "Show a cost estimate and require confirmation before `run` begins (PLAN §2.6)."
+          "description": "Show a cost estimate and require confirmation before `run` begins (PLAN \u00a72.6)."
         }
       }
     },
@@ -250,7 +254,7 @@
         "queue",
         "stop"
       ],
-      "description": "PLAN §2.6: auto = pre-approved for the mode; queue = block this task, continue others, notify; stop = stop the phase and wait for the user."
+      "description": "PLAN \u00a72.6: auto = pre-approved for the mode; queue = block this task, continue others, notify; stop = stop the phase and wait for the user."
     },
     "ApprovalPolicyPerMode": {
       "type": "object",
@@ -279,7 +283,7 @@
     "HighRiskPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "High-risk classes (PLAN §7) are `stop` in every mode; the schema forbids any other value so config cannot weaken it.",
+      "description": "High-risk classes (PLAN \u00a77) are `stop` in every mode; the schema forbids any other value so config cannot weaken it.",
       "properties": {
         "shadow": {
           "const": "stop"
@@ -298,7 +302,7 @@
     "NoAutoPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Classes that may be `queue` or `stop` but never `auto` in any mode (PLAN §3.C: no silent scope expansion). Not PLAN §7 high-risk, so `queue` is allowed.",
+      "description": "Classes that may be `queue` or `stop` but never `auto` in any mode (PLAN \u00a73.C: no silent scope expansion). Not PLAN \u00a77 high-risk, so `queue` is allowed.",
       "required": [
         "shadow",
         "advisory",
@@ -346,7 +350,7 @@
           "type": "object",
           "additionalProperties": false,
           "default": {},
-          "description": "Action class → decision per mode (docs/approval-classes.md, src/workflow/approval-classes.ts). Configurable classes accept any decision (validator V4 still forbids `auto` for mutation classes in shadow/advisory); `scope_change`/`replan` are never `auto`; high-risk classes (PLAN §7) are fixed to `stop`.",
+          "description": "Action class \u2192 decision per mode (docs/approval-classes.md, src/workflow/approval-classes.ts). Configurable classes accept any decision (validator V4 still forbids `auto` for mutation classes in shadow/advisory); `scope_change`/`replan` are never `auto`; high-risk classes (PLAN \u00a77) are fixed to `stop`.",
           "properties": {
             "read_repository": {
               "$ref": "#/$defs/ApprovalPolicyPerMode",
@@ -597,7 +601,7 @@
     },
     "ShippedDenyPaths": {
       "type": "array",
-      "description": "Shipped minimum deny list of path globs (PLAN §7). `privacy.denyPaths` MUST contain every entry; the `allOf`/`contains` constraints below enforce it in-schema.",
+      "description": "Shipped minimum deny list of path globs (PLAN \u00a77). `privacy.denyPaths` MUST contain every entry; the `allOf`/`contains` constraints below enforce it in-schema.",
       "const": [
         "**/.env",
         "**/.env.*",
@@ -660,7 +664,7 @@
     "Privacy": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Data policy (PLAN §7). Default-deny outbound for secrets and sensitive paths; minimal snippets; raw logging opt-in.",
+      "description": "Data policy (PLAN \u00a77). Default-deny outbound for secrets and sensitive paths; minimal snippets; raw logging opt-in.",
       "properties": {
         "denyPaths": {
           "type": "array",
@@ -1036,7 +1040,7 @@
           "type": "object",
           "additionalProperties": false,
           "default": {},
-          "description": "Opt-in raw request/response payload logging (PLAN §7). Off by default.",
+          "description": "Opt-in raw request/response payload logging (PLAN \u00a77). Off by default.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -1069,19 +1073,19 @@
         "handoff",
         "restart"
       ],
-      "description": "On a cap mid-task: hand off with an explicit handoff packet and intact worktree, or restart the task (PLAN §3.D)."
+      "description": "On a cap mid-task: hand off with an explicit handoff packet and intact worktree, or restart the task (PLAN \u00a73.D)."
     },
     "Fallback": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Caps and fallback (PLAN §3.D). Applies when a model is capped (quota, rate limit, budget) or unavailable.",
+      "description": "Caps and fallback (PLAN \u00a73.D). Applies when a model is capped (quota, rate limit, budget) or unavailable.",
       "properties": {
         "midTaskPolicy": {
           "type": "object",
           "default": {
             "default": "handoff"
           },
-          "description": "Task kind → mid-task policy. `default` is required and covers unlisted kinds.",
+          "description": "Task kind \u2192 mid-task policy. `default` is required and covers unlisted kinds.",
           "propertyNames": {
             "$ref": "#/$defs/TaskKind"
           },
@@ -1136,7 +1140,7 @@
           "type": "string",
           "const": "pause_phase",
           "default": "pause_phase",
-          "description": "All candidates capped → pause the phase, surface state, resume when a cap clears. Not a failure. Fixed."
+          "description": "All candidates capped \u2192 pause the phase, surface state, resume when a cap clears. Not a failure. Fixed."
         },
         "overridePins": {
           "type": "boolean",
@@ -1244,7 +1248,7 @@
     "Notifications": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Notification hooks (PLAN §2.6). Only the in-Pi channel is on by default; nothing leaves the machine unless configured.",
+      "description": "Notification hooks (PLAN \u00a72.6). Only the in-Pi channel is on by default; nothing leaves the machine unless configured.",
       "properties": {
         "events": {
           "type": "array",
@@ -1387,7 +1391,7 @@
     "Recovery": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Bounded recovery policy (PLAN §3.G). Every response is drawn from a fixed menu and every count is capped; the last response is always `ask_user` or `stop`.",
+      "description": "Bounded recovery policy (PLAN \u00a73.G). Every response is drawn from a fixed menu and every count is capped; the last response is always `ask_user` or `stop`.",
       "properties": {
         "maxAttemptsPerTask": {
           "type": "integer",
@@ -1422,7 +1426,7 @@
           "minimum": 0,
           "maximum": 3,
           "default": 1,
-          "description": "How often `fallback_model` may be chosen for one subject. The route itself is chosen by `fallback` (PLAN §3.D), not here."
+          "description": "How often `fallback_model` may be chosen for one subject. The route itself is chosen by `fallback` (PLAN \u00a73.D), not here."
         },
         "maxWorkerChanges": {
           "type": "integer",
@@ -1435,7 +1439,7 @@
           "type": "boolean",
           "const": true,
           "default": true,
-          "description": "A step that may have had side effects is never retried until its outcome is reconciled. Fixed true: PLAN §3.G, and a config that could switch it off would be a way to permit a double effect."
+          "description": "A step that may have had side effects is never retried until its outcome is reconciled. Fixed true: PLAN \u00a73.G, and a config that could switch it off would be a way to permit a double effect."
         },
         "unreconcilableSideEffect": {
           "type": "string",
@@ -1454,6 +1458,118 @@
           ],
           "default": "ask_user",
           "description": "Response once the ladder is exhausted. Both options are terminal; unattended runs that must not queue a question set `stop`."
+        }
+      }
+    },
+    "Verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Evidence-gap evaluators (PLAN \u00a72.4 (2), \u00a73.F; issue #47). Condition 2 of the task gate. Defaults are conservative and an override may only make a threshold stricter \u2014 a config that tries to lower a floor is ignored on that field, so a bad value can never open the gate. With Jev disabled the mapping rule still applies: every acceptance criterion needs at least one linked passing check and one passing evidence item.",
+      "properties": {
+        "thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "description": "Per-risk-class threshold overrides. Omitted classes use the shipped defaults in `src/verification/evaluate.ts`.",
+          "properties": {
+            "low": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Thresholds for one risk class. Every value is a floor or a ceiling; `src/verification/evaluate.ts` may only tighten them, never loosen them.",
+              "properties": {
+                "claimConfidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Minimum confidence for a `supported` completion-claim answer to count. Below it the answer is an abstention, and an abstention is a gap."
+                },
+                "gapCeiling": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Highest probability-of-gap that still counts as `no gap`. A noul near the middle is not evidence of absence."
+                },
+                "testExercisesMinLevel": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3,
+                  "description": "Lowest `verify.test_exercises@1` level that credits a test as exercising the criterion."
+                },
+                "requireExercisingTest": {
+                  "type": "boolean",
+                  "description": "Whether a criterion whose linked tests are all below the level floor is a gap on its own."
+                }
+              }
+            },
+            "medium": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Thresholds for one risk class. Every value is a floor or a ceiling; `src/verification/evaluate.ts` may only tighten them, never loosen them.",
+              "properties": {
+                "claimConfidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Minimum confidence for a `supported` completion-claim answer to count. Below it the answer is an abstention, and an abstention is a gap."
+                },
+                "gapCeiling": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Highest probability-of-gap that still counts as `no gap`. A noul near the middle is not evidence of absence."
+                },
+                "testExercisesMinLevel": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3,
+                  "description": "Lowest `verify.test_exercises@1` level that credits a test as exercising the criterion."
+                },
+                "requireExercisingTest": {
+                  "type": "boolean",
+                  "description": "Whether a criterion whose linked tests are all below the level floor is a gap on its own."
+                }
+              }
+            },
+            "high": {
+              "type": "object",
+              "additionalProperties": false,
+              "default": {},
+              "description": "Thresholds for one risk class. Every value is a floor or a ceiling; `src/verification/evaluate.ts` may only tighten them, never loosen them.",
+              "properties": {
+                "claimConfidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Minimum confidence for a `supported` completion-claim answer to count. Below it the answer is an abstention, and an abstention is a gap."
+                },
+                "gapCeiling": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "Highest probability-of-gap that still counts as `no gap`. A noul near the middle is not evidence of absence."
+                },
+                "testExercisesMinLevel": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3,
+                  "description": "Lowest `verify.test_exercises@1` level that credits a test as exercising the criterion."
+                },
+                "requireExercisingTest": {
+                  "type": "boolean",
+                  "description": "Whether a criterion whose linked tests are all below the level floor is a gap on its own."
+                }
+              }
+            }
+          }
+        },
+        "maxExcerptBytes": {
+          "type": "integer",
+          "minimum": 200,
+          "maximum": 20000,
+          "default": 2000,
+          "description": "Largest test-file or evidence excerpt put into a question state. `privacy.outbound` caps again afterwards; this is the evaluator's own ceiling so the full diff is never the input."
         }
       }
     }
