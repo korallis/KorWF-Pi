@@ -14,6 +14,9 @@
  *   ADR 0004 RPC event stream, per-worker limit predicates, and the
  *   `WorkerRun` supervisor that reserves against the #30 ledger, captures
  *   artifacts and drives pause/resume/cancel (#71).
+ * - `handoff.ts` — mid-task cap response: intact-worktree handoff (default)
+ *   or restart to the last checkpoint, per `models.fallback.midTaskPolicy`
+ *   task-kind policy (#64).
  *
  * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
  * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
@@ -33,3 +36,4 @@ export * from "./tool-gate.ts";
 export * from "./progress.ts";
 export * from "./limits.ts";
 export * from "./lifecycle.ts";
+export * from "./handoff.ts";
