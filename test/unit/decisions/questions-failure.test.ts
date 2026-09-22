@@ -38,7 +38,7 @@ describe("AC1 failure.classify@1", () => {
   });
 
   it("AC1 offers exactly the taxonomy categories as options", () => {
-    const question = failureClassifyQuestion.buildQuestion(FAILURE_STATE);
+    const question = failureClassifyQuestion.buildQuestion();
     const options = question.type === "choice" ? Object.keys(question.criteria) : [];
     expect(options.sort()).toEqual([...FAILURE_CATEGORIES].sort());
   });
@@ -51,7 +51,7 @@ describe("AC1 failure.classify@1", () => {
 
   it("AC1 an out-of-band choice is coerced to unknown, never to a guess", () => {
     const interpreted = failureClassifyQuestion.interpret(
-      { type: "choice", choice: "cosmic_rays", confidence: 0.99 },
+      { type: "choice", choice: "cosmic_rays", confidence: 0.99, probabilities: { cosmic_rays: 0.99 } },
       FAILURE_STATE,
     );
     expect(interpreted?.value).toBe("unknown");
@@ -83,7 +83,7 @@ describe("AC2 stall.repeated_approach@1", () => {
 
   it("AC2 an unrecognised choice becomes unknown, not repeated", () => {
     const interpreted = stallRepeatedApproachQuestion.interpret(
-      { type: "choice", choice: "maybe", confidence: 0.9 },
+      { type: "choice", choice: "maybe", confidence: 0.9, probabilities: { maybe: 0.9 } },
       APPROACH_STATE,
     );
     expect(interpreted?.value).toBe("unknown");
