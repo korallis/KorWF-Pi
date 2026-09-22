@@ -419,3 +419,27 @@ describe("AC2 thresholds per risk class are conservative and cannot be weakened"
     expect(tightened.requireExercisingTest).toBe(true);
   });
 });
+
+describe("AC2 the verification config section feeds the evaluator", () => {
+  it("AC2 shipped defaults resolve and cannot loosen any floor", async () => {
+    const { shippedDefaults } = await import("../../../src/config/defaults.ts");
+    const { optionsFromConfig } = await import("../../../src/verification/evaluate.ts");
+    const config = shippedDefaults().verification;
+    expect(config.maxExcerptBytes).toBe(2000);
+    // Every class is present and empty, i.e. "use the shipped defaults".
+    expect(Object.keys(config.thresholds).sort()).toEqual(["high", "low", "medium"]);
+    const options = optionsFromConfig(config);
+    expect(thresholdsFor("high", options.thresholds)).toEqual(DEFAULT_EVALUATOR_THRESHOLDS.high);
+  });
+
+  it("AC2 a project config that tries to loosen the high class is ignored on those fields", async () => {
+    const { optionsFromConfig } = await import("../../../src/verification/evaluate.ts");
+    const options = optionsFromConfig({
+      thresholds: { low: {}, medium: {}, high: { claimConfidence: 0, gapCeiling: 1, testExercisesMinLevel: 0 } },
+    });
+    const ctx = ctxWith({ claim: claimAnswer("supported", 0.62), gap: { type: "noul", noul: 0.9 }, test: testAnswer(0) });
+    const result = await evaluateEvidenceGap(scenario3({ riskClass: "high" }), { ctx, ...options });
+    expect(result.action).toBe("gap");
+    expect(result.thresholds).toEqual(DEFAULT_EVALUATOR_THRESHOLDS.high);
+  });
+});
