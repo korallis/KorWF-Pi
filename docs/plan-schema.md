@@ -136,6 +136,12 @@ cannot be produced in one turn as planned, together with concrete write-then-edi
 plans. An unreported `maxTokens` is treated as the conservative floor — unreported is
 not unlimited. See [output-budget.md](output-budget.md).
 
+Pass that list to `persistPlan` as `outputBudgetBlocked` and those tasks are persisted
+`proposed` with the blocker `output_budget`: a worker dispatched on one would be cut off
+before its tool call was emitted and would write nothing, so it must be split first.
+`no_checks` takes precedence — a task with neither checks nor a feasible size needs
+checks before anything else.
+
 ## 6. Persistence and revisions
 
 `plan-store.ts` writes the document into `Phase` and `Task` records
