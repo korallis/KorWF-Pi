@@ -38,7 +38,8 @@ export type FallbackDecision =
       readonly kind: "switch";
       readonly requestedModel: ModelRef;
       readonly usedModel: ModelRef;
-      readonly fallbackReason: FallbackReason;
+      /** `null` when the switch recovers to the primary (`usedModel === requestedModel`). */
+      readonly fallbackReason: FallbackReason | null;
       readonly rationale: string;
       readonly decisionId: string | null;
     }
@@ -66,6 +67,16 @@ export interface ChooseFallbackParams {
   /** Optional relative-cost comparator; `null` = unknown. When omitted, prefer-wait applies conservatively. */
   readonly costOf?: (ref: ModelRef) => number | null;
   readonly recorder?: DecisionRecorder;
+  /**
+   * Is this call happening at a task boundary (task start), or mid-task
+   * (#65; PLAN §3.D "Recovery")? Defaults to `false` (mid-task), matching
+   * prior behaviour: a `remainder_of_task` dwell holds for the whole task
+   * and only lapses when a boundary call says the task is over. `minutes`
+   * dwell is judged by elapsed time regardless of this flag. A cap on the
+   * *currently used* model is not a probe, it is an active failure, and is
+   * always handled regardless of this flag.
+   */
+  readonly atTaskBoundary?: boolean;
 }
 
 export function fallbackReasonFromCap(capKind: CapKind): FallbackReason | null {
@@ -83,18 +94,29 @@ export function fallbackReasonFromCap(capKind: CapKind): FallbackReason | null {
   }
 }
 
+/**
+ * Is the current fallback still within its minimum dwell (PLAN §3.D
+ * "Anti-oscillation")? `atTaskBoundary` (#65) distinguishes a mid-task
+ * check, where the dwell always holds, from a task-boundary check, where a
+ * `remainder_of_task` dwell has by definition just elapsed — the task it
+ * covered is over. `remainder_of_phase` outlives task boundaries (it needs
+ * an explicit phase boundary, out of #65's scope) and `minutes` is judged
+ * purely on elapsed wall-clock time either way.
+ */
 export function inDwell(
   attempt: FallbackAttemptView,
   config: { readonly dwell: DwellPolicy; readonly dwellMinutes: number },
   now: IsoTimestamp,
+  atTaskBoundary = false,
 ): boolean {
   if (attempt.fallbackSince === null) return false;
   if (config.dwell === "minutes") {
     const until = Date.parse(attempt.fallbackSince) + config.dwellMinutes * 60_000;
     return Date.parse(now) < until;
   }
-  // remainder_of_task / remainder_of_phase: stick for the whole task/phase;
-  // retry-at-boundary is #65's concern, not re-evaluated here.
+  if (config.dwell === "remainder_of_task") return !atTaskBoundary;
+  // remainder_of_phase: outlives task boundaries; only a phase boundary
+  // (out of #65's scope) clears it.
   return true;
 }
 
@@ -157,7 +179,7 @@ export async function chooseFallback(params: ChooseFallbackParams): Promise<Fall
   // never traps a task on a route that stopped answering.
   const usedCandidate = candidates.find((c) => c.ref === attempt.usedModel);
   const usedStillEligible = usedCandidate !== undefined && availability.isEligible(usedCandidate.routeId, now);
-  if (usedStillEligible && inDwell(attempt, params, now)) {
+  if (usedStillEligible && inDwell(attempt, params, now, params.atTaskBoundary ?? false)) {
     return { kind: "unchanged" };
   }
 
@@ -240,8 +262,21 @@ export async function chooseFallback(params: ChooseFallbackParams): Promise<Fall
   }
 
   if (result.usedModel === attempt.requestedModel) {
-    // The primary turned out to still be usable; nothing to switch.
-    return { kind: "unchanged" };
+    if (attempt.usedModel === attempt.requestedModel) {
+      // Already on the primary; nothing to switch.
+      return { kind: "unchanged" };
+    }
+    // Recovery to primary (#65 "Recovery"): the primary cleared and was
+    // re-ranked back to the top. This is a real switch, not a no-op — the
+    // Attempt must show the fallback ending, so `fallbackReason` is `null`.
+    return {
+      kind: "switch",
+      requestedModel: attempt.requestedModel,
+      usedModel: result.usedModel,
+      fallbackReason: null,
+      rationale: result.rationale,
+      decisionId: result.decisionId,
+    };
   }
 
   const capKind = availability.get(requestedCandidate?.routeId ?? ("" as RouteId))?.capKind ?? null;
