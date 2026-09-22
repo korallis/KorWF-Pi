@@ -47,6 +47,8 @@ import type {
   RollbackProposalRow,
 } from "../storage/checkpoints.ts";
 import { actionIdFor } from "../storage/action-log.ts";
+import { isActionApproved, requestApproval } from "./approvals.ts";
+import { guardAction, recordCompletedAction } from "./reconcile.ts";
 import { readLiveRepoState } from "../git/revision.ts";
 import {
   captureCheckpoint,
@@ -59,6 +61,27 @@ import {
   type GitEnvRunner,
   type WorktreeIdentity,
 } from "../git/checkpoint.ts";
+
+/**
+ * Why a rollback was refused. Closed set; every refusal is a machine-readable
+ * fact, matched by the tests and rendered by `/korwf review`.
+ */
+export const ROLLBACK_REFUSALS = {
+  /** No valid, user-granted `destructive_git` approval record covers it. */
+  noApproval: "no_approval",
+  /** The target is the user's main tree: never a rollback target. */
+  targetIsMainTree: "target_is_main_tree",
+  /** The proposal has already been answered. */
+  notOpen: "proposal_not_open",
+  /** #42 receipt says this rollback already happened; never replayed. */
+  alreadyApplied: "already_applied",
+  /** The checkpoint commit is gone, so there is nothing to restore. */
+  checkpointMissing: "checkpoint_missing",
+  /** git refused or failed; the tree is left as it was. */
+  gitFailed: "git_failed",
+} as const;
+
+export type RollbackRefusal = (typeof ROLLBACK_REFUSALS)[keyof typeof ROLLBACK_REFUSALS];
 
 /** The high-risk approval class a rollback is, always. PLAN §7. */
 export const ROLLBACK_APPROVAL_CLASS = "destructive_git" as const;
@@ -324,6 +347,393 @@ export function describeImpact(impact: RollbackImpact): string {
     `Rolling back to checkpoint ${impact.checkpointId} in ${impact.worktreePath} would change ` +
     `${impact.entries.length} path(s): ${lost}; ${over}.${uncommitted}`
   );
+}
+
+export interface ProposeRollbackOptions {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  readonly checkpointId: string;
+  readonly cwd?: string;
+  readonly taskId?: TaskId | string | null;
+  readonly attemptId?: string | null;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  readonly mainTree?: WorktreeIdentity | null;
+  readonly runner?: GitEnvRunner;
+  /** Lifetime of the approval question; `null` = no expiry. */
+  readonly ttlMs?: number | null;
+}
+
+/** A written proposal plus the impact it was computed from. */
+export interface ProposedRollback {
+  readonly proposal: RollbackProposalRow;
+  readonly impact: RollbackImpact;
+  /** The queued `destructive_git` request id, when one was written. */
+  readonly requestId: string | null;
+  /** `true` when the proposal was refused at birth (main tree). */
+  readonly refused: boolean;
+}
+
+/**
+ * Propose a rollback. **This never rolls anything back.**
+ *
+ * It computes the impact, writes a `rollback_proposal` row containing the
+ * diff summary and the would-be-lost inventory, and queues a `destructive_git`
+ * approval request through #49 — which, being a PLAN §7 class, is `stop` in
+ * every mode and answerable only by a `user`.
+ *
+ * A proposal whose target is the user's main tree is written and *immediately
+ * refused*, with reason `target_is_main_tree`, rather than queued. Asking a
+ * human whether to delete their uncommitted work would make data loss one
+ * mis-click away; PLAN §3.G says preserve it, so the question is not asked.
+ */
+export function proposeRollback(options: ProposeRollbackOptions): ProposedRollback {
+  const { store } = options;
+  const impactArgs = {
+    store,
+    checkpointId: options.checkpointId,
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+    ...(options.mainTree === undefined ? {} : { mainTree: options.mainTree }),
+    ...(options.runner === undefined ? {} : { runner: options.runner }),
+  };
+  const impact = computeRollbackImpact(impactArgs);
+  const proposalId = options.newId();
+  const actionId = actionIdFor({
+    workflowId: options.workflowId,
+    kind: ROLLBACK_ACTION_KIND,
+    subjectId: (options.taskId ?? null) as string | null,
+    discriminator: { checkpointId: options.checkpointId, worktreePath: impact.worktreePath },
+  });
+
+  const row: RollbackProposalRow = {
+    proposalId,
+    createdAt: options.now(),
+    workflowId: options.workflowId,
+    checkpointId: options.checkpointId,
+    taskId: (options.taskId ?? null) as string | null,
+    attemptId: options.attemptId ?? null,
+    worktreePath: impact.worktreePath,
+    targetIsMainTree: impact.targetIsMainTree,
+    diffSummary: describeImpact(impact),
+    wouldLoseCount: impact.wouldDelete.length + impact.wouldOverwrite.length,
+    wouldLoseUncommitted: impact.wouldLoseUncommitted,
+    actionId,
+    classId: ROLLBACK_APPROVAL_CLASS,
+    requestId: null,
+    approvalId: null,
+    status: "proposed",
+    resolvedAt: null,
+    reasonCode: null,
+    detail: null,
+  };
+  store.write(() => store.rollbackProposals.insert(row));
+
+  if (impact.targetIsMainTree) {
+    store.write(() =>
+      store.rollbackProposals.resolve(proposalId, options.now(), {
+        status: "refused",
+        reasonCode: ROLLBACK_REFUSALS.targetIsMainTree,
+        detail:
+          "the target is the user's main working tree; restoring it would discard uncommitted user work " +
+          "(PLAN §3.G). Roll back the task worktree instead.",
+      }),
+    );
+    const refusedRow = store.rollbackProposals.find(proposalId) ?? row;
+    return { proposal: refusedRow, impact, requestId: null, refused: true };
+  }
+
+  const request = requestApproval({
+    store,
+    workflowId: options.workflowId,
+    classId: ROLLBACK_APPROVAL_CLASS,
+    scope:
+      options.taskId === undefined || options.taskId === null
+        ? { kind: "workflow" }
+        : { kind: "task", taskId: options.taskId as TaskId },
+    permittedAction: rollbackPermittedAction(proposalId),
+    summary: row.diffSummary,
+    ...(options.taskId === undefined || options.taskId === null
+      ? {}
+      : { taskRevision: store.tasks.require(options.taskId as TaskId).revision }),
+    now: options.now(),
+    newId: options.newId,
+    ttlMs: options.ttlMs ?? null,
+  });
+  const requestId = request.request?.requestId ?? null;
+  if (requestId !== null) store.write(() => store.rollbackProposals.attachRequest(proposalId, requestId));
+  return {
+    proposal: store.rollbackProposals.find(proposalId) ?? row,
+    impact,
+    requestId,
+    refused: false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Applying a rollback (only ever with an approval record)
+// ---------------------------------------------------------------------------
+
+export interface ApplyRollbackOptions {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  readonly proposalId: string;
+  /** Session asking; used for the #42 receipt and the replay notice. */
+  readonly sessionId: string;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  readonly mainTree?: WorktreeIdentity | null;
+  readonly runner?: GitEnvRunner;
+}
+
+/** Outcome of asking for a rollback to be performed. */
+export type ApplyRollbackResult =
+  | {
+      readonly applied: true;
+      readonly proposal: RollbackProposalRow;
+      /** The checkpoint taken of the tree as it was *before* the restore. */
+      readonly preservation: TakenCheckpoint;
+      readonly changedPaths: readonly string[];
+    }
+  | {
+      readonly applied: false;
+      readonly reason: RollbackRefusal;
+      readonly detail: string;
+      readonly proposal: RollbackProposalRow | undefined;
+    };
+
+/**
+ * Perform an approved rollback, or refuse.
+ *
+ * Every refusal below is a *precondition re-read at call time*, not a flag
+ * the caller passes: the approval is re-read from the `Approval` rows
+ * (`isActionApproved`, user actor required), the main-tree question is
+ * re-computed from git, and the #42 receipt is consulted through
+ * `guardAction`. There is no parameter that skips any of them.
+ *
+ * When it does proceed, the tree is captured first as a
+ * `pre_rollback_preservation` checkpoint, so the state the rollback discards
+ * stays addressable — an approved rollback is still not permitted to be the
+ * last copy of anybody's work.
+ */
+export function applyRollback(options: ApplyRollbackOptions): ApplyRollbackResult {
+  const { store } = options;
+  const proposal = store.rollbackProposals.find(options.proposalId);
+  if (proposal === undefined) {
+    return {
+      applied: false,
+      reason: ROLLBACK_REFUSALS.notOpen,
+      detail: `no rollback proposal ${options.proposalId}`,
+      proposal: undefined,
+    };
+  }
+  const refuse = (reason: RollbackRefusal, detail: string, resolve = true): ApplyRollbackResult => {
+    if (resolve && (proposal.status === "proposed" || proposal.status === "approved")) {
+      store.write(() =>
+        store.rollbackProposals.resolve(proposal.proposalId, options.now(), {
+          status: "refused",
+          reasonCode: reason,
+          detail,
+        }),
+      );
+    }
+    return { applied: false, reason, detail, proposal: store.rollbackProposals.find(proposal.proposalId) ?? proposal };
+  };
+
+  if (proposal.status !== "proposed" && proposal.status !== "approved") {
+    return refuse(ROLLBACK_REFUSALS.notOpen, `proposal ${proposal.proposalId} is already ${proposal.status}`, false);
+  }
+  if (proposal.targetIsMainTree) {
+    return refuse(
+      ROLLBACK_REFUSALS.targetIsMainTree,
+      "the target is the user's main working tree; uncommitted user work is preserved (PLAN §3.G)",
+    );
+  }
+
+  // The approval must exist as a record, granted by a user, valid now.
+  const approved = isActionApproved({
+    store,
+    workflowId: options.workflowId,
+    permittedAction: rollbackPermittedAction(proposal.proposalId),
+    ...(proposal.taskId === null ? {} : { taskId: proposal.taskId as TaskId }),
+    now: options.now(),
+  });
+  if (!approved) {
+    return refuse(
+      ROLLBACK_REFUSALS.noApproval,
+      `no valid user-granted ${ROLLBACK_APPROVAL_CLASS} approval covers ${rollbackPermittedAction(proposal.proposalId)}`,
+    );
+  }
+
+  // #42: a forked or resumed conversation must not replay the restore.
+  const verdict = guardAction({
+    store,
+    workflowId: options.workflowId,
+    actionId: proposal.actionId,
+    sessionId: options.sessionId,
+    now: options.now,
+    newId: options.newId,
+  });
+  if (verdict.kind === "refused") {
+    return refuse(ROLLBACK_REFUSALS.alreadyApplied, verdict.notice);
+  }
+
+  const checkpoint = store.checkpoints.find(proposal.checkpointId);
+  if (checkpoint === undefined) {
+    return refuse(ROLLBACK_REFUSALS.checkpointMissing, `no checkpoint ${proposal.checkpointId}`);
+  }
+
+  // Re-check the target from git itself, not from the row: a worktree path
+  // that has since become the main tree must not be restored into.
+  const identity = worktreeIdentity(proposal.worktreePath, options.runner);
+  if (identity === null) {
+    return refuse(ROLLBACK_REFUSALS.gitFailed, `${proposal.worktreePath} is not inside a git repository`);
+  }
+  if (isMainTree(identity, options.mainTree ?? null)) {
+    return refuse(
+      ROLLBACK_REFUSALS.targetIsMainTree,
+      "the target resolves to the user's main working tree now; refusing (PLAN §3.G)",
+    );
+  }
+
+  const preservationId = options.newId();
+  let restored;
+  try {
+    restored = restoreCheckpointTree({
+      cwd: identity.toplevel,
+      commit: checkpoint.commitSha,
+      preservationId,
+      ...(options.runner === undefined ? {} : { runner: options.runner }),
+    });
+  } catch (error) {
+    const code = error instanceof CheckpointError ? error.code : "git_failed";
+    return refuse(
+      code === "checkpoint_missing" ? ROLLBACK_REFUSALS.checkpointMissing : ROLLBACK_REFUSALS.gitFailed,
+      (error as Error).message,
+    );
+  }
+
+  const preservationRow: CheckpointRow = {
+    checkpointId: preservationId,
+    createdAt: options.now(),
+    workflowId: options.workflowId,
+    attemptId: proposal.attemptId,
+    taskId: proposal.taskId,
+    kind: "pre_rollback_preservation",
+    worktreePath: identity.toplevel,
+    repoCommonDir: identity.commonDir,
+    isMainTree: false,
+    ref: restored.preservation.ref,
+    commitSha: restored.preservation.commit,
+    treeSha: restored.preservation.tree,
+    parentCommit: restored.preservation.parentCommit,
+    branch: restored.preservation.branch,
+    dirty: restored.preservation.dirty,
+    changedPaths: restored.preservation.changes.length,
+    summary: `state preserved immediately before rollback ${proposal.proposalId}`,
+  };
+
+  store.write(() => {
+    store.checkpoints.insert(preservationRow);
+    store.rollbackProposals.resolve(proposal.proposalId, options.now(), {
+      status: "applied",
+      reasonCode: null,
+      detail:
+        `restored checkpoint ${checkpoint.checkpointId}; ${restored.changedPaths.length} path(s) changed; ` +
+        `prior state kept as checkpoint ${preservationId}`,
+    });
+  });
+  recordCompletedAction({
+    store,
+    workflowId: options.workflowId,
+    actionId: proposal.actionId,
+    kind: ROLLBACK_ACTION_KIND,
+    sessionId: options.sessionId,
+    summary: `rollback to checkpoint ${checkpoint.checkpointId} in ${identity.toplevel}`,
+    now: options.now,
+    subjectId: proposal.taskId,
+    gitRevision: checkpoint.commitSha,
+    approvalId: proposal.approvalId,
+    externalEffect: false,
+  });
+
+  return {
+    applied: true,
+    proposal: store.rollbackProposals.find(proposal.proposalId) ?? proposal,
+    preservation: { row: preservationRow, captured: restored.preservation },
+    changedPaths: restored.changedPaths,
+  };
+}
+
+/**
+ * Record that a human granted the approval a proposal was waiting on.
+ *
+ * Thin on purpose: the grant itself is `grantApproval` (#49), which is the
+ * only place an `Approval` is minted and the only place the user-actor rule
+ * for high-risk classes is enforced. This just links the record back so a
+ * proposal can explain itself.
+ */
+export function attachRollbackApproval(options: {
+  readonly store: Store;
+  readonly proposalId: string;
+  readonly approvalId: string;
+  readonly now: () => IsoTimestamp;
+}): boolean {
+  const { store } = options;
+  return store.write(() => store.rollbackProposals.attachApproval(options.proposalId, options.approvalId, options.now()));
+}
+
+// ---------------------------------------------------------------------------
+// Listing for `/korwf review` (Stage 8 hook; issue #54 AC3)
+// ---------------------------------------------------------------------------
+
+/** One checkpoint as `/korwf review` shows it. */
+export interface CheckpointListing {
+  readonly checkpointId: string;
+  readonly createdAt: IsoTimestamp;
+  readonly kind: CheckpointRecordKind;
+  readonly taskId: string | null;
+  readonly attemptId: string | null;
+  readonly worktreePath: string;
+  readonly isMainTree: boolean;
+  readonly commitSha: string;
+  readonly ref: string;
+  readonly summary: string;
+  /** Open rollback proposals naming this checkpoint, if any. */
+  readonly openProposals: readonly RollbackProposalRow[];
+  /** One line for a text renderer. */
+  readonly line: string;
+}
+
+/**
+ * Every checkpoint in a workflow, oldest first, with its open proposals.
+ *
+ * This is the Stage 8 hook the issue asks for: `/korwf review` renders these
+ * rows, so the user can see what is restorable and what is being asked of
+ * them, without the review command needing to know about git.
+ */
+export function listCheckpoints(store: Store, workflowId: WorkflowId): readonly CheckpointListing[] {
+  const open = store.rollbackProposals.openForWorkflow(workflowId);
+  return store.checkpoints.forWorkflow(workflowId).map((row) => {
+    const openProposals = open.filter((p) => p.checkpointId === row.checkpointId);
+    const where = row.isMainTree ? "main tree (capture only)" : row.worktreePath;
+    const pending = openProposals.length === 0 ? "" : ` — ${openProposals.length} rollback proposal(s) awaiting approval`;
+    return {
+      checkpointId: row.checkpointId,
+      createdAt: row.createdAt,
+      kind: row.kind,
+      taskId: row.taskId,
+      attemptId: row.attemptId,
+      worktreePath: row.worktreePath,
+      isMainTree: row.isMainTree,
+      commitSha: row.commitSha,
+      ref: row.ref,
+      summary: row.summary,
+      openProposals,
+      line:
+        `${row.createdAt} ${row.kind} ${row.checkpointId} @ ${row.commitSha.slice(0, 8)} in ${where}: ` +
+        `${row.summary}${pending}`,
+    };
+  });
 }
 
 function defaultSummary(kind: CheckpointRecordKind, attemptId: string | null): string {
