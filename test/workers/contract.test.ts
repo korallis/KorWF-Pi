@@ -23,7 +23,7 @@ import type { ModelAllowlist, ModelRef } from "../../src/config/types.ts";
 const ALLOWED: ModelRef = "provider-a/model-one";
 const OTHER: ModelRef = "provider-b/model-two";
 
-const allowlist: ModelAllowlist = { models: [ALLOWED], pins: {} };
+const allowlist: ModelAllowlist = { providers: [], models: [ALLOWED], pins: {} };
 const policy: ContractPolicy = { allowlist };
 
 function draft(overrides: Partial<Parameters<typeof draftToContract>[0]> = {}) {
@@ -49,6 +49,21 @@ describe("AC3: a contract outside policy is rejected before spawn", () => {
     if (result.ok) throw new Error("unreachable");
     expect(result.errors.map((e) => e.code)).toContain("model_not_in_allowlist");
     expect(result.errors[0]!.message).toContain(OTHER);
+  });
+
+  it("rejects a model the budget check refuses, without a second policy implementation", () => {
+    const result = validateContract(draft(), { ...policy, checkBudget: () => false });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.errors.map((e) => e.code)).toContain("model_budget_unavailable");
+  });
+
+  it("honours an empty allowlist the same way #60's enforcePolicy does", () => {
+    // `models: []` means "every model of an eligible provider" (config/types).
+    const open: ModelAllowlist = { providers: [], models: [], pins: {} };
+    expect(validateContract(draft({ model: OTHER }), { allowlist: open }).ok).toBe(true);
+    const providerScoped: ModelAllowlist = { providers: ["provider-a"], models: [], pins: {} };
+    expect(validateContract(draft({ model: OTHER }), { allowlist: providerScoped }).ok).toBe(false);
   });
 
   it("rejects a tool outside the role's allowlist", () => {

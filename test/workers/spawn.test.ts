@@ -23,7 +23,7 @@ import type { ModelAllowlist, ModelRef } from "../../src/config/types.ts";
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/fake-pi.mjs", import.meta.url));
 const ALLOWED: ModelRef = "provider-a/model-one";
-const allowlist: ModelAllowlist = { models: [ALLOWED], pins: {} };
+const allowlist: ModelAllowlist = { providers: [], models: [ALLOWED], pins: {} };
 const policy: ContractPolicy = { allowlist };
 
 const parentEnv: Record<string, string> = {

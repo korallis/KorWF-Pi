@@ -12,6 +12,7 @@
  *
  * Validation never widens anything: it can only reject.
  */
+import { enforcePolicy } from "../models/select.ts";
 import type { ModelAllowlist, ModelRef } from "../config/types.ts";
 import { DEFAULT_MAX_DEPTH } from "./env.ts";
 import { ROLE_IDS, SPAWN_TOOL_NAMES, isReadOnlyRole, roleTools, type RoleId } from "./roles.ts";
@@ -91,6 +92,7 @@ export const DEFAULT_GRACE_MS = 3_000;
 export type ContractViolation =
   | "unknown_role"
   | "model_not_in_allowlist"
+  | "model_budget_unavailable"
   | "tool_not_allowed_for_role"
   | "spawn_tool_requested"
   | "mutation_tool_for_read_only_role"
@@ -118,10 +120,24 @@ export interface ContractPolicy {
   readonly maxDepth?: number;
   /** Extension paths a role may load with `-e`. Empty by default. */
   readonly permittedExtensions?: readonly string[];
+  /** Budget predicate, same shape as #60's: `false` means "no budget for this model". */
+  readonly checkBudget?: (ref: ModelRef) => boolean;
 }
 
-function inAllowlist(ref: ModelRef, allowlist: ModelAllowlist): boolean {
-  return allowlist.models.includes(ref);
+/**
+ * The allowlist question is answered by #60's own `enforcePolicy`, not by a
+ * second implementation here: two copies of "is this model permitted" is
+ * exactly how a policy quietly widens. The eligible set is `{ref}` because
+ * eligibility (route caps, availability) was already decided at selection
+ * time; what the spawn point re-checks is the allowlist and the budget.
+ */
+function modelPermitted(
+  ref: ModelRef,
+  allowlist: ModelAllowlist,
+  checkBudget: ((ref: ModelRef) => boolean) | undefined,
+): { readonly ok: boolean; readonly reason: string | null } {
+  const check = enforcePolicy(ref, new Set([ref]), allowlist, checkBudget);
+  return { ok: check.ok, reason: check.reason };
 }
 
 /**
@@ -143,10 +159,11 @@ export function validateContract(
     return { ok: false, errors };
   }
 
-  if (!inAllowlist(contract.model, policy.allowlist)) {
+  const modelCheck = modelPermitted(contract.model, policy.allowlist, policy.checkBudget);
+  if (!modelCheck.ok) {
     add(
-      "model_not_in_allowlist",
-      `model '${contract.model}' is not in models.allowlist; refusing to spawn`,
+      modelCheck.reason === "budget_unavailable" ? "model_budget_unavailable" : "model_not_in_allowlist",
+      `model '${contract.model}' rejected by policy (${modelCheck.reason}); refusing to spawn`,
     );
   }
 
