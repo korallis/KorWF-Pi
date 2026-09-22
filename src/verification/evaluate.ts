@@ -210,6 +210,12 @@ export interface CriterionFinding {
   readonly claim: Evaluated<ClaimVerdict>;
   readonly semanticGap: Evaluated<boolean>;
   readonly tests: readonly TestExercisesFinding[];
+  /**
+   * Lowest confidence across the Jev answers for this criterion; `null` when
+   * nothing was answered by Jev. The *minimum*, because a conjunction is only
+   * as trustworthy as its weakest part.
+   */
+  readonly confidence: number | null;
   /** Decision ids written for this criterion, for `/korwf why`. */
   readonly decisionIds: readonly string[];
 }
@@ -358,11 +364,13 @@ export async function evaluateCriterion(
 
   let claim: Evaluated<ClaimVerdict> = NOT_ASKED;
   let semanticGap: Evaluated<boolean> = NOT_ASKED;
+  let confidence: number | null = null;
   const tests: TestExercisesFinding[] = [];
 
   if (options.ctx !== undefined) {
     const answers = await askCriterionQuestions(options.ctx, input, criterion, options.subject);
     for (const id of answers.decisionIds) decisionIds.push(id);
+    confidence = answers.confidence;
     claim = answers.claim;
     semanticGap = answers.semanticGap;
     tests.push(...answers.tests.map((t) => creditTest(t, thresholds)));
@@ -407,6 +415,7 @@ export async function evaluateCriterion(
     claim,
     semanticGap,
     tests,
+    confidence,
     decisionIds,
   };
 }
@@ -434,6 +443,7 @@ async function askCriterionQuestions(
   readonly claim: Evaluated<ClaimVerdict>;
   readonly semanticGap: Evaluated<boolean>;
   readonly tests: readonly TestExercisesFinding[];
+  readonly confidence: number | null;
   readonly decisionIds: readonly string[];
 }> {
   const thresholds = thresholdsFor(input.riskClass);
@@ -510,7 +520,12 @@ async function askCriterionQuestions(
     return { criterionId: criterion.id, checkId: test.checkId, testPath: test.testPath, level, exercises: false };
   });
 
-  return { claim, semanticGap, tests, decisionIds };
+  const confidences = [claimResult, ...testResults]
+    .filter((r) => r.source === "jev" && r.confidence !== null)
+    .map((r) => r.confidence as number);
+  const confidence = confidences.length === 0 ? null : Math.min(...confidences);
+
+  return { claim, semanticGap, tests, confidence, decisionIds };
 }
 
 /** Apply the risk class's level floor. The comparison is code, never Jev. */
@@ -567,9 +582,19 @@ export async function evaluateEvidenceGap(
     findings,
     degraded,
     rule,
-    confidence: null,
+    confidence: minConfidence(findings),
     thresholds,
   };
+}
+
+/**
+ * Lowest per-criterion confidence, or `null` when Jev answered nothing.
+ * A conjunction is as confident as its least confident part; taking a mean
+ * here would let a pile of easy criteria carry a doubtful one.
+ */
+function minConfidence(findings: readonly CriterionFinding[]): number | null {
+  const values = findings.map((f) => f.confidence).filter((c): c is number => c !== null);
+  return values.length === 0 ? null : Math.min(...values);
 }
 
 /**
