@@ -36,7 +36,12 @@ export interface RetrieveResult {
 
 function run(tool: "rg" | "git", args: readonly string[], cwd: string): RawToolOutput {
   try {
-    const stdout = execFileSync(tool, args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const stdout = execFileSync(tool, args, {
+      cwd,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
     return { tool, args, stdout, exitCode: 0 };
   } catch (error) {
     const err = error as { stdout?: string; status?: number | null };
@@ -84,10 +89,15 @@ function parseRgJson(stdout: string): RgMatch[] {
     const path = pathObj?.["text"];
     const lineNumber = data?.["line_number"];
     if (typeof path === "string" && typeof lineNumber === "number") {
-      out.push({ path, lineNumber });
+      out.push({ path: stripLeadingDotSlash(path), lineNumber });
     }
   }
   return out;
+}
+
+/** rg emits `./x` for the current directory; normalise to a plain relative path. */
+function stripLeadingDotSlash(path: string): string {
+  return path.startsWith("./") ? path.slice(2) : path;
 }
 
 function readSliceLines(absPath: string, startLine: number, endLine: number): string | null {
@@ -151,8 +161,9 @@ export function searchFilenames(query: string, options: RetrieveOptions): Retrie
   const revision = currentRevision(repoRoot);
 
   const candidates: Candidate[] = [];
-  for (const relPath of rawOut.stdout.split("\n")) {
-    if (relPath.length === 0) continue;
+  for (const rawPath of rawOut.stdout.split("\n")) {
+    if (rawPath.length === 0) continue;
+    const relPath = stripLeadingDotSlash(rawPath);
     if (!relPath.toLowerCase().includes(needle)) continue;
     if (matcher.denies(relPath)) continue;
     const text = readSliceLines(`${repoRoot}/${relPath}`, 1, 200);
