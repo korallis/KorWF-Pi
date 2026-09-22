@@ -276,6 +276,33 @@ attempt budget, does not feed false "you missed the criteria" feedback, and swit
 family after two occurrences. If you see it persist, the prompt is asking for too much in
 one turn — split the issue, do not raise the budget.
 
+## 3.2 CI failures are usually real — and usually not the PR's fault
+
+Every CI failure in M2/M3 so far has been a genuine defect, but **three of five belonged to
+an earlier merged PR** and only surfaced when a later branch rebased onto it. Fix them on
+the branch that hit them, and say whose they were.
+
+| Symptom | Real cause | Fix |
+|---|---|---|
+| `bad option: --experimental-strip-types` | `engines.node` said 20; the flag needs 22.6 | raise the floor to what the code needs |
+| `expected 3.17 to be less than 1` | a wall-clock assertion measures the runner, not the code | assert the *property* (a `setTimeout(0)` has not fired ⇒ no I/O awaited) |
+| `expected ['a','b'] to equal ['b','a']` | 0ms-vs-5ms timer race — flaky by construction | gate one call on a promise the other resolves |
+| `Cannot read properties of undefined` | **ripgrep is not installed on CI**; `run()` swallowed ENOENT as "no matches" | distinguish *not installed* from *found nothing*; add a `git grep` fallback |
+| `expected false to be true` on `tool === "rg"` | the test asserted *which tool ran*, not the requirement | assert the invariant: whatever ran is named honestly |
+
+**The pattern:** a test that passes locally and fails on CI is usually asserting something
+about *your machine* — a wall clock, an installed binary, a scheduling race. Reproduce the
+CI condition before changing anything:
+
+```bash
+# no ripgrep, as on a GitHub runner
+D=$(mktemp -d); ln -s "$(command -v git)" "$D/git"; ln -s "$(command -v node)" "$D/node"
+PATH="$D:/usr/bin:/bin" npx vitest run <file>
+```
+
+And check whether CI *actually ran* the tests rather than skipping them — `# skipped 0`
+in the log is the proof, especially for suites that shell out to an external binary.
+
 ## 4. Hard rules (do not let a long session erode these)
 
 1. Only `mac-mini` models from `config.json` `allowlist.models`. Never fall back to another
