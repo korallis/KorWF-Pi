@@ -8,8 +8,9 @@
  * permitted. No Jev key -> `fallback.staticOrder`. Every selection is
  * recorded as a Decision, visible via requested/used model + reason.
  */
-import type { AskContext } from "../decisions/ask.ts";
+import { askAll, type AskContext, type AskItem } from "../decisions/ask.ts";
 import type { DecisionRecorder } from "../decisions/record.ts";
+import { modelsRankQuestion, type ModelRankState } from "../decisions/questions/models.ts";
 import type { ModelAllowlist, ModelRef } from "../config/types.ts";
 import type { FallbackReason, IsoTimestamp, RouteId, TaskProfile } from "../storage/records.ts";
 import type { ModelCard } from "./cards.ts";
@@ -59,12 +60,56 @@ export interface RankResult {
   readonly allFellBack: boolean;
 }
 
+function profileSummary(profile: TaskProfile): ModelRankState["profile"] {
+  return {
+    domain: profile.domain,
+    modalities: profile.modalities,
+    reasoningDepth: profile.reasoningDepth,
+    contextSize: profile.contextSize,
+    risk: profile.risk,
+  };
+}
+
+function cardSummary(card: ModelCard): ModelRankState["candidate"] {
+  return {
+    ref: card.id,
+    aptitudes: card.aptitudes.map((a) => a.tag),
+    notes: card.notes ?? null,
+    rated: card.rated,
+  };
+}
+
+/**
+ * Ask `models.rank@1` once per eligible candidate (never one question
+ * listing every candidate — see the module doc for why), and rank in code:
+ * Jev-adequate candidates first, in the order asked; every candidate that
+ * fell back is reported so callers can tell "Jev said no" from "Jev never
+ * answered". Does not itself decide anything about allowlist or budget —
+ * that is `enforcePolicy`.
+ */
 export async function rankWithJev(
   ctx: AskContext,
   profile: TaskProfile,
   candidates: readonly SelectionCandidate[],
 ): Promise<RankResult> {
-  throw new Error("todo");
+  const summary = profileSummary(profile);
+  const items: AskItem<ModelRankState, boolean>[] = candidates.map((candidate) => ({
+    question: modelsRankQuestion,
+    input: { profile: summary, candidate: cardSummary(candidate.card) },
+  }));
+  const results = await askAll(ctx, items as AskItem<unknown, unknown>[]);
+  const ranked: RankedCandidate[] = candidates.map((candidate, i) => {
+    const result = results[i];
+    const adequate = result !== undefined && (result.value as boolean) === true;
+    return {
+      candidate,
+      adequate,
+      source: result?.source ?? "fallback",
+      decisionId: result?.decisionId ?? null,
+    };
+  });
+  const allFellBack = ranked.every((r) => r.source === "fallback");
+  return { ranked, allFellBack };
 }
 
 export type PolicyRejection = "not_in_allowlist" | "budget_unavailable" | "not_eligible";
