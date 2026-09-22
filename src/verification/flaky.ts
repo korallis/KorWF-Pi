@@ -23,6 +23,9 @@
 import type { AcceptanceCriterion, CheckDefinition, Evidence, GitSha, Revision } from "../storage/records.ts";
 import type { CheckRunStatus, EvidenceDraft } from "./evidence.ts";
 import { runCheck, type CheckRunResult, type RunCheckOptions } from "./checks.ts";
+import { raiseTaskBlocker, type BlockerContext } from "../workflow/blockers.ts";
+import type { RaiseBlockerResult } from "../workflow/blockers.ts";
+import type { Task, TaskId } from "../storage/records.ts";
 
 /** Blocker kind for an acceptance criterion with no covering check. */
 export const MISSING_CHECK_BLOCKER = "missing_check" as const;
@@ -256,4 +259,30 @@ export function uncoveredCriteria(
 /** Detail text for a `missing_check` blocker naming the uncovered criterion. */
 export function missingCheckBlockerDetail(criterionId: string): string {
   return `acceptance criterion "${criterionId}" has no registered check covering it`;
+}
+
+/**
+ * Raise a `missing_check` blocker on `task` for every uncovered acceptance
+ * criterion, one blocker per criterion so `/korwf why` and the board can
+ * name each one (Scope: "reported by criterion id").
+ *
+ * Idempotent by construction only insofar as `raiseTaskBlocker` already is:
+ * calling this repeatedly on an already-blocked task accumulates reasons
+ * rather than duplicating a transition (`docs/state-machine.md` §5).
+ */
+export function raiseMissingCheckBlockers(
+  context: BlockerContext & { readonly task: Pick<Task, "id" | "acceptanceCriteria" | "checks">; readonly taskId?: TaskId },
+): readonly RaiseBlockerResult<Task>[] {
+  const missing = uncoveredCriteria(context.task.acceptanceCriteria, context.task.checks);
+  return missing.map((criterionId) =>
+    raiseTaskBlocker({
+      store: context.store,
+      actor: context.actor,
+      now: context.now,
+      newId: context.newId,
+      taskId: (context.taskId ?? context.task.id) as TaskId,
+      kind: MISSING_CHECK_BLOCKER,
+      detail: missingCheckBlockerDetail(criterionId),
+    }),
+  );
 }
