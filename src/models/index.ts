@@ -21,6 +21,11 @@
  *   (`src/decisions/questions/models.ts`), and `enforcePolicy` re-checks the winner
  *   against the allowlist/eligible-set/budget before it is ever used — a Jev answer can
  *   only narrow, never widen, what selection returns.
+ * - `pins.ts` — user pins (#61): `resolvePin` resolves task > phase > workflow > config
+ *   scope; `selectModel`'s `pin` param, when set, is honoured ahead of any Jev ranking, but
+ *   still passes through `enforcePolicy` — a pin that is capped or fails allowlist/budget
+ *   never falls back silently, it returns `pin_blocked` for the caller to raise the
+ *   `model_substitute_pinned` approval class and ask.
  *
  *
  * **Re-export style: `export *`, deliberately.** A barrel listing every symbol is a
@@ -35,5 +40,6 @@ export * from "./catalog.ts";
 export * from "./hints.ts";
 export * from "./outcomes.ts";
 export * from "./profile.ts";
+export * from "./pins.ts";
 export * from "./route.ts";
 export * from "./select.ts";

@@ -83,7 +83,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Bundled aptitude-hints file: id-pattern matching, versioned, "unrated" default for unknown models, update process documented.
 - [x] Task-profile evaluator independent of model names.
 - [x] Jev selection question against cards; code enforces allowlist/budget/policy after selection.
-- [ ] User pins and explicit overrides.
+- [x] User pins and explicit overrides. (#61 → `src/models/pins.ts`, `src/extension/commands/models-pin.ts`)
 - [x] Cap detection (429, quota, budget) → ModelAvailability with estimated reset (#62).
 - [x] Route identity: opaque `routeId` per (provider, model); availability, health and outcomes keyed per route, cards per model; rename rule in ADR 0011 (#125).
 - [ ] Fallback: Jev ranks substitutes for the task profile; "none adequate" → pause.
