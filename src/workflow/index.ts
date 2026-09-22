@@ -18,11 +18,14 @@ export {
   outputBudget,
   outputCeilingBindsFirst,
   planIncrementalSteps,
+  sizePlan,
   sizeTaskOutput,
 } from "./output-budget.ts";
 export type {
   ArtifactSizing,
   ExpectedArtifact,
+  PlannedTaskOutput,
+  PlannedTaskSizing,
   ModelOutputLimits,
   OutputBudget,
   SizingVerdict,

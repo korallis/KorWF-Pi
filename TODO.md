@@ -58,6 +58,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Session resume/reload/fork/tree reconciliation with live repo state.
 - [ ] `tasks` and `phases` boards; plan/TODO export.
 - [ ] Prompt-injection and misleading-description tests.
+- [x] Output-budget awareness: planner sizes tasks against the model's `maxTokens`; `stopReason: "length"` recorded and classified as a harness failure that neither consumes the attempt budget nor feeds "criteria unmet" back; repeated truncation bounded separately; role contracts instruct incremental writes and per-file commits (#124 → `docs/output-budget.md`).
 
 ## 4. Verification, review, recovery (Stage 4)
 

@@ -308,6 +308,48 @@ export function sizeTaskOutput(
   };
 }
 
+/** A task as the planner has it before dispatch: an id and its expected artifacts. */
+export interface PlannedTaskOutput {
+  readonly taskId: string;
+  readonly expectedArtifacts: readonly ExpectedArtifact[];
+}
+
+/** One planned task's sizing, plus the concrete steps for each over-budget artifact. */
+export interface PlannedTaskSizing {
+  readonly taskId: string;
+  readonly sizing: TaskSizing;
+  /** Artifacts that must be produced incrementally, with their step plans. */
+  readonly decompositions: readonly {
+    readonly path: string;
+    readonly steps: ReturnType<typeof planIncrementalSteps>;
+  }[];
+}
+
+/**
+ * Size a whole plan at planning time (AC1). Returns every task, so a caller
+ * can both annotate the plan and refuse to dispatch the ones where
+ * `sizing.mustDecompose` is true until they are split or explicitly flagged.
+ */
+export function sizePlan(
+  tasks: readonly PlannedTaskOutput[],
+  limits: ModelOutputLimits,
+  thinking: ThinkingLevel = "off",
+): readonly PlannedTaskSizing[] {
+  return tasks.map((task) => {
+    const sizing = sizeTaskOutput(task.expectedArtifacts, limits, thinking);
+    const overBudget = new Set(
+      sizing.artifacts.filter((a) => a.verdict === "decompose").map((a) => a.path),
+    );
+    return {
+      taskId: task.taskId,
+      sizing,
+      decompositions: task.expectedArtifacts
+        .filter((a) => overBudget.has(a.path))
+        .map((a) => ({ path: a.path, steps: planIncrementalSteps(a, limits, thinking) })),
+    };
+  });
+}
+
 /**
  * Split one over-budget artifact into the smallest number of equal-sized
  * production steps that each stay under `decomposeAbove`. Used by the planner

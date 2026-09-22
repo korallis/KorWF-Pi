@@ -14,6 +14,7 @@ import {
   outputBudget,
   outputCeilingBindsFirst,
   planIncrementalSteps,
+  sizePlan,
   sizeTaskOutput,
 } from "../../src/workflow/output-budget.ts";
 
@@ -89,6 +90,29 @@ test("AC1: line and byte estimates convert to output tokens conservatively", () 
   assert.ok(estimateTokens({ unit: "lines", value: 100 }) >= 1_000);
   assert.ok(estimateTokens({ unit: "bytes", value: 3_500 }) >= 1_000);
   assert.throws(() => estimateTokens({ unit: "tokens", value: -1 }), /non-negative/);
+});
+
+test("AC1: a plan is sized at planning time and over-budget tasks carry step plans", () => {
+  const plan = sizePlan(
+    [
+      { taskId: "T1", expectedArtifacts: [{ path: "small.ts", estimate: { unit: "lines", value: 50 } }] },
+      {
+        taskId: "T2",
+        expectedArtifacts: [
+          { path: "huge.ts", estimate: { unit: "lines", value: 2000 } },
+          { path: "note.md", estimate: { unit: "lines", value: 20 } },
+        ],
+      },
+    ],
+    REGISTRY_MODEL,
+  );
+  assert.equal(plan.length, 2);
+  assert.equal(plan[0].sizing.mustDecompose, false);
+  assert.deepEqual(plan[0].decompositions, []);
+  assert.equal(plan[1].sizing.mustDecompose, true);
+  assert.equal(plan[1].decompositions.length, 1);
+  assert.equal(plan[1].decompositions[0].path, "huge.ts");
+  assert.ok(plan[1].decompositions[0].steps.length > 1);
 });
 
 test("AC6: sizing is deterministic and needs no Jev, key, clock or I/O", () => {
