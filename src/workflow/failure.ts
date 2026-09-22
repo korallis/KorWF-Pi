@@ -215,7 +215,7 @@ export const TEST_EXPECTATION_PHRASES = [
   "does not match stored snapshot",
   "obsolete snapshot",
   "snapshot file is outdated",
-  "toматchsnapshot", // placeholder guarded below; never matched in practice
+  "expected value to be (using ===)",
 ] as const;
 
 /** Explicit markers a worker uses to say the task is under-specified. */
@@ -320,3 +320,125 @@ export const FAILURE_RULES: readonly FailureRule[] = Object.freeze([
     },
   },
 ]);
+
+// ---------------------------------------------------------------------------
+// unknown, and what it asks for
+// ---------------------------------------------------------------------------
+
+/**
+ * The evidence an `unknown` classification asks for. Derived from what the
+ * signal is *missing*, so the request is always actionable: "re-run with
+ * stderr captured" rather than "investigate".
+ */
+export function evidenceRequestsFor(signal: FailureSignal): readonly string[] {
+  const requests: string[] = [];
+  if (signal.exitCode === undefined || signal.exitCode === null) {
+    requests.push("Re-run the failing command and record its exit code.");
+  }
+  if ((signal.stderr ?? "").trim().length === 0) {
+    requests.push("Capture stderr from the failing command (it was empty or not recorded).");
+  }
+  if ((signal.stdout ?? "").trim().length === 0) {
+    requests.push("Capture stdout from the failing command (it was empty or not recorded).");
+  }
+  if (signal.command === undefined || signal.command.trim().length === 0) {
+    requests.push("Record the exact command, including its working directory, that produced the failure.");
+  }
+  if (signal.httpStatus === undefined || signal.httpStatus === null) {
+    requests.push("If a remote call was involved, record the HTTP status and any Retry-After header.");
+  }
+  requests.push(
+    "Re-run the same check at the same revision to establish whether the failure is reproducible or flaky.",
+  );
+  return Object.freeze(requests);
+}
+
+/** Build the `unknown` classification for a signal. Never a guess. */
+export function unknownClassification(
+  signal: FailureSignal,
+  options: { readonly source?: FailureClassificationSource; readonly rule?: string; readonly reason?: string } = {},
+): FailureClassification {
+  return Object.freeze({
+    category: "unknown" as const,
+    confidence: 0,
+    rule: options.rule ?? "unknown:no-rule-matched",
+    source: options.source ?? "fallback",
+    reason:
+      options.reason ??
+      "No deterministic rule matched and no supported classification is available; evidence is required before acting.",
+    needsEvidence: true,
+    evidenceRequests: evidenceRequestsFor(signal),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// classifyFailure
+// ---------------------------------------------------------------------------
+
+/** Result of the deterministic pass: either a verdict or an explicit "ask Jev". */
+export interface RuleClassificationResult {
+  readonly classification: FailureClassification;
+  /** `true` when the rules decided nothing and a Jev question is warranted. */
+  readonly needsJev: boolean;
+  /** The harness verdict from #124, when a turn was supplied. */
+  readonly turn: TurnClassification | null;
+}
+
+/**
+ * Deterministic classification (AC1). Order:
+ *
+ * 1. A supplied worker turn goes to `classifyTurn` (#124) *first*. A turn cut
+ *    off at the output-token ceiling has no output to judge, so reading its
+ *    text for taxonomy signals is exactly the mistake #124 exists to prevent.
+ * 2. Otherwise the rule table, first match wins.
+ * 3. Otherwise `unknown`, with `needsJev: true` so a caller with a key may
+ *    ask `failure.classify@1`.
+ */
+export function classifyFailureByRules(signal: FailureSignal): RuleClassificationResult {
+  const turn = signal.turn === undefined ? null : classifyTurn(signal.turn);
+  if (turn !== null && turn.failureClass === "harness") {
+    const category: FailureCategory = turn.kind === "capped" ? "quota" : "harness";
+    return {
+      classification: Object.freeze({
+        category,
+        confidence: 1,
+        rule: `rule:turn-${turn.kind}`,
+        source: "rule" as const,
+        reason: turn.reason,
+        needsEvidence: false,
+        evidenceRequests: Object.freeze([]),
+      }),
+      needsJev: false,
+      turn,
+    };
+  }
+  const text = signalText(signal);
+  for (const rule of FAILURE_RULES) {
+    const matched = rule.match(signal, text);
+    if (matched !== null) {
+      return {
+        classification: Object.freeze({
+          category: rule.category,
+          confidence: 1,
+          rule: rule.id,
+          source: "rule" as const,
+          reason: `Matched ${rule.id} on ${JSON.stringify(matched)}.`,
+          needsEvidence: false,
+          evidenceRequests: Object.freeze([]),
+        }),
+        needsJev: false,
+        turn,
+      };
+    }
+  }
+  return { classification: unknownClassification(signal), needsJev: true, turn };
+}
+
+/**
+ * `classifyFailure(evidence|error)` (issue Scope). Deterministic only; the
+ * Jev-assisted variant lives in `src/decisions/questions/failure.ts` and
+ * falls back to exactly this function's `unknown`.
+ */
+export function classifyFailure(signal: FailureSignal): FailureClassification {
+  return classifyFailureByRules(signal).classification;
+}
