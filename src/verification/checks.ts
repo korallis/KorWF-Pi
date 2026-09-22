@@ -28,8 +28,25 @@ import { isAbsolute, resolve } from "node:path";
 import { readLiveRepoState } from "../git/revision.ts";
 import type { GitRunner } from "../git/status.ts";
 import { realGitRunner } from "../git/status.ts";
-import type { CheckDefinition, GitSha } from "../storage/records.ts";
+import type { CheckDefinition, EvidenceExitStatus, GitSha } from "../storage/records.ts";
 import { isVerifyingCheck } from "../workflow/weak-checks.ts";
+import {
+  DEFAULT_SHELL,
+  buildEvidenceDraft,
+  capturedOutput,
+  classifyOutcome,
+  fingerprintEnvironment,
+  runStatusOf,
+} from "./evidence.ts";
+import type {
+  CapturedStream,
+  CheckRunStatus,
+  CommandOutcome,
+  EnvironmentFingerprint,
+  EvidenceDraft,
+  EvidenceSubject,
+  UnavailableReason,
+} from "./evidence.ts";
 
 // ---------------------------------------------------------------------------
 // Registration: project-wide checks merged with the task's own
@@ -232,4 +249,190 @@ function delay(ms: number): Promise<void> {
     // Never hold the event loop open for a grace period.
     timer.unref?.();
   });
+}
+
+// ---------------------------------------------------------------------------
+// Running one check
+// ---------------------------------------------------------------------------
+
+/** Default per-check deadline. Overridable per check and per call. */
+export const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** What a caller must supply to run a check. */
+export interface RunCheckOptions {
+  /** Worktree the check runs in. The revision is read from here, at run time. */
+  readonly cwd: string;
+  /** Workflow/task identity for the resulting evidence row. */
+  readonly subject: EvidenceSubject;
+  /** Per-check deadline; falls back to `DEFAULT_CHECK_TIMEOUT_MS`. */
+  readonly timeoutMs?: number;
+  /** Cooperative cancellation. An aborted check is `timed_out`, never `pass`. */
+  readonly signal?: AbortSignal;
+  /** Environment for the child. Defaults to the engine's own, minus nothing. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Byte cap per captured stream. */
+  readonly outputLimitBytes?: number;
+  /** Injected for tests; all git still goes through `src/git/`. */
+  readonly gitRunner?: GitRunner;
+  /** Grace period between SIGTERM and SIGKILL on timeout. */
+  readonly killGraceMs?: number;
+}
+
+/** The outcome of running one check: a draft row plus what a reporter needs. */
+export interface CheckRunResult {
+  readonly checkId: string;
+  readonly status: CheckRunStatus;
+  readonly exitStatus: EvidenceExitStatus;
+  /** `null` only when the worktree has no revision at all (see `no_revision`). */
+  readonly revision: GitSha | null;
+  readonly stdout: CapturedStream;
+  readonly stderr: CapturedStream;
+  readonly durationMs: number;
+  readonly fingerprint: EnvironmentFingerprint;
+  /** Pids the deadline enforcement had to kill, for the audit trail. */
+  readonly killedPids: readonly number[];
+  /** Append-ready evidence. `null` for a `human` check — see `requestHumanCheck`. */
+  readonly evidence: EvidenceDraft | null;
+  readonly caveats: readonly string[];
+}
+
+/**
+ * Read the revision of the worktree the check is about to run in.
+ *
+ * Called immediately before every run and never cached: `Evidence.revision`
+ * has to be what `git rev-parse HEAD` said *at run time*, because that is the
+ * value `docs/gates.md` §2 compares against `SHA(T)` to decide whether the
+ * evidence is fresh. A cached revision would make evidence from before a
+ * commit look current.
+ */
+export function revisionAt(cwd: string, runner: GitRunner = realGitRunner): GitSha | null {
+  const state = readLiveRepoState(cwd, runner);
+  if (state.kind !== "repo") return null;
+  return state.head as GitSha | null;
+}
+
+/** Resolve a check's repository-relative `cwd` against the worktree root. */
+export function resolveCheckCwd(worktree: string, checkCwd: string): string {
+  if (checkCwd.length === 0 || checkCwd === ".") return worktree;
+  // PLAN §7: a check may not name an absolute path, which would be
+  // machine-specific and would escape the task's worktree.
+  if (isAbsolute(checkCwd)) return worktree;
+  return resolve(worktree, checkCwd);
+}
+
+/**
+ * Execute a command line under a shell and capture its output.
+ *
+ * `detached: true` puts the child in its own process group so the whole tree
+ * can be signalled at once; without it a `SIGTERM` reaches only the shell and
+ * leaves the real work running (ADR 0004).
+ */
+export function executeCommand(args: {
+  readonly command: string;
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly timeoutMs: number;
+  readonly signal?: AbortSignal;
+  readonly killGraceMs?: number;
+}): Promise<CommandOutcome> {
+  const startedAt = Date.now();
+  return new Promise<CommandOutcome>((settle) => {
+    let child;
+    try {
+      child = spawn(args.command, {
+        cwd: args.cwd,
+        env: args.env as NodeJS.ProcessEnv,
+        shell: DEFAULT_SHELL,
+        detached: !IS_WINDOWS,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      settle(spawnFailure(error, Date.now() - startedAt));
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    let killedPids: readonly number[] = [];
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+
+    // The snapshot is taken while the process tree is still connected: after
+    // a SIGKILL the descendants have reparented and cannot be enumerated.
+    const terminate = async (): Promise<void> => {
+      timedOut = true;
+      const pid = child.pid;
+      if (pid === undefined) return;
+      const snapshot = descendantPids(pid);
+      killedPids = await killProcessTree(pid, { graceMs: args.killGraceMs ?? 300, snapshot });
+    };
+
+    const timer = setTimeout(() => {
+      void terminate();
+    }, args.timeoutMs);
+    const onAbort = (): void => {
+      void terminate();
+    };
+    args.signal?.addEventListener("abort", onAbort, { once: true });
+
+    const finish = (exitCode: number | null, sig: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      args.signal?.removeEventListener("abort", onAbort);
+      settle({
+        exitCode,
+        signal: sig,
+        timedOut,
+        unavailable: null,
+        stdout,
+        stderr,
+        durationMs: Date.now() - startedAt,
+        killedPids,
+      });
+    };
+
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      args.signal?.removeEventListener("abort", onAbort);
+      settle({ ...spawnFailure(error, Date.now() - startedAt), stdout, stderr });
+    });
+    child.on("close", (code, sig) => {
+      finish(code, sig);
+    });
+  });
+}
+
+/**
+ * A process that never started.
+ *
+ * `ENOENT` here is the shell itself being missing, not the command inside it
+ * — either way the check did not run, so the answer is `unavailable`. There
+ * is no branch in this function that can produce a pass.
+ */
+function spawnFailure(error: unknown, durationMs: number): CommandOutcome {
+  const code = (error as NodeJS.ErrnoException).code;
+  const reason: UnavailableReason =
+    code === "ENOENT" ? "command_not_found" : code === "EACCES" ? "not_executable" : "spawn_failed";
+  return {
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    unavailable: reason,
+    stdout: "",
+    stderr: error instanceof Error ? error.message : String(error),
+    durationMs,
+    killedPids: [],
+  };
 }
