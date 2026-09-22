@@ -190,3 +190,78 @@ export function definitionOfDoneChanged(before: Task, next: PlanTask): boolean {
   if (JSON.stringify(before.checks) !== JSON.stringify(toChecks(next))) return true;
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// Persistence
+// ---------------------------------------------------------------------------
+
+/**
+ * Persist a plan as revision 1 of a workflow that has none yet.
+ *
+ * Rejects (without writing anything) if the workflow already has phases —
+ * that is a revision, and `revisePlan` is the function for it.
+ */
+export function persistPlan(options: PersistPlanOptions): PersistPlanResult {
+  const { store, workflowId, plan } = options;
+  return store.write(() => {
+    const workflow = store.workflows.require(workflowId) as Workflow;
+    const existing = store.phases.forWorkflow(workflowId);
+    if (existing.length > 0) {
+      throw new PlanPersistError(
+        `workflow ${workflowId} already has ${existing.length} phase(s) at plan revision ` +
+          `${workflow.planRevision}; use revisePlan to produce revision ${workflow.planRevision + 1}`,
+      );
+    }
+    return writePlan({ ...options, workflow, previousTasks: [], previousPhases: [] });
+  });
+}
+
+interface WriteArgs extends PersistPlanOptions {
+  readonly workflow: Workflow;
+  readonly previousTasks: readonly Task[];
+  readonly previousPhases: readonly Phase[];
+}
+
+/**
+ * The single write path used by both `persistPlan` and `revisePlan`. Runs
+ * inside the caller's transaction; a throw anywhere rolls back every row.
+ */
+function writePlan(args: WriteArgs): PersistPlanResult {
+  const { store, workflowId, plan, workflow } = args;
+  const now = args.now();
+  const baseRevision = args.baseRevision ?? workflow.baseRevision;
+  const isRevision = args.previousPhases.length > 0 || args.previousTasks.length > 0;
+  const planRevision = isRevision ? workflow.planRevision + 1 : Math.max(workflow.planRevision, 1);
+
+  // Phases: match by goal+order so a stable phase keeps its record id.
+  const phaseIds = new Map<string, PhaseId>();
+  const phases: Phase[] = [];
+  const reusedPhaseIds = new Set<string>();
+  for (const planPhase of plan.phases) {
+    const previous = args.previousPhases.find((p) => p.order === planPhase.order && p.goal === planPhase.goal);
+    if (previous !== undefined) {
+      reusedPhaseIds.add(previous.id);
+      phaseIds.set(planPhase.id, previous.id);
+      const updated = store.phases.update(previous.id, {
+        goal: planPhase.goal,
+        acceptanceCriteria: toCriteria(planPhase.acceptanceCriteria),
+        integrationPoint: {
+          branch: planPhase.integrationBranch ?? previous.integrationPoint.branch,
+          baseRevision,
+        },
+      });
+      phases.push(updated);
+      continue;
+    }
+    const id = args.newId("phase") as PhaseId;
+    phaseIds.set(planPhase.id, id);
+    phases.push(store.phases.insert(buildPhase({ id, workflowId, plan: planPhase, baseRevision, now })));
+  }
+
+  const result = writeTasks({ ...args, now, planRevision, phaseIds, phases, reusedPhaseIds });
+  store.workflows.update(workflowId, {
+    planRevision,
+    status: workflow.status === "planning" ? "ready" : workflow.status,
+  });
+  return result;
+}
