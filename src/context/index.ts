@@ -7,7 +7,7 @@
  * excerpt carries the shared `Provenance` record. Pins (`pins.ts`) are
  * preserved regardless of ranking.
  */
-export type { Candidate, Provenance, RawToolOutput, RetrievalMethod } from "./types.ts";
+export type { Candidate, Provenance, RawToolOutput, RetrievalMethod, SearchTool } from "./types.ts";
 
 export {
   hasCompleteProvenance,

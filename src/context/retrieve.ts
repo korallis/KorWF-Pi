@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { DenyMatcher } from "../security/deny-list.ts";
 import { provenanceOf, UNVERSIONED_REVISION } from "./provenance.ts";
-import type { Candidate, RawToolOutput } from "./types.ts";
+import type { Candidate, RawToolOutput, SearchTool } from "./types.ts";
 
 export interface RetrieveOptions {
   /** Project root the query runs from; also the base for relative paths. */
@@ -98,6 +98,28 @@ function parseRgJson(stdout: string): RgMatch[] {
   return out;
 }
 
+/**
+ * Parse `git grep -n --no-color` output (`path:lineNumber:text`) into the
+ * same shape `parseRgJson` produces. `git grep` respects `.gitignore` the
+ * same way `git ls-files` does, so it needs no separate exclude logic.
+ */
+function parseGitGrep(stdout: string): RgMatch[] {
+  const out: RgMatch[] = [];
+  for (const line of stdout.split("\n")) {
+    if (line.length === 0) continue;
+    const first = line.indexOf(":");
+    if (first < 0) continue;
+    const second = line.indexOf(":", first + 1);
+    if (second < 0) continue;
+    const path = line.slice(0, first);
+    const lineNumber = Number(line.slice(first + 1, second));
+    if (path.length > 0 && Number.isInteger(lineNumber) && lineNumber > 0) {
+      out.push({ path: stripLeadingDotSlash(path), lineNumber });
+    }
+  }
+  return out;
+}
+
 /** rg emits `./x` for the current directory; normalise to a plain relative path. */
 function stripLeadingDotSlash(path: string): string {
   return path.startsWith("./") ? path.slice(2) : path;
@@ -114,15 +136,32 @@ function readSliceLines(absPath: string, startLine: number, endLine: number): st
 
 /**
  * Content search: `rg --json -n -i` for `query`, grouped by file, with
- * `contextLines` of context kept on each side of every match. Files denied
- * by `DenyMatcher` are dropped before their content is ever read.
+ * `contextLines` of context kept on each side of every match. When `rg` is
+ * not installed (`unavailable`), falls back to `git grep -n -I -i --untracked`
+ * — already a dependency since this module shells out to `git` for revision
+ * and recency, and it respects `.gitignore` the same way `git ls-files` does.
+ * Whichever binary actually produced a match is recorded on the candidate
+ * (`searchTool`) so provenance never claims an `rg` search that never ran.
+ * Files denied by `DenyMatcher` are dropped before their content is ever read.
  */
 export function searchContent(query: string, options: RetrieveOptions): RetrieveResult {
   const { repoRoot, contextLines = 3 } = options;
   const matcher = options.denyMatcher ?? new DenyMatcher();
-  const args = ["--json", "-n", "-i", "-e", query, "."];
-  const rawOut = run("rg", args, repoRoot);
-  const matches = parseRgJson(rawOut.stdout);
+  const raw: RawToolOutput[] = [];
+
+  const rgOut = run("rg", ["--json", "-n", "-i", "-e", query, "."], repoRoot);
+  raw.push(rgOut);
+  let matches: RgMatch[];
+  let searchTool: SearchTool;
+  if (rgOut.unavailable === true) {
+    const gitOut = run("git", ["grep", "-n", "-I", "-i", "--untracked", "--no-color", "-e", query], repoRoot);
+    raw.push(gitOut);
+    matches = parseGitGrep(gitOut.stdout);
+    searchTool = "git-grep";
+  } else {
+    matches = parseRgJson(rgOut.stdout);
+    searchTool = "rg";
+  }
 
   const byFile = new Map<string, number[]>();
   for (const m of matches) {
@@ -144,27 +183,43 @@ export function searchContent(query: string, options: RetrieveOptions): Retrieve
       text,
       matchScore: lineNumbers.length,
       ageDays: ageDaysOf(repoRoot, relPath),
+      searchTool,
     });
   }
 
-  return { candidates, raw: [rawOut] };
+  return { candidates, raw };
 }
 
 /**
  * Filename search: `rg --files`, then a case-insensitive substring match on
- * the basename/path against `query`. Stands in for symbol/dependency lookup
- * on a query that names a module or file rather than text within one.
+ * the basename/path against `query`. When `rg` is unavailable, falls back to
+ * `git ls-files --cached --others --exclude-standard`, which enumerates the
+ * same tracked-plus-untracked-but-not-ignored set `rg --files` would.
  */
 export function searchFilenames(query: string, options: RetrieveOptions): RetrieveResult {
   const { repoRoot } = options;
   const matcher = options.denyMatcher ?? new DenyMatcher();
-  const args = ["--files", "."];
-  const rawOut = run("rg", args, repoRoot);
+  const raw: RawToolOutput[] = [];
+
+  const rgOut = run("rg", ["--files", "."], repoRoot);
+  raw.push(rgOut);
+  let listing: string;
+  let searchTool: SearchTool;
+  if (rgOut.unavailable === true) {
+    const gitOut = run("git", ["ls-files", "--cached", "--others", "--exclude-standard"], repoRoot);
+    raw.push(gitOut);
+    listing = gitOut.stdout;
+    searchTool = "git-ls-files";
+  } else {
+    listing = rgOut.stdout;
+    searchTool = "rg";
+  }
+
   const needle = query.toLowerCase();
   const revision = currentRevision(repoRoot);
 
   const candidates: Candidate[] = [];
-  for (const rawPath of rawOut.stdout.split("\n")) {
+  for (const rawPath of listing.split("\n")) {
     if (rawPath.length === 0) continue;
     const relPath = stripLeadingDotSlash(rawPath);
     if (!relPath.toLowerCase().includes(needle)) continue;
@@ -182,10 +237,11 @@ export function searchFilenames(query: string, options: RetrieveOptions): Retrie
       text,
       matchScore: 0.5,
       ageDays: ageDaysOf(repoRoot, relPath),
+      searchTool,
     });
   }
 
-  return { candidates, raw: [rawOut] };
+  return { candidates, raw };
 }
 
 /** Combine content and filename candidates for one query, deduping by path. */
