@@ -124,9 +124,19 @@ export function requestKeyFor(args: {
 
 /** How a request was resolved. `granted` must carry the `Approval` it made. */
 export type ApprovalRequestResolution =
-  | { readonly status: "granted"; readonly approvalId: ApprovalId; readonly resolvedBy: string; readonly detail?: string }
-  | { readonly status: "denied"; readonly resolvedBy: string; readonly detail?: string }
-  | { readonly status: "invalidated"; readonly reason: string; readonly resolvedBy: string; readonly detail?: string };
+  | {
+      readonly status: "granted";
+      readonly approvalId: ApprovalId;
+      readonly resolvedBy: string;
+      readonly detail?: string | undefined;
+    }
+  | { readonly status: "denied"; readonly resolvedBy: string; readonly detail?: string | undefined }
+  | {
+      readonly status: "invalidated";
+      readonly reason: string;
+      readonly resolvedBy: string;
+      readonly detail?: string | undefined;
+    };
 
 /** Append-and-resolve-once store for the approval queue. */
 export class ApprovalRequestStore {
