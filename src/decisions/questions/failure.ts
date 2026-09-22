@@ -1,5 +1,5 @@
 /**
- * `failure.classify@1` and `stall.repeatedApproach@1` (issue #52; PLAN §3.G, §6).
+ * `failure.classify@1` and `stall.repeated_approach@1` (issue #52; PLAN §3.G, §6).
  *
  * Both questions are asked **only** after the deterministic layer in
  * `src/workflow/failure.ts` / `src/workflow/stall.ts` declined to decide.
@@ -8,7 +8,12 @@
  * Both fall back to the honest answer, never a guess:
  *  - `failure.classify@1` falls back to `unknown`, which carries
  *    `evidenceRequests` and `needsEvidence: true` so nothing acts on it.
- *  - `stall.repeatedApproach@1` falls back to `not_repeated`: with no key,
+ * The issue names the second question `stall.repeatedApproach@1`; the registry's
+ * naming rule (`docs/questions.md` §1, enforced by `assertQuestionNaming`) requires
+ * lower snake case, so it is registered as `stall.repeated_approach@1`. The rule is
+ * enforced in code and cannot be bypassed, so the id follows it.
+ *
+ *  - `stall.repeated_approach@1` falls back to `not_repeated`: with no key,
  *    the structural fingerprint comparison in `stall.ts` is the only claim
  *    that can be supported, and inventing a stall would stop work the
  *    evidence does not condemn.
@@ -93,7 +98,7 @@ export const failureClassifyQuestion: QuestionDefinition<FailureClassifyState, F
 });
 
 // ---------------------------------------------------------------------------
-// stall.repeatedApproach@1
+// stall.repeated_approach@1
 // ---------------------------------------------------------------------------
 
 /**
@@ -123,14 +128,14 @@ function isRepeatedApproachResult(value: string): value is RepeatedApproachResul
 }
 
 /**
- * `stall.repeatedApproach@1`. Fallback is `not_repeated`: with no key the
+ * `stall.repeated_approach@1`. Fallback is `not_repeated`: with no key the
  * only supportable claim is the structural fingerprint comparison, which
  * already said the two attempts differ. Falling back to `repeated` would
  * halt a task on no evidence at all.
  */
 export const stallRepeatedApproachQuestion: QuestionDefinition<RepeatedApproachState, RepeatedApproachResult> =
   defineChoice<RepeatedApproachState, RepeatedApproachResult>({
-    id: "stall.repeatedApproach",
+    id: "stall.repeated_approach",
     version: "1",
     prompt:
       "Two successive attempts at the same task produced different diffs. Judge whether the second is genuinely a " +
@@ -146,7 +151,7 @@ export const stallRepeatedApproachQuestion: QuestionDefinition<RepeatedApproachS
     }),
     decide: (answer) => {
       const value: RepeatedApproachResult = isRepeatedApproachResult(answer.choice) ? answer.choice : "unknown";
-      return { value, rule: `stall.repeatedApproach:${value}`, action: value };
+      return { value, rule: `stall.repeated_approach:${value}`, action: value };
     },
     fallback: () => ({ value: "not_repeated", action: "not_repeated" }),
     replay: (action) => (isRepeatedApproachResult(action) ? action : null),
@@ -171,7 +176,7 @@ export const stallRepeatedApproachQuestion: QuestionDefinition<RepeatedApproachS
 /** Hashes as reviewed; editing prompt/options without a version bump fails registration. */
 export const FAILURE_QUESTION_HASHES: Readonly<Record<string, string>> = Object.freeze({
   "failure.classify@1": failureClassifyQuestion.contentHash,
-  "stall.repeatedApproach@1": stallRepeatedApproachQuestion.contentHash,
+  "stall.repeated_approach@1": stallRepeatedApproachQuestion.contentHash,
 });
 
 export const failureQuestionRegistry = new QuestionRegistry();
