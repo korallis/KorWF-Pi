@@ -255,4 +255,73 @@ export class WorkerHandle {
   waitForExit(timeoutMs: number): Promise<boolean> {
     return waitUntil(() => this.exit !== undefined, timeoutMs);
   }
+
+  /**
+   * Three-tier cancellation (ADR 0004). The descendant snapshot is taken
+   * **before** any signal, because after SIGKILL the parent links are gone
+   * and Pi's detached commands have reparented to PID 1.
+   *
+   * 1. cooperative: RPC `abort` + `abort_bash`, wait for the worker to stop;
+   * 2. graceful: SIGTERM to the process group and pid, wait `graceMs` — Pi's
+   *    own signal handler reaps its tracked children here;
+   * 3. hard: SIGKILL group and pid, then sweep every pid in the snapshot that
+   *    is still alive.
+   */
+  async cancel(reason: string = "cancelled"): Promise<CancelResult> {
+    void reason;
+    this.cancelled = true;
+    const snapshot = snapshotTree(this.pid, this.ops);
+    const graceMs = this.contract.termination.graceMs;
+
+    if (this.exit === undefined) {
+      this.send({ id: `korwf-abort-${this.nextId++}`, type: "abort" });
+      this.send({ id: `korwf-abort-bash-${this.nextId++}`, type: "abort_bash" });
+      const stopped = await this.waitForExit(graceMs);
+      if (stopped) {
+        const sweep = await sweepSnapshot(snapshot, graceMs, this.ops);
+        return { tier: "cooperative", snapshot, survivors: sweep.survivors };
+      }
+    } else {
+      const sweep = await sweepSnapshot(snapshot, graceMs, this.ops);
+      return { tier: "cooperative", snapshot, survivors: sweep.survivors };
+    }
+
+    signalWorker(this.pid, "SIGTERM", this.ops);
+    if (await this.waitForExit(graceMs)) {
+      const sweep = await sweepSnapshot(snapshot, graceMs, this.ops);
+      return { tier: "graceful", snapshot, survivors: sweep.survivors };
+    }
+
+    signalWorker(this.pid, "SIGKILL", this.ops);
+    await this.waitForExit(graceMs);
+    const sweep = await sweepSnapshot(snapshot, graceMs, this.ops);
+    return { tier: "hard", snapshot, survivors: sweep.survivors };
+  }
+}
+
+/**
+ * The worker's opening prompt: its shipped role contract, then the task, then
+ * the termination criteria. Composed here rather than passed on the command
+ * line so the task text stays out of `ps`, and so every worker provably gets
+ * the incremental-write rules `roles.ts` enforces.
+ */
+export function composePrompt(contract: WorkerContract): string {
+  const role = loadRole(contract.role);
+  const artifacts =
+    contract.termination.artifacts.length > 0
+      ? `\nExpected artifacts:\n${contract.termination.artifacts.map((a) => `- ${a}`).join("\n")}`
+      : "";
+  return [
+    role.body.trimEnd(),
+    "",
+    "# Your task",
+    "",
+    contract.task.trim(),
+    "",
+    "# Termination",
+    "",
+    contract.termination.completionStatement.trim() + artifacts,
+    "",
+    `You are worker ${contract.workerId} in ${contract.cwd}. You may not start other agents.`,
+  ].join("\n");
 }
