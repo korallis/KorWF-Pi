@@ -590,3 +590,132 @@ function validateOwnership(bag: IssueBag, raw: unknown, path: string): PlanTask[
   });
   return { paths: outPaths, components: outComponents };
 }
+
+// ---------------------------------------------------------------------------
+// Dependency graph (PLAN §3.C "Schema and dependency-graph validation
+// (including cycles) in code")
+// ---------------------------------------------------------------------------
+
+export interface DependencyGraphResult {
+  readonly ok: boolean;
+  readonly errors: readonly PlanIssue[];
+  /** Every cycle found, each as the ordered task ids that close it. */
+  readonly cycles: readonly (readonly string[])[];
+  /** Task ids in an order where every dependency precedes its dependents. */
+  readonly topologicalOrder: readonly string[];
+}
+
+/**
+ * Validate the task dependency graph: unknown references, self-dependencies,
+ * cross-phase edges that run backwards, and cycles. Pure and deterministic —
+ * tasks are visited in document order, so the reported cycle is stable.
+ */
+export function validateDependencyGraph(
+  tasks: readonly PlanTask[],
+  phases: readonly PlanPhase[] = [],
+): DependencyGraphResult {
+  const bag = new IssueBag();
+  const index = new Map(tasks.map((t, i) => [t.id, i] as const));
+  const phaseOrder = new Map(phases.map((p) => [p.id, p.order] as const));
+
+  for (const [i, task] of tasks.entries()) {
+    for (const [j, dep] of task.dependencies.entries()) {
+      const at = `tasks[${i}].dependencies[${j}]`;
+      if (dep === task.id) {
+        bag.error("self_dependency", at, `task "${task.id}" depends on itself`);
+        continue;
+      }
+      if (!index.has(dep)) {
+        bag.error("unknown_reference", at, `no task with id "${dep}" in this plan`);
+        continue;
+      }
+      const depTask = tasks[index.get(dep) as number] as PlanTask;
+      const here = phaseOrder.get(task.phaseId);
+      const there = phaseOrder.get(depTask.phaseId);
+      if (here !== undefined && there !== undefined && there > here) {
+        bag.error(
+          "dependency_cycle",
+          at,
+          `task "${task.id}" in phase ${here} depends on "${dep}" in later phase ${there}; ` +
+            `phases run in order, so this can never become ready`,
+        );
+      }
+    }
+  }
+
+  const { cycles, order } = findCycles(tasks, index);
+  for (const cycle of cycles) {
+    const first = cycle[0] as string;
+    const at = `tasks[${index.get(first) ?? 0}].dependencies`;
+    bag.error("dependency_cycle", at, `dependency cycle: ${[...cycle, first].join(" -> ")}`);
+  }
+
+  return { ok: bag.ok, errors: bag.errors, cycles, topologicalOrder: order };
+}
+
+/**
+ * Iterative depth-first search with an explicit stack: a deeply nested plan
+ * must not blow the call stack, and a stack overflow is not a validation
+ * error a user can act on. Returns every distinct cycle plus a topological
+ * order of the acyclic part.
+ */
+function findCycles(
+  tasks: readonly PlanTask[],
+  index: ReadonlyMap<string, number>,
+): { cycles: string[][]; order: string[] } {
+  const WHITE = 0;
+  const GREY = 1;
+  const BLACK = 2;
+  const colour = new Map<string, number>(tasks.map((t) => [t.id, WHITE] as const));
+  const cycles: string[][] = [];
+  const seenCycle = new Set<string>();
+  const order: string[] = [];
+
+  for (const root of tasks) {
+    if (colour.get(root.id) !== WHITE) continue;
+    const path: string[] = [];
+    const stack: { id: string; next: number }[] = [{ id: root.id, next: 0 }];
+    colour.set(root.id, GREY);
+    path.push(root.id);
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1] as { id: string; next: number };
+      const node = tasks[index.get(frame.id) as number] as PlanTask;
+      const deps = node.dependencies.filter((d) => index.has(d));
+      if (frame.next < deps.length) {
+        const dep = deps[frame.next] as string;
+        frame.next += 1;
+        const state = colour.get(dep);
+        if (state === GREY) {
+          const start = path.indexOf(dep);
+          const cycle = path.slice(start === -1 ? 0 : start);
+          const key = canonicalCycleKey(cycle);
+          if (!seenCycle.has(key)) {
+            seenCycle.add(key);
+            cycles.push(cycle);
+          }
+          continue;
+        }
+        if (state === WHITE) {
+          colour.set(dep, GREY);
+          path.push(dep);
+          stack.push({ id: dep, next: 0 });
+        }
+        continue;
+      }
+      colour.set(frame.id, BLACK);
+      order.push(frame.id);
+      path.pop();
+      stack.pop();
+    }
+  }
+  return { cycles, order };
+}
+
+/** Rotation-independent key so the same cycle is reported once. */
+function canonicalCycleKey(cycle: readonly string[]): string {
+  if (cycle.length === 0) return "";
+  const sorted = [...cycle].sort();
+  const start = cycle.indexOf(sorted[0] as string);
+  return [...cycle.slice(start), ...cycle.slice(0, start)].join(">");
+}
