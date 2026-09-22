@@ -491,3 +491,46 @@ export function persistOrRevisePlan(options: PersistPlanOptions): PersistPlanRes
     return hasPlan ? revisePlan(options) : persistPlan(options);
   });
 }
+
+// ---------------------------------------------------------------------------
+// Reading a stored plan back
+// ---------------------------------------------------------------------------
+
+/** A stored plan as `/korwf plan --show` and the boards read it. */
+export interface StoredPlan {
+  readonly workflow: Workflow;
+  readonly phases: readonly { readonly phase: Phase; readonly tasks: readonly Task[] }[];
+}
+
+/** Read the current plan revision back out of the store, in phase order. */
+export function readStoredPlan(store: Store, workflowId: WorkflowId): StoredPlan {
+  const workflow = store.workflows.require(workflowId) as Workflow;
+  const phases = store.phases.forWorkflow(workflowId).map((phase) => ({
+    phase,
+    tasks: store.tasks.forPhase(phase.id),
+  }));
+  return { workflow, phases };
+}
+
+/** Human-readable summary of a persisted plan, for `/korwf` output and tests. */
+export function summarisePersistedPlan(result: PersistPlanResult): string {
+  const lines = [
+    `Plan revision ${result.planRevision}: ${result.phases.length} phase(s), ${result.tasks.length} task(s).`,
+  ];
+  if (result.blockedForNoChecks.length > 0) {
+    lines.push(
+      `  ${result.blockedForNoChecks.length} task(s) have no verification checks and stay "proposed" with ` +
+        `blocker "${NO_CHECKS_BLOCKER}" until checks are added (PLAN \u00a72.3): ${result.blockedForNoChecks.join(", ")}`,
+    );
+  }
+  if (result.revisedTasks.length > 0) {
+    lines.push(`  ${result.revisedTasks.length} task(s) changed definition and had their revision bumped.`);
+  }
+  if (result.supersededTasks.length > 0) {
+    lines.push(`  ${result.supersededTasks.length} task(s) were superseded and cancelled: ${result.supersededTasks.join(", ")}`);
+  }
+  if (result.invalidatedApprovals.length > 0) {
+    lines.push(`  ${result.invalidatedApprovals.length} approval(s) invalidated by this revision.`);
+  }
+  return lines.join("\n");
+}
