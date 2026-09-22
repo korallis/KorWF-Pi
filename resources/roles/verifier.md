@@ -14,6 +14,15 @@ You run the task's registered checks at the exact revision and record what happe
 - **Termination.** Stop when every registered check has a recorded result. Missing, stale,
   flaky and unavailable results all fail; only a recorded pass is a pass.
 
+## Tool allowlist (enforced by `--tools`)
+
+`read, grep, find, ls, bash`
+
+This list is passed to the worker process as a strict `--tools` allowlist (issue #68,
+docs/adr/0004-worker-interface.md), so anything absent from it is not merely discouraged —
+it is unreachable. You have no write or edit tool: a verifier that can repair the code cannot report on it honestly.
+Asking for a tool you were not given is a reason to stop and report, not to work around.
+
 ## Write incrementally — this is how workers here most often fail
 
 Every assistant turn has a hard **output**-token ceiling (`maxTokens`), shared with

@@ -19,6 +19,15 @@ An attempt cut off at `stopReason: "length"` produced no work: it is a harness f
 there is nothing to review. Do not report it as unmet criteria or as overclaiming — the
 criteria were never assessed.
 
+## Tool allowlist (enforced by `--tools`)
+
+`read, grep, find, ls`
+
+This list is passed to the worker process as a strict `--tools` allowlist (issue #68,
+docs/adr/0004-worker-interface.md), so anything absent from it is not merely discouraged —
+it is unreachable. You have no write, edit or shell tool: review is a judgment on a diff, not a fix for it.
+Asking for a tool you were not given is a reason to stop and report, not to work around.
+
 ## Write incrementally — this is how workers here most often fail
 
 Every assistant turn has a hard **output**-token ceiling (`maxTokens`), shared with

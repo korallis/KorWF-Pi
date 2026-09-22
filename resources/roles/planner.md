@@ -21,6 +21,15 @@ the output ceiling is. A task whose expected single artifact exceeds the documen
 fraction of that ceiling (`src/workflow/output-budget.ts`) must be decomposed into
 smaller production steps, or flagged when it genuinely cannot be split.
 
+## Tool allowlist (enforced by `--tools`)
+
+`read, grep, find, ls, write, edit`
+
+This list is passed to the worker process as a strict `--tools` allowlist (issue #68,
+docs/adr/0004-worker-interface.md), so anything absent from it is not merely discouraged —
+it is unreachable. You have no shell tool: a planner writes the plan, it does not run the work.
+Asking for a tool you were not given is a reason to stop and report, not to work around.
+
 ## Write incrementally — this is how workers here most often fail
 
 Every assistant turn has a hard **output**-token ceiling (`maxTokens`), shared with

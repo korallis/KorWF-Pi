@@ -14,6 +14,8 @@ import {
   READ_ONLY_ROLES,
   ROLE_IDS,
   SPAWN_TOOL_NAMES,
+  TOOL_ALLOWLIST_HEADING,
+  declaredTools,
   isReadOnlyRole,
   loadRoleDefinition,
   roleTools,
@@ -143,6 +145,25 @@ describe("role tool allowlist (ADR 0004 guard 3)", () => {
         expect(MUTATION_TOOL_NAMES as readonly string[], `${role}: ${tool}`).not.toContain(tool);
       }
     }
+  });
+
+  it("declares the same tools in the contract text as --tools enforces, for every role", () => {
+    // The worker reads the contract; the process is bound by the table. If
+    // they drift, the worker is told one thing and permitted another.
+    for (const role of ROLE_IDS) {
+      const definition = loadRoleDefinition(role);
+      expect(declaredTools(definition.body), role).toEqual([...roleTools(role)]);
+      expect(definition.body).toContain(TOOL_ALLOWLIST_HEADING);
+    }
+  });
+
+  it("refuses a contract whose declared tools no longer match the table", () => {
+    const body = loadRoleDefinition("scout").body.replace(
+      "`read, grep, find, ls`",
+      "`read, grep, find, ls, bash`",
+    );
+    expect(declaredTools(body)).toEqual(["read", "grep", "find", "ls", "bash"]);
+    expect(declaredTools(body)).not.toEqual([...roleTools("scout")]);
   });
 
   it("gives writing roles the tools they need, with the contract text attached", () => {
