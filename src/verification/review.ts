@@ -38,7 +38,14 @@
  */
 import { createHash } from "node:crypto";
 import type { ReviewSeverity } from "../decisions/questions/review.ts";
-import { REVIEW_SEVERITIES, SEVERITY_RANK, normaliseSeverity } from "../decisions/questions/review.ts";
+import {
+  REVIEW_SEVERITIES,
+  SEVERITY_RANK,
+  clampReviewExcerpt,
+  normaliseSeverity,
+  reviewSeverityQuestion,
+} from "../decisions/questions/review.ts";
+import { ask, type AskContext } from "../decisions/ask.ts";
 import type { GitSha, Revision } from "../storage/records.ts";
 
 export type { ReviewSeverity };
@@ -662,4 +669,175 @@ export function reviewGateVerdict(args: {
     return { satisfied: false, reasons: ["blocking_finding_unresolved"], blocking: [...blocking].sort() };
   }
   return { satisfied: true, reasons: [], blocking: [] };
+}
+
+// ---------------------------------------------------------------------------
+// Running a review
+// ---------------------------------------------------------------------------
+
+/**
+ * The reviewing model, injected.
+ *
+ * Until Stage 5 workers exist the review runs in-process with the
+ * structured-output approach (issue #48 Context), so this module takes a
+ * function rather than spawning anything. It also means the tests never make
+ * a live model call: they pass a deterministic reviewer.
+ *
+ * The signature is the contract: a reviewer receives a **prompt string** and
+ * nothing else. It has no handle on the attempt, the claim, or the store.
+ */
+export type ReviewRunner = (prompt: string, context: ReviewContext) => Promise<readonly RawFinding[]>;
+
+/** Grade one finding. Returns the reviewer's suggestion when Jev is absent. */
+export type SeverityGrader = (
+  finding: ReviewFinding,
+  context: ReviewContext,
+) => Promise<{ readonly severity: ReviewSeverity; readonly source: "jev" | "fallback"; readonly decisionId: string | null }>;
+
+/**
+ * The deterministic grader: the reviewer's own suggested severity, unchanged.
+ *
+ * This is the no-Jev-key path required by AGENTS.md §4, and it is the
+ * question's declared fallback (`review.severity@1`), so the disabled path
+ * and the abstention path agree by construction.
+ */
+export const suggestedSeverityGrader: SeverityGrader = (finding) =>
+  Promise.resolve({ severity: finding.suggestedSeverity, source: "fallback", decisionId: null });
+
+/**
+ * Run one independent review and return the record.
+ *
+ * Order matters: the prompt is built, asserted claim-free, and only then
+ * handed to the reviewer. `claims` is passed *solely* so the assertion can
+ * check for its absence — it is never rendered, and `buildReviewerPrompt` has
+ * no access to it.
+ */
+export async function runReview(args: {
+  readonly id: string;
+  readonly context: ReviewContext;
+  readonly reviewer: ReviewerIdentity;
+  readonly run: ReviewRunner;
+  readonly grade?: SeverityGrader;
+  /** Author claim text, for contamination checking only. */
+  readonly claims?: readonly string[];
+  readonly rechecksReviewId?: string | null;
+}): Promise<ReviewRecord> {
+  const prompt = buildReviewerPrompt(args.context);
+  assertClaimFree(prompt, args.claims ?? []);
+
+  const raw = await args.run(prompt, args.context);
+  const grade = args.grade ?? suggestedSeverityGrader;
+  const findings: ReviewFinding[] = [];
+  for (const item of raw) {
+    const ingested = ingestFinding(item);
+    findings.push(applyGradedSeverity(ingested, await grade(ingested, args.context)));
+  }
+
+  return {
+    id: args.id,
+    taskId: args.context.taskId,
+    taskRevision: args.context.taskRevision,
+    revision: args.context.revision,
+    reviewer: args.reviewer,
+    promptHash: reviewPromptHash(prompt),
+    findings,
+    rechecksReviewId: args.rechecksReviewId ?? null,
+  };
+}
+
+/**
+ * Grader backed by `review.severity@1`.
+ *
+ * `ask()` never throws: a disabled transport, an error, an invalid response
+ * and an abstention all land on the question's deterministic fallback, which
+ * is the reviewer's suggestion. A `Decision` row is written on every path, so
+ * "Jev graded this" and "the key was absent" are distinguishable afterwards
+ * rather than being the same silent value.
+ */
+export function jevSeverityGrader(
+  ctx: AskContext,
+  options: { readonly subject?: { readonly taskId: string; readonly taskRevision: number } } = {},
+): SeverityGrader {
+  return async (finding, context) => {
+    const criterion = context.criteria.find((c) => c.id === finding.criterionId) ?? null;
+    const excerpt =
+      context.diff.find(
+        (h) =>
+          h.path === finding.location.path &&
+          h.startLine <= finding.location.endLine &&
+          h.endLine >= finding.location.startLine,
+      )?.patch ?? "";
+    const where =
+      options.subject === undefined
+        ? {}
+        : { subject: { taskId: options.subject.taskId as never, taskRevision: options.subject.taskRevision } };
+    const result = await ask(
+      ctx,
+      reviewSeverityQuestion,
+      {
+        findingId: finding.id,
+        location: finding.location,
+        description: finding.description,
+        suggested: finding.suggestedSeverity,
+        criterion: criterion === null ? null : { id: criterion.id, text: criterion.text },
+        excerpt: clampReviewExcerpt(excerpt),
+        changeClass: context.changeClass,
+      },
+      where,
+    );
+    return {
+      severity: result.value,
+      source: result.source === "jev" ? "jev" : "fallback",
+      decisionId: result.decisionId,
+    };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// A review, as evidence
+// ---------------------------------------------------------------------------
+
+/**
+ * Turn a review into an `Evidence` draft for the gate to read.
+ *
+ * `exitStatus` is `exited 0` only when no blocking finding is unresolved —
+ * `task-gate.ts` C3 counts a review row as passing on exactly that condition,
+ * so a blocking finding refuses the gate through the evidence itself rather
+ * than through a parallel code path that could drift.
+ *
+ * `reviewer.kind` is `"model"`: a review is never `deterministic` evidence,
+ * so it can never stand in for a registered check under condition 1.
+ */
+export function reviewToEvidence(args: {
+  readonly review: ReviewRecord;
+  readonly workflowId: string;
+  readonly requirementId: string;
+  readonly authorFamily?: string | null;
+}): {
+  readonly checkId: null;
+  readonly requirementId: string;
+  readonly workflowId: string;
+  readonly taskId: string;
+  readonly taskRevision: Revision;
+  readonly revision: GitSha;
+  readonly attemptId: string;
+  readonly exitStatus: { readonly kind: "exited"; readonly code: number };
+  readonly reviewer: { readonly kind: "model"; readonly model: string; readonly attemptId: string };
+  readonly caveats: readonly string[];
+  readonly promptHash: string;
+} {
+  const blocking = blockingFindings(args.review.findings);
+  return {
+    checkId: null,
+    requirementId: args.requirementId,
+    workflowId: args.workflowId,
+    taskId: args.review.taskId,
+    taskRevision: args.review.taskRevision,
+    revision: args.review.revision,
+    attemptId: args.review.reviewer.attemptId,
+    exitStatus: { kind: "exited", code: blocking.length === 0 ? 0 : 1 },
+    reviewer: { kind: "model", model: args.review.reviewer.model, attemptId: args.review.reviewer.attemptId },
+    caveats: reviewCaveats(args.review, args.authorFamily ?? null),
+    promptHash: args.review.promptHash,
+  };
 }
