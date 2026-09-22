@@ -32,6 +32,16 @@ import { registerSessionHooks } from "./session-hooks.ts";
 import { registerCatalogRefresh } from "./catalog-refresh.ts";
 import type { CatalogConfig } from "../models/catalog.ts";
 import { registerMainSessionRouting } from "./main-session-routing.ts";
+import { runAvailability, runRefusalMessage } from "./commands/run.ts";
+
+/**
+ * Recursion guard 2 (#68, ADR 0004): read the depth marker once, at load.
+ * When this process is itself a worker, the spawn surface is not registered
+ * at all — `run` is absent from the command list, its completion, and the
+ * dispatch switch — so there is nothing to invoke rather than something that
+ * refuses.
+ */
+const RUN_AVAILABILITY = runAvailability();
 
 const SUBCOMMANDS = [
   "version",
@@ -47,11 +57,17 @@ const SUBCOMMANDS = [
   "phases",
   "approvals",
   "export",
+  "run",
 ] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
+/** Subcommands actually offered by this process: `run` only outside a worker. */
+const ACTIVE_SUBCOMMANDS: readonly Subcommand[] = SUBCOMMANDS.filter(
+  (s) => s !== "run" || RUN_AVAILABILITY.available,
+);
+
 function isSubcommand(value: string): value is Subcommand {
-  return (SUBCOMMANDS as readonly string[]).includes(value);
+  return (ACTIVE_SUBCOMMANDS as readonly string[]).includes(value);
 }
 
 export default function korwfExtension(pi: ExtensionAPI): void {
@@ -87,9 +103,9 @@ export default function korwfExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("korwf", {
-    description: `KorWF workflow commands: /korwf <${SUBCOMMANDS.join("|")}>`,
+    description: `KorWF workflow commands: /korwf <${ACTIVE_SUBCOMMANDS.join("|")}>`,
     getArgumentCompletions: (prefix: string) => {
-      const items = SUBCOMMANDS.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
+      const items = ACTIVE_SUBCOMMANDS.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
       return items.length > 0 ? items : null;
     },
     handler: async (args, ctx) => {
@@ -100,7 +116,13 @@ export default function korwfExtension(pi: ExtensionAPI): void {
       const [sub, ...rest] = args.trim().split(/\s+/);
 
       if (!sub || !isSubcommand(sub)) {
-        ui.notify(`Unknown subcommand. Use: ${SUBCOMMANDS.join(", ")}`, "warning");
+        // A worker typing `/korwf run` lands here; say why rather than
+        // pretending the subcommand was a typo.
+        if (sub === "run" && !RUN_AVAILABILITY.available) {
+          ui.notify(runRefusalMessage(RUN_AVAILABILITY), "error");
+          return;
+        }
+        ui.notify(`Unknown subcommand. Use: ${ACTIVE_SUBCOMMANDS.join(", ")}`, "warning");
         return;
       }
 
@@ -108,6 +130,15 @@ export default function korwfExtension(pi: ExtensionAPI): void {
         switch (sub) {
           case "version": {
             ui.notify(versionMessage(), "info");
+            return;
+          }
+          case "run": {
+            // Reachable only when RUN_AVAILABILITY.available; the dispatcher
+            // rejects `run` otherwise. Scheduling itself lands in #69+.
+            ui.notify(
+              "`/korwf run` is not implemented yet; single-worker execution lands with the scheduler.",
+              "warning",
+            );
             return;
           }
           case "models": {
