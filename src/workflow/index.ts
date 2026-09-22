@@ -8,6 +8,27 @@
  * - `attempt-controller.ts` — settlement of one worker turn (#124).
  */
 export {
+  buildWorkflow,
+  CURRENT_POLICY_VERSION,
+  deterministicClarificationQuestions,
+  GREENFIELD_ROOT_COMMIT,
+  intakeSummary,
+  MAX_CLARIFICATION_QUESTIONS,
+  parsePlanArgs,
+  resolveRepo,
+  runClarificationLoop,
+} from "./intake.ts";
+export type {
+  BuildWorkflowInput,
+  ClarificationAnswer,
+  ClarificationPrompt,
+  ClarificationQuestion,
+  ClarificationResult,
+  ParsedMode,
+  ParsedPlanArgs,
+  ResolvedRepo,
+} from "./intake.ts";
+export {
   ASSUMED_MAX_OUTPUT_TOKENS,
   BYTES_PER_TOKEN,
   DECOMPOSE_FRACTION,

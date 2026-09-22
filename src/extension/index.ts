@@ -3,9 +3,10 @@
  *
  * This is the only module that imports `@earendil-works/pi-coding-agent`
  * (docs/adr/0002-source-layout.md). It registers the `/korwf` command
- * namespace with `version`, and the route-aware `models` and `status`
- * listings from issue #125. Later issues add `plan`, `run`, and the rest
- * of the surface described in README.md "Planned user interface".
+ * namespace with `version`, the route-aware `models` and `status`
+ * listings from issue #125, and `plan` (issue #33, intake). Later issues
+ * add `run` and the rest of the surface described in README.md "Planned
+ * user interface".
  *
  * Every command, tool, and storage path this package registers is
  * namespaced `korwf` (PLAN §3.J; AGENTS.md constraint).
@@ -20,9 +21,10 @@ import { RouteAvailabilityTable } from "../models/availability.ts";
 import { guardHandler, redactedUi } from "./redacted-ui.ts";
 import { jevStatusMessage } from "./commands/jev-status.ts";
 import { purgeMessage, whyMessage } from "./commands/why.ts";
+import { runPlanIntake } from "./commands/plan.ts";
 import { openStore, resolveStorageRoot } from "../storage/index.ts";
 
-const SUBCOMMANDS = ["version", "models", "status", "config", "disclosure", "jev", "why", "purge"] as const;
+const SUBCOMMANDS = ["version", "models", "status", "config", "disclosure", "jev", "why", "purge", "plan"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 function isSubcommand(value: string): value is Subcommand {
@@ -100,6 +102,15 @@ export default function korwfExtension(pi: ExtensionAPI): void {
             } finally {
               store.close();
             }
+            return;
+          }
+          case "plan": {
+            const result = await runPlanIntake(rest.join(" "), {
+              cwd: ctx.cwd,
+              ui: { input: ctx.ui.input, hasUI: ctx.hasUI },
+              sessionId: ctx.sessionManager.getSessionId(),
+            });
+            ui.notify(result.message, result.ok ? "info" : "error");
             return;
           }
           case "disclosure": {
