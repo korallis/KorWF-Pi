@@ -61,10 +61,15 @@ describe("retrieveCandidates", () => {
     }
   });
 
-  it("retains original rg output alongside filtered excerpts", () => {
+  it("retains the original tool output alongside filtered excerpts", () => {
     const { raw } = retrieveCandidates("password", { repoRoot: repo.root });
     expect(raw.length).toBeGreaterThan(0);
-    expect(raw.every((r) => r.tool === "rg")).toBe(true);
+    // PLAN §3.B requires the ORIGINAL tool output be retained, not that a
+    // particular tool ran. Asserting `tool === "rg"` fails wherever ripgrep is
+    // absent (e.g. GitHub runners), which is exactly the fallback this issue
+    // added. Assert the invariant instead: whatever ran is named honestly, and
+    // its raw output is kept.
+    expect(raw.every((r) => r.tool === "rg" || r.tool === "git")).toBe(true);
     expect(raw.some((r) => r.stdout.length > 0)).toBe(true);
   });
 
