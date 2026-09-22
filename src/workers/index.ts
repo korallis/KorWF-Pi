@@ -8,6 +8,8 @@
  * - `env.ts` — credential scrubbing and the depth marker (#68).
  * - `process-tree.ts` / `spawn.ts` — launch, RPC framing, three-tier cancel (#68).
  * - `surface.ts` — best-effort worktree Space visibility (#68).
+ * - `worktree.ts` — attempt worktree lifecycle under `.korwf/worktrees/<attempt>`,
+ *   built from the base revision, never touching the main tree (#70).
  *
  * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
  * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
@@ -22,3 +24,4 @@ export * from "./env.ts";
 export * from "./process-tree.ts";
 export * from "./spawn.ts";
 export * from "./surface.ts";
+export * from "./worktree.ts";
