@@ -93,3 +93,60 @@ describe("AC: a plan persists into Phase and Task records", () => {
     ).toThrow(PlanPersistError);
   });
 });
+
+describe("AC: a task with checks: [] persists as proposed with the no_checks blocker (PLAN §2.3)", () => {
+  it("stores status proposed and blocker no_checks", () => {
+    const store = freshStore();
+    const result = persistPlan({
+      store,
+      workflowId: WF,
+      plan: planWithoutChecks(),
+      now: () => AT,
+      newId: idFactory(),
+    });
+    const task = store.tasks.require(result.tasks[0]!.id);
+    expect(task.status).toBe("proposed");
+    expect(task.blocker).toBe(NO_CHECKS_BLOCKER);
+    expect(result.blockedForNoChecks).toEqual([task.id]);
+  });
+
+  it("stores a task that does have checks as proposed with no blocker", () => {
+    const store = freshStore();
+    const result = persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    const task = store.tasks.require(result.tasks[0]!.id);
+    expect(task.status).toBe("proposed");
+    expect(task.blocker).toBeNull();
+    expect(result.blockedForNoChecks).toEqual([]);
+  });
+
+  it("never writes a `ready` task, even for a fully specified plan", () => {
+    const store = freshStore();
+    persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(store.tasks.findBy("workflowId", WF).every((t) => t.status === "proposed")).toBe(true);
+  });
+
+  it("clears the blocker when a revision adds checks to the task", () => {
+    const store = freshStore();
+    const first = persistPlan({
+      store,
+      workflowId: WF,
+      plan: planWithoutChecks(),
+      now: () => AT,
+      newId: idFactory(),
+    });
+    revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(store.tasks.require(first.tasks[0]!.id).blocker).toBeNull();
+  });
+
+  it("names the blocked tasks in the summary text", () => {
+    const store = freshStore();
+    const result = persistPlan({
+      store,
+      workflowId: WF,
+      plan: planWithoutChecks(),
+      now: () => AT,
+      newId: idFactory(),
+    });
+    expect(summarisePersistedPlan(result)).toContain(NO_CHECKS_BLOCKER);
+  });
+});
