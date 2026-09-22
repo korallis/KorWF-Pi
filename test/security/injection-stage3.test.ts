@@ -20,7 +20,13 @@ import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { retrieveCandidates, searchContent } from "../../src/context/retrieve.ts";
 import { hasCompleteProvenance, verifyProvenance } from "../../src/context/provenance.ts";
 import { parsePlanOutput } from "../../src/workflow/plan-parse.ts";
-import { validatePlanDocument, taskReadiness, WEAK_CHECK_BLOCKER } from "../../src/workflow/plan-schema.ts";
+import {
+  hasRegisteredChecks,
+  validatePlanDocument,
+  taskReadiness,
+  WEAK_CHECK_BLOCKER,
+} from "../../src/workflow/plan-schema.ts";
+import { isTrivialCheck, isVerifyingCheck, trivialCheckReason } from "../../src/workflow/weak-checks.ts";
 import {
   buildInjectionRepo,
   containsInjection,
@@ -165,5 +171,111 @@ describe("AC1: a plan carrying status/approval directives cannot set status or a
     // The check's `rationale` claims end-to-end coverage. The description is
     // not evidence; the command is.
     expect(result.plan.tasks[0]!.checks[0]!.rationale).toMatch(/end to end/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC2 — `true` / `exit 0` / empty-command checks are flagged (#39, #37).
+// gates.spec.md §B5 required this; nothing implemented it before #44, so
+// `src/workflow/weak-checks.ts` is the fix and these are its adversarial
+// tests.
+// ---------------------------------------------------------------------------
+
+/** Every unconditionally-passing command gates.spec.md §B5 enumerates, plus more. */
+const TRIVIAL_COMMANDS = [
+  "true",
+  "exit 0",
+  ":",
+  "/bin/true",
+  "/usr/bin/true",
+  "echo ok",
+  "cd x && true",
+  "",
+  "   ",
+  "printf ''",
+  "true && true",
+  "true || npm test",
+  "cd packages/app; :",
+  "CI=1 true",
+  "exit",
+  "pwd",
+  // The dressed-up evasions: each *mentions* a real command but cannot fail.
+  "npm test || true",
+  "npm test; true",
+  "npm run lint || exit 0",
+  "npm test | true",
+] as const;
+
+/** Commands that genuinely can fail — the rule must not over-reach. */
+const REAL_COMMANDS = [
+  "npm test",
+  "npm run lint",
+  "exit 1",
+  "npm test && npm run lint",
+  "echo ok && npm test",
+  "cd packages/app && npm test",
+  "node --test",
+  "./scripts/check.sh",
+  "git diff --exit-code",
+] as const;
+
+describe("AC2: a check whose command cannot fail is flagged", () => {
+  for (const command of TRIVIAL_COMMANDS) {
+    it(`flags ${JSON.stringify(command)} as a weak check`, () => {
+      expect(isTrivialCheck({ kind: "command", command })).toBe(true);
+      expect(trivialCheckReason({ kind: "command", command })).toMatch(/never fail|verifies nothing/);
+      expect(isVerifyingCheck({ kind: "command", command, required: true })).toBe(false);
+    });
+  }
+
+  for (const command of REAL_COMMANDS) {
+    it(`does not flag ${JSON.stringify(command)}, which can fail`, () => {
+      expect(isTrivialCheck({ kind: "command", command })).toBe(false);
+      expect(isVerifyingCheck({ kind: "command", command, required: true })).toBe(true);
+    });
+  }
+
+  it("applies to every executed check kind, not just `command`", () => {
+    for (const kind of ["command", "assertion", "lint", "typecheck"]) {
+      expect(isTrivialCheck({ kind, command: "true" })).toBe(true);
+    }
+  });
+
+  it("leaves `human` checks alone — their command is an instruction, not a command line", () => {
+    expect(isTrivialCheck({ kind: "human", command: "true" })).toBe(false);
+    expect(isVerifyingCheck({ kind: "human", command: "Confirm the receipt prints.", required: true })).toBe(true);
+    // ...but an unrequired human check is still not a registered means of
+    // verification (the pre-existing #41 rule, unchanged).
+    expect(isVerifyingCheck({ kind: "human", command: "Have a look.", required: false })).toBe(false);
+  });
+
+  it("does not treat a separator inside a quoted argument as a command boundary", () => {
+    expect(isTrivialCheck({ kind: "command", command: 'npm test -- --grep "a && true"' })).toBe(false);
+  });
+
+  it("a task whose every check is weak has no registered means of verification", () => {
+    const weak = TRIVIAL_COMMANDS.map((command, i) => ({
+      id: `c${i}`,
+      kind: "command" as const,
+      command,
+      cwd: ".",
+      expectedExitCode: 0,
+      coversCriteria: [],
+      required: true,
+    }));
+    expect(hasRegisteredChecks(weak)).toBe(false);
+    // One real check among them is enough.
+    expect(hasRegisteredChecks([...weak, { ...weak[0]!, id: "real", command: "npm test" }])).toBe(true);
+  });
+
+  it("flags the weak check in plan validation, path-qualified, without rejecting the plan", () => {
+    const result = validatePlanDocument(JSON.parse(readInjectedPlanJson()));
+    expect(result.ok).toBe(true);
+    const weak = result.warnings.filter((w) => w.rule === "weak_check");
+    expect(weak.length).toBeGreaterThanOrEqual(2);
+    expect(weak.some((w) => w.path === "tasks[0].checks[0].command")).toBe(true);
+    expect(weak.some((w) => w.path === "tasks[0].checks" && w.message.includes(WEAK_CHECK_BLOCKER))).toBe(true);
+    // A warning, not an error: the rest of the planner's work is not discarded.
+    expect(weak.every((w) => w.severity === "warning")).toBe(true);
   });
 });

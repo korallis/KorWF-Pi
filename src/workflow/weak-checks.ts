@@ -54,15 +54,31 @@ const ALWAYS_SUCCEEDS = new Set([
 /** Commands that are pure navigation/setup and assert nothing on their own. */
 const NEUTRAL_PROGRAMS = new Set(["cd", "pushd", "popd", "export", "set", "umask"]);
 
+/** A command-line segment plus the shell operator that introduced it. */
+export interface CommandSegment {
+  /** `""` for the first segment. */
+  readonly op: "" | "&&" | "||" | ";" | "|";
+  readonly text: string;
+}
+
 /**
  * Split a command line on the shell operators that sequence commands, so
  * `cd packages/app && true` is judged by its parts. Quoted regions are left
  * alone: a separator inside `"a && b"` is data, not a separator.
+ *
+ * The operator is kept, because it decides the exit status of the whole line
+ * — `true || npm test` never runs `npm test` and always exits 0.
  */
-export function splitCommandSegments(command: string): string[] {
-  const segments: string[] = [];
+export function splitCommandSegments(command: string): CommandSegment[] {
+  const segments: CommandSegment[] = [];
   let current = "";
+  let op: CommandSegment["op"] = "";
   let quote: '"' | "'" | null = null;
+  const push = (next: CommandSegment["op"]): void => {
+    segments.push({ op, text: current.trim() });
+    current = "";
+    op = next;
+  };
   for (let i = 0; i < command.length; i += 1) {
     const ch = command[i] as string;
     if (quote !== null) {
@@ -77,20 +93,22 @@ export function splitCommandSegments(command: string): string[] {
     }
     const pair = command.slice(i, i + 2);
     if (pair === "&&" || pair === "||") {
-      segments.push(current);
-      current = "";
+      push(pair);
       i += 1;
       continue;
     }
-    if (ch === ";" || ch === "|" || ch === "\n") {
-      segments.push(current);
-      current = "";
+    if (ch === ";" || ch === "\n") {
+      push(";");
+      continue;
+    }
+    if (ch === "|") {
+      push("|");
       continue;
     }
     current += ch;
   }
-  segments.push(current);
-  return segments.map((segment) => segment.trim()).filter((segment) => segment.length > 0);
+  push("");
+  return segments.filter((segment) => segment.text.length > 0);
 }
 
 /**
@@ -134,12 +152,40 @@ export function trivialCheckReason(check: CheckLike): string | null {
   if (command.trim().length === 0) {
     return `check command is empty, so it can never fail`;
   }
+  if (commandCanFail(command)) return null;
+  return `check command ${JSON.stringify(command)} passes unconditionally and verifies nothing`;
+}
+
+/**
+ * Can this command line ever exit non-zero?
+ *
+ * Shell short-circuiting decides the answer, so the operators matter as much
+ * as the programs: `true || npm test` never runs `npm test`, and
+ * `npm test || true` swallows the failure. Both exit 0 unconditionally and
+ * are therefore not verification, even though each mentions a real test
+ * command — this is the obvious way to dress a weak check up as a real one.
+ */
+export function commandCanFail(command: string): boolean {
   const segments = splitCommandSegments(command);
-  if (segments.length === 0) return `check command is empty, so it can never fail`;
-  if (segments.every(segmentAlwaysPasses)) {
-    return `check command ${JSON.stringify(command)} passes unconditionally and verifies nothing`;
+  const first = segments[0];
+  if (first === undefined) return false;
+  let canFail = !segmentAlwaysPasses(first.text);
+  for (const segment of segments.slice(1)) {
+    const segmentCanFail = !segmentAlwaysPasses(segment.text);
+    if (segment.op === "&&") {
+      // The right side only runs if the left succeeded; either side failing
+      // fails the line.
+      canFail = canFail || segmentCanFail;
+    } else if (segment.op === "||") {
+      // The right side only runs if the left failed; the line fails only if
+      // both do. A left that cannot fail makes the right unreachable.
+      canFail = canFail && segmentCanFail;
+    } else {
+      // `;` and `|`: the last command's status is the line's status.
+      canFail = segmentCanFail;
+    }
   }
-  return null;
+  return canFail;
 }
 
 /** Convenience predicate over `trivialCheckReason`. */
