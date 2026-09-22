@@ -82,7 +82,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Task-profile evaluator independent of model names.
 - [ ] Jev selection question against cards; code enforces allowlist/budget/policy after selection.
 - [ ] User pins and explicit overrides.
-- [ ] Cap detection (429, quota, budget) → ModelAvailability with estimated reset.
+- [x] Cap detection (429, quota, budget) → ModelAvailability with estimated reset (#62).
 - [x] Route identity: opaque `routeId` per (provider, model); availability, health and outcomes keyed per route, cards per model; rename rule in ADR 0011 (#125).
 - [ ] Fallback: Jev ranks substitutes for the task profile; "none adequate" → pause.
 - [ ] Mid-task handoff packet with intact worktree; restart alternative per task-kind policy.
