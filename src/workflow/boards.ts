@@ -45,6 +45,14 @@ export interface PhaseBoardRow {
   readonly blockers: readonly BlockerRow[];
   readonly taskCounts: Readonly<Record<Task["status"], number>>;
   readonly taskTotal: number;
+  /**
+   * Earliest `ModelAvailability.estimatedReset` among the phase's unresolved
+   * `all_candidates_capped` blockers' watched routes, parsed back out of the
+   * `task-cap`/`phase-cap` evidence refs (#63; PLAN §3.D "status shows
+   * earliest estimated reset"). `null` when the phase is not cap-paused, or
+   * when every capped route's reset is unknown.
+   */
+  readonly earliestCapReset: string | null;
 }
 
 export interface PhaseBoardFilter {
@@ -69,7 +77,7 @@ const ZERO_TASK_COUNTS: Record<Task["status"], number> = {
 export type TaskBoardReadStore = Pick<Store, "tasks" | "phases" | "evidence" | "attempts" | "blockers">;
 
 /** The store surfaces `buildPhaseBoard` needs — read-only by type. */
-export type PhaseBoardReadStore = Pick<Store, "tasks" | "phases" | "blockers">;
+export type PhaseBoardReadStore = Pick<Store, "tasks" | "phases" | "blockers" | "transitionLog">;
 
 /** @deprecated use `TaskBoardReadStore` or `PhaseBoardReadStore`. Kept for callers needing both. */
 export type BoardReadStore = TaskBoardReadStore & PhaseBoardReadStore;
@@ -135,6 +143,28 @@ export function buildTaskBoard(
   return rows;
 }
 
+/**
+ * Earliest estimated cap reset for a phase (#63; PLAN §3.D "status shows
+ * earliest estimated reset"), read from the evidence refs `applyCapPause`
+ * (`src/models/cap-pause.ts`) recorded on the most recent accepted
+ * `phase-cap`/`all_candidates_capped` transition — this module stays
+ * read-only (module doc), so it parses what was already written rather than
+ * asking `src/models/availability.ts` again. `null` when the phase has no
+ * such pause, or the pause's reset was `unknown`.
+ */
+function earliestCapResetFor(store: PhaseBoardReadStore, phaseId: string): string | null {
+  const events = store.transitionLog
+    .forSubject("phase", phaseId)
+    .filter((e) => e.disposition === "accepted" && e.trigger === "all_candidates_capped");
+  if (events.length === 0) return null;
+  const latest = events[events.length - 1]!;
+  for (const ref of latest.evidenceRefs) {
+    const match = /^availability:earliest_reset=(.+)$/.exec(ref);
+    if (match !== null) return match[1] === "unknown" ? null : match[1]!;
+  }
+  return null;
+}
+
 /** Build the rows for `/korwf phases`, optionally filtered by gate status. */
 export function buildPhaseBoard(
   store: PhaseBoardReadStore,
@@ -153,6 +183,7 @@ export function buildPhaseBoard(
       blockers: store.blockers.unresolvedForSubject("phase", phase.id),
       taskCounts: counts,
       taskTotal: tasks.length,
+      earliestCapReset: phase.gateStatus === "paused_cap" ? earliestCapResetFor(store, phase.id) : null,
     });
   }
   return rows;

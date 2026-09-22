@@ -6,6 +6,7 @@ import { openStore, type Store } from "../../../src/storage/db.ts";
 import type { PhaseId, TaskId, WorkflowId } from "../../../src/storage/records.ts";
 import { buildTaskBoard, buildPhaseBoard } from "../../../src/workflow/boards.ts";
 import { raiseTaskBlocker } from "../../../src/workflow/blockers.ts";
+import { applyCapPause } from "../../../src/models/cap-pause.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 import { makeAttempt, makeEvidence, makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
 
@@ -111,5 +112,43 @@ describe("AC: phase board shows gate status, budget, and task counts", () => {
 
     expect(buildPhaseBoard(store, WF, { status: "pending" })).toHaveLength(1);
     expect(buildPhaseBoard(store, WF, { status: "passed" })).toHaveLength(0);
+  });
+
+  it("surfaces the earliest estimated cap reset for a cap-paused phase (#63)", () => {
+    const store = freshStore();
+    store.workflows.insert(makeWorkflow({ id: WF, planRevision: 1, status: "running" }));
+    store.phases.insert(makePhase({ id: PH, workflowId: WF, gateStatus: "running" }));
+    store.tasks.insert(makeTask({ id: "tk-1" as TaskId, workflowId: WF, phaseId: PH, status: "running" }));
+
+    applyCapPause(
+      {
+        store,
+        taskId: "tk-1" as TaskId,
+        phaseId: PH,
+        actor: { kind: "engine", identity: "engine" },
+        now: () => AT,
+        newId: () => `id-${(counter += 1)}`,
+      },
+      {
+        kind: "pause",
+        reason: "all_capped",
+        earliestReset: "2026-01-01T00:30:00.000Z",
+        blocker: "all eligible candidates capped",
+        watchRoutes: [],
+      },
+    );
+
+    const rows = buildPhaseBoard(store, WF);
+    expect(rows[0]?.phase.gateStatus).toBe("paused_cap");
+    expect(rows[0]?.earliestCapReset).toBe("2026-01-01T00:30:00.000Z");
+  });
+
+  it("reports null earliestCapReset for a phase that is not cap-paused", () => {
+    const store = freshStore();
+    store.workflows.insert(makeWorkflow({ id: WF }));
+    store.phases.insert(makePhase({ id: PH, workflowId: WF, gateStatus: "running" }));
+
+    const rows = buildPhaseBoard(store, WF);
+    expect(rows[0]?.earliestCapReset).toBeNull();
   });
 });
