@@ -30,18 +30,22 @@ if a listed file no longer carries the header.
 
 | File in this repository | Source (`<pi-install>/examples/extensions/…`) | Pi version | ADR 0001 row |
 | ----------------------- | --------------------------------------------- | ---------- | ------------ |
-| _none yet_              | —                                             | —          | —            |
+| `src/security/bash-classifier.ts` | `plan-mode/utils.ts` | 0.86.1 | 2 |
 
 <!-- notices:adapted-files:end -->
 
-As of the PR that created this file (#113), no file in `src/` has yet been copied or
-adapted from a Pi example: the copy manifest in ADR 0001 names the planned targets
-(`git/status.ts`, `workflow/approvals/dirty-tree.ts`, `extension/ui/questionnaire.ts`,
-`workers/contracts/report-tool.ts`, `workers/roles.ts`, `workers/spawn.ts`,
-`security/bash-classifier.ts`), but those modules are still placeholders. ADR 0001 was
-written against Pi **0.86.0**; the version currently installed for development is
-**0.86.1**. Each row added to the table must cite the exact version the code was read
-from, which may differ per file.
+`src/security/bash-classifier.ts` (#69) is the first adapted file: it takes the *shape*
+of `plan-mode/utils.ts`'s decision — an anchored allowlist of read-only commands plus a
+denylist that overrides it — and many of the individual patterns, under ADR 0001 row 2
+("Extend (fragment)"). Its header records what differs and why, the material change being
+that the allowlist is applied per shell *segment* rather than to the whole command line,
+which closes the `ls && <mutation>` bypass the upstream classifier has.
+
+The remaining planned targets in the ADR 0001 copy manifest (`git/status.ts`,
+`workflow/approvals/dirty-tree.ts`, `extension/ui/questionnaire.ts`,
+`workers/contracts/report-tool.ts`) are not yet adapted. ADR 0001 was written against Pi
+**0.86.0**; the version currently installed for development is **0.86.1**. Each row added
+to the table must cite the exact version the code was read from, which may differ per file.
 
 ## Pi (`@earendil-works/pi-coding-agent`) — MIT
 
