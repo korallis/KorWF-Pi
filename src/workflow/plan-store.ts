@@ -371,3 +371,48 @@ function writeTasks(args: WriteTasksArgs): PersistPlanResult {
     idMapping: { phases: phaseIds, tasks: taskIds },
   };
 }
+
+/**
+ * Identity across revisions (docs/records.md §5.1: "Replanning that changes
+ * what a task *is* keeps the id… a genuinely new piece of work gets a new
+ * id"). Matching is by exact goal first, then by an unambiguous ownership
+ * overlap: those are the two signals available without the planner being
+ * asked to remember record ids it never saw.
+ */
+function matchPreviousTask(
+  planTask: PlanTask,
+  previous: readonly Task[],
+  taken: ReadonlySet<string>,
+): Task | undefined {
+  const available = previous.filter((t) => !taken.has(t.id));
+  const byGoal = available.find((t) => t.goal === planTask.goal);
+  if (byGoal !== undefined) return byGoal;
+  if (planTask.ownership.paths.length === 0) return undefined;
+  const wanted = new Set(planTask.ownership.paths);
+  const overlapping = available.filter((t) => t.ownership.paths.some((p) => wanted.has(p)));
+  // Only an unambiguous match counts: two candidates means we cannot tell
+  // which task this is, and inventing continuity would silently carry an
+  // approval across a scope change.
+  return overlapping.length === 1 ? overlapping[0] : undefined;
+}
+
+/**
+ * Tasks the new revision dropped. They are `cancelled` with blocker
+ * `superseded` rather than deleted: their attempts, evidence and audit trail
+ * remain readable, which is what `/korwf why` and replay need.
+ */
+function supersedeDroppedTasks(
+  store: Store,
+  previous: readonly Task[],
+  taken: ReadonlySet<string>,
+  _now: IsoTimestamp,
+): readonly TaskId[] {
+  const superseded: TaskId[] = [];
+  for (const task of previous) {
+    if (taken.has(task.id)) continue;
+    if (task.status === "cancelled" || task.status === "done") continue;
+    const updated = store.tasks.update(task.id, { status: "cancelled", blocker: SUPERSEDED_BLOCKER });
+    superseded.push(updated.id);
+  }
+  return superseded;
+}
