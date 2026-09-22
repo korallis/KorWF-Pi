@@ -202,7 +202,7 @@ export function definitionOfDoneChanged(before: Task, next: PlanTask): boolean {
  * that is a revision, and `revisePlan` is the function for it.
  */
 export function persistPlan(options: PersistPlanOptions): PersistPlanResult {
-  const { store, workflowId, plan } = options;
+  const { store, workflowId } = options;
   return store.write(() => {
     const workflow = store.workflows.require(workflowId) as Workflow;
     const existing = store.phases.forWorkflow(workflowId);
