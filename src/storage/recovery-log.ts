@@ -1,6 +1,6 @@
 /**
  * Storage for bounded-recovery decisions (issue #53; migration
- * `0007-recovery.sql`).
+ * `0008-recovery.sql`).
  *
  * PLAN §3.G requires every recovery response to be auditable and bounded.
  * This is the durable half: one append-only row per decision, naming the
