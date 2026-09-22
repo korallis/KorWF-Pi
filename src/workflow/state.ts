@@ -384,13 +384,8 @@ interface EventDraft {
   readonly afterHash: string;
 }
 
-function appendEvent(
-  store: Store,
-  draft: EventDraft,
-  now: () => IsoTimestamp,
-  newId: () => string,
-): TransitionEvent {
-  const event: TransitionEvent = {
+function buildEvent(draft: EventDraft, now: () => IsoTimestamp, newId: () => string): TransitionEvent {
+  return {
     eventId: newId(),
     createdAt: now(),
     workflowId: draft.workflow.id,
@@ -413,26 +408,69 @@ function appendEvent(
     beforeHash: draft.beforeHash,
     afterHash: draft.afterHash,
   };
-  return store.transitionLog.insert(event);
+}
+
+function appendEvent(
+  store: Store,
+  draft: EventDraft,
+  now: () => IsoTimestamp,
+  newId: () => string,
+): TransitionEvent {
+  return store.transitionLog.insert(buildEvent(draft, now, newId));
 }
 
 /**
- * Reject: append the event, then throw. The append happens inside the
- * caller's transaction; if it cannot persist, the throw propagates and
- * nothing was mutated either — fail closed, as §6 requires.
+ * Internal carrier for a refusal.
+ *
+ * A rejection must be *persisted*, and a rejection happens inside the
+ * transaction that was going to make the change. Appending the row there and
+ * then throwing would roll the row back with everything else, leaving no
+ * trace of the refusal — the exact failure docs/state-machine.md §6 warns
+ * about. So the event is built inside the transaction (against the snapshot
+ * that was evaluated) and appended in a fresh one after the rollback, by
+ * `flushRejection`.
  */
+class PendingRejection extends Error {
+  readonly event: TransitionEvent;
+  readonly code: RejectionCode;
+  readonly failedGuards: readonly Precondition[];
+
+  constructor(event: TransitionEvent, code: RejectionCode, failedGuards: readonly Precondition[], message: string) {
+    super(message);
+    this.event = event;
+    this.code = code;
+    this.failedGuards = failedGuards;
+  }
+}
+
+/** Build the rejection event and abandon the transaction. */
 function reject(
-  store: Store,
+  _store: Store,
   draft: Omit<EventDraft, "disposition">,
   message: string,
   now: () => IsoTimestamp,
   newId: () => string,
 ): never {
-  const event = appendEvent(store, { ...draft, disposition: "rejected" }, now, newId);
-  throw new TransitionRejected({
+  throw new PendingRejection(
+    buildEvent({ ...draft, disposition: "rejected" }, now, newId),
+    draft.reasonCode ?? "unlisted_edge",
+    draft.failedGuards as readonly Precondition[],
     message,
-    code: draft.reasonCode ?? "unlisted_edge",
-    failedGuards: draft.failedGuards as readonly Precondition[],
+  );
+}
+
+/**
+ * Persist a refusal and surface it. Called after the evaluating transaction
+ * has rolled back, so the only row written is the event itself: "no mutation
+ * of task/phase/attempt/approval". If *this* write fails, the storage error
+ * propagates — fail closed.
+ */
+function flushRejection(store: Store, pending: PendingRejection): never {
+  const event = store.write(() => store.transitionLog.insert(pending.event));
+  throw new TransitionRejected({
+    message: pending.message,
+    code: pending.code,
+    failedGuards: pending.failedGuards,
     event,
   });
 }
@@ -470,6 +508,15 @@ export const ENGINE_ONLY_SUCCESS_STATES = { task: ["done"], phase: ["done"] } as
  * the transaction, and the state change plus its event are one commit.
  */
 export function transitionTask(request: TaskTransitionRequest): TransitionResult<Task> {
+  try {
+    return evaluateTaskTransition(request);
+  } catch (error) {
+    if (error instanceof PendingRejection) flushRejection(request.store, error);
+    throw error;
+  }
+}
+
+function evaluateTaskTransition(request: TaskTransitionRequest): TransitionResult<Task> {
   const { store, now, newId } = request;
   const evidenceRefs = request.evidenceRefs ?? [];
   const gitRevision = request.gitRevision ?? null;
@@ -593,6 +640,11 @@ function commitTaskEdge(args: CommitTaskArgs): TransitionResult<Task> {
     );
   }
 
+  // Raise the requested blocker *before* guards run, so `blocker_present` is
+  // a fact about the store rather than a claim: a caller cannot assert it
+  // without a reason on record. The enclosing transaction rolls this back if
+  // any guard then fails, so a refused request leaves no row behind.
+  const raised = raiseRequestedBlocker(request, "task", task.id, task.workflowId);
   const context: GuardContext = {
     store,
     workflow,
@@ -602,7 +654,7 @@ function commitTaskEdge(args: CommitTaskArgs): TransitionResult<Task> {
     actor: request.actor,
     now: now(),
     evidenceRefs: base.evidenceRefs,
-    unresolvedBlockers,
+    unresolvedBlockers: raised === null ? unresolvedBlockers : [...unresolvedBlockers, raised.kind],
   };
   const guards = withStructuralGuards(request.guards ?? {}, context);
   const evaluation = evaluateGuards(edge.preconditions, guards, context);
@@ -637,10 +689,11 @@ function commitTaskEdge(args: CommitTaskArgs): TransitionResult<Task> {
  * The blocker half of a task transition, and the reason `Task.blocker` is
  * never a caller-supplied string:
  *
- * - Entering `blocked` **requires** a blocker row. The request's `blocker`
- *   field creates one; if the caller supplied none, the unresolved rows that
- *   already exist are what keep the task blocked (the `blocker_present`
- *   structural guard has already refused the edge when there are neither).
+ * - Entering `blocked` **requires** a blocker row. `raiseRequestedBlocker`
+ *   has already written the request's own reason, and if the caller supplied
+ *   none, the rows that already exist are what keep the task blocked — the
+ *   `blocker_present` structural guard refuses the edge when there are
+ *   neither.
  * - Leaving `blocked` for `ready` resolves the rows that were holding it
  *   — "clear resolved blocker" in the `task-ready` row. History is kept: the
  *   rows are resolved, not deleted.
@@ -651,22 +704,6 @@ function applyTaskBlockerSideEffects(args: CommitTaskArgs): string | null {
   const { request, task } = args;
   const { store } = request;
   const at = request.now();
-
-  if (request.blocker !== undefined) {
-    store.blockers.insert({
-      blockerId: request.newId(),
-      createdAt: at,
-      workflowId: task.workflowId,
-      subjectKind: "task",
-      subjectId: task.id,
-      kind: request.blocker.kind,
-      detail: request.blocker.detail,
-      raisedBy: `${request.actor.kind}:${request.actor.identity}`,
-      resolvedAt: null,
-      resolvedBy: null,
-      resolutionDetail: null,
-    });
-  }
 
   if (request.to === "ready" || request.to === "cancelled") {
     for (const blocker of store.blockers.unresolvedForSubject("task", task.id)) {
@@ -695,6 +732,34 @@ export function deriveBlockerField(
   return kinds.length === 0 ? null : [...new Set(kinds)].join(",");
 }
 
+/**
+ * Write the request's own blocker, if it carries one. Returns the row so the
+ * guard context can see it: `blocker_present` must be satisfied by a
+ * *record*, never by a caller's boolean.
+ */
+function raiseRequestedBlocker(
+  request: TransitionRequestBase,
+  subjectKind: TransitionSubjectKind,
+  subjectId: string,
+  workflowId: WorkflowId,
+): { readonly kind: string } | null {
+  if (request.blocker === undefined) return null;
+  request.store.blockers.insert({
+    blockerId: request.newId(),
+    createdAt: request.now(),
+    workflowId,
+    subjectKind,
+    subjectId,
+    kind: request.blocker.kind,
+    detail: request.blocker.detail,
+    raisedBy: `${request.actor.kind}:${request.actor.identity}`,
+    resolvedAt: null,
+    resolvedBy: null,
+    resolutionDetail: null,
+  });
+  return { kind: request.blocker.kind };
+}
+
 // ---------------------------------------------------------------------------
 // Phase transitions
 // ---------------------------------------------------------------------------
@@ -708,6 +773,15 @@ export function deriveBlockerField(
  * because "the projection is not permission to skip gating substages".
  */
 export function transitionPhase(request: PhaseTransitionRequest): TransitionResult<Phase> {
+  try {
+    return evaluatePhaseTransition(request);
+  } catch (error) {
+    if (error instanceof PendingRejection) flushRejection(request.store, error);
+    throw error;
+  }
+}
+
+function evaluatePhaseTransition(request: PhaseTransitionRequest): TransitionResult<Phase> {
   const { store, now, newId } = request;
   const evidenceRefs = request.evidenceRefs ?? [];
   const gitRevision = request.gitRevision ?? null;
@@ -820,6 +894,7 @@ function commitPhaseEdge(args: CommitPhaseArgs): TransitionResult<Phase> {
     );
   }
 
+  raiseRequestedBlocker(request, "phase", phase.id, phase.workflowId);
   const context: GuardContext = {
     store,
     workflow,
@@ -840,22 +915,6 @@ function commitPhaseEdge(args: CommitPhaseArgs): TransitionResult<Phase> {
       now,
       newId,
     );
-  }
-
-  if (request.blocker !== undefined) {
-    store.blockers.insert({
-      blockerId: newId(),
-      createdAt: now(),
-      workflowId: phase.workflowId,
-      subjectKind: "phase",
-      subjectId: phase.id,
-      kind: request.blocker.kind,
-      detail: request.blocker.detail,
-      raisedBy: `${request.actor.kind}:${request.actor.identity}`,
-      resolvedAt: null,
-      resolvedBy: null,
-      resolutionDetail: null,
-    });
   }
 
   const unresolved = store.blockers.unresolvedForSubject("phase", phase.id).map((b) => b.kind);
