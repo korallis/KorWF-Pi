@@ -694,10 +694,16 @@ function commitTaskEdge(args: CommitTaskArgs): TransitionResult<Task> {
  *   none, the rows that already exist are what keep the task blocked — the
  *   `blocker_present` structural guard refuses the edge when there are
  *   neither.
- * - Leaving `blocked` for `ready` resolves the rows that were holding it
- *   — "clear resolved blocker" in the `task-ready` row. History is kept: the
- *   rows are resolved, not deleted.
- * - `Task.blocker` is then *derived* from the unresolved rows, so it cannot
+ * - `task-ready`'s side effect is "clear **resolved** blocker", and that is
+ *   all it can be: `readiness_valid` requires that no unresolved blocker
+ *   remains, so by the time this edge commits the reasons are already
+ *   resolved and only the derived `Task.blocker` field needs clearing. A
+ *   transition cannot resolve the very blocker that would otherwise have
+ *   refused it.
+ * - `task-cancel` does resolve the outstanding reasons: the work is
+ *   abandoned, so nothing is waiting on them any more. They are resolved,
+ *   not deleted, so the record still says what had stopped the task.
+ * - `Task.blocker` is *derived* from the unresolved rows, so it cannot
  *   disagree with them.
  */
 function applyTaskBlockerSideEffects(args: CommitTaskArgs): string | null {
@@ -705,7 +711,7 @@ function applyTaskBlockerSideEffects(args: CommitTaskArgs): string | null {
   const { store } = request;
   const at = request.now();
 
-  if (request.to === "ready" || request.to === "cancelled") {
+  if (request.to === "cancelled") {
     for (const blocker of store.blockers.unresolvedForSubject("task", task.id)) {
       store.blockers.resolve(blocker.blockerId, {
         at,
