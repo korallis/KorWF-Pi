@@ -178,3 +178,135 @@ export function evaluateGuards(
   }
   return { satisfied: failed.length === 0, failed };
 }
+
+// ---------------------------------------------------------------------------
+// Structural guards: deterministic facts no caller may contradict
+// ---------------------------------------------------------------------------
+
+/**
+ * Does this task carry at least one *executable* check, or an explicitly
+ * required human check (PLAN §2.3, `checks_registered`)?
+ *
+ * `required: false` does not exempt a registered check from the gate, but an
+ * optional human check is not on its own a registered means of verification:
+ * a task whose only check is an unrequired human one has nothing that can be
+ * run, so it cannot become ready.
+ */
+export function hasExecutableCheck(task: Pick<Task, "checks">): boolean {
+  const executable = new Set<string>(EXECUTABLE_CHECK_KINDS);
+  return task.checks.some((check) => executable.has(check.kind) || (check.kind === "human" && check.required));
+}
+
+/**
+ * Guard verdicts computed from the store rather than supplied by the caller.
+ *
+ * These are combined with the caller's table by **conjunction**, and the
+ * structural verdict wins: a caller cannot pass `checks_registered: () => true`
+ * for a task with no checks, and cannot claim `readiness_valid` while an
+ * unresolved blocker or an unmet dependency exists. That is what "deterministic
+ * checks cannot be waived by any tool path" means in code.
+ */
+export function structuralGuards(context: GuardContext): Partial<Record<Precondition, GuardOutcome>> {
+  const out: Partial<Record<Precondition, GuardOutcome>> = {};
+  const { task } = context;
+  if (task !== null) {
+    out.checks_registered = hasExecutableCheck(task);
+    const dependenciesDone = task.dependencies.every(
+      (dep) => context.store.tasks.get(dep)?.status === "done",
+    );
+    out.readiness_valid = context.unresolvedBlockers.length === 0 && dependenciesDone;
+    out.blocker_present = context.unresolvedBlockers.length > 0;
+  }
+  return out;
+}
+
+/** Apply the structural verdicts on top of a caller table (conjunctive). */
+export function withStructuralGuards(guards: GuardTable, context: GuardContext): GuardTable {
+  const structural = structuralGuards(context);
+  const merged: GuardTable = { ...guards };
+  for (const [id, verdict] of Object.entries(structural) as [Precondition, GuardOutcome][]) {
+    const supplied = guards[id];
+    merged[id] = (inner) => {
+      if (verdict !== true) return verdict;
+      if (supplied === undefined) return verdict;
+      try {
+        return supplied(inner);
+      } catch {
+        return false;
+      }
+    };
+  }
+  return merged;
+}
+
+// ---------------------------------------------------------------------------
+// Edge lookup
+// ---------------------------------------------------------------------------
+
+/** Every distinct trigger name in the two tables. */
+export const TASK_TRIGGERS = [...new Set(TASK_TRANSITIONS.map((t) => t.trigger))] as readonly string[];
+export const PHASE_TRIGGERS = [...new Set(PHASE_TRANSITIONS.map((t) => t.trigger))] as readonly string[];
+
+/**
+ * The listed edge for `(from, to)`, optionally narrowed by trigger.
+ *
+ * There is deliberately no fallback: two rows share a `(from, to)` pair only
+ * with different triggers (`task-block` and `task-invalidate` both end
+ * `blocked`), and choosing one of them for a caller who did not say which
+ * would be exactly the "coercion into a similar edge" §6 forbids.
+ */
+export function findTaskTransition(
+  from: TaskStatus,
+  to: TaskStatus,
+  trigger?: string,
+): Transition<TaskStatus> | undefined {
+  return TASK_TRANSITIONS.find(
+    (row) =>
+      row.to === to &&
+      (row.from as readonly TaskStatus[]).includes(from) &&
+      (trigger === undefined || row.trigger === trigger),
+  ) as Transition<TaskStatus> | undefined;
+}
+
+export function findPhaseTransition(
+  from: PhaseState,
+  to: PhaseState,
+  trigger?: string,
+): Transition<PhaseState> | undefined {
+  return PHASE_TRANSITIONS.find(
+    (row) =>
+      row.to === to &&
+      (row.from as readonly PhaseState[]).includes(from) &&
+      (trigger === undefined || row.trigger === trigger),
+  ) as Transition<PhaseState> | undefined;
+}
+
+/** Is `(from, to)` a listed task edge at all? Used by the table-driven test. */
+export function isLegalTaskEdge(from: TaskStatus, to: TaskStatus): boolean {
+  return findTaskTransition(from, to) !== undefined;
+}
+
+export function isLegalPhaseEdge(from: PhaseState, to: PhaseState): boolean {
+  return findPhaseTransition(from, to) !== undefined;
+}
+
+/** Lifecycle state a persisted `PhaseGateStatus` projects onto (§1 table). */
+export function phaseLifecycleState(gateStatus: PhaseGateStatus): PhaseState | undefined {
+  for (const state of PHASE_STATES) {
+    if ((PHASE_STORAGE_STATES[state] as readonly PhaseGateStatus[]).includes(gateStatus)) return state;
+  }
+  return undefined;
+}
+
+/**
+ * The `PhaseGateStatus` a lifecycle state is stored as. `gating` enters at
+ * `integrating` — the projection is not permission to skip substages, so the
+ * engine enters gating at its first substage and `advanceGating` walks it.
+ */
+export function phaseStorageStatus(state: PhaseState): PhaseGateStatus {
+  const first = PHASE_STORAGE_STATES[state][0];
+  return first as PhaseGateStatus;
+}
+
+/** Ordered gating substages; `phase-done` may only be requested from the last. */
+export const GATING_SUBSTAGES = PHASE_STORAGE_STATES.gating;
