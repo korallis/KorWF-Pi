@@ -63,7 +63,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 ## 4. Verification, review, recovery (Stage 4)
 
 - [x] Check registration per task/project; evidence capture at exact revision and environment. (#45)
-- [ ] Task gate implementation (PLAN §2.4); worker claims and Jev scores cannot set `done`.
+- [x] Task gate implementation (PLAN §2.4); worker claims and Jev scores cannot set `done`. (#46)
 - [ ] Completion-claim, evidence-gap, and test-exercises-requirement evaluators.
 - [ ] Independent review contexts; findings, severity, disposition, recheck.
 - [ ] Human-approval gates for high-risk classes.

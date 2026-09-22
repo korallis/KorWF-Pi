@@ -23,6 +23,7 @@ import { DecisionCacheStore } from "./decision-cache.ts";
 import { DecisionTraceStore } from "./trace-store.ts";
 import { BlockerStore, TransitionLogStore } from "./transition-log.ts";
 import { ActionLogStore } from "./action-log.ts";
+import { GateReceiptStore } from "./gate-receipts.ts";
 import { reconcileAbandonedAttempts, type ReconcileOptions, type ReconciliationReport } from "./reconcile.ts";
 import type { AuditEntry, AuditEntryId, IsoTimestamp, RecordTable, WorkflowId } from "./records.ts";
 import { RECORDS_SCHEMA_VERSION } from "./records.ts";
@@ -113,6 +114,8 @@ export class Store {
   readonly blockers: BlockerStore;
   /** Completed-action receipts and refused replays (#42), see action-log.ts. */
   readonly actions: ActionLogStore;
+  /** Task/phase gate evaluations (#46); the only authority for `done`, see gate-receipts.ts. */
+  readonly gateReceipts: GateReceiptStore;
 
   readonly #db: Database;
   readonly #lock: LockHandle | null;
@@ -163,6 +166,7 @@ export class Store {
     this.transitionLog = new TransitionLogStore(this.#db);
     this.blockers = new BlockerStore(this.#db);
     this.actions = new ActionLogStore(this.#db);
+    this.gateReceipts = new GateReceiptStore(this.#db);
   }
 
   #context(audit: AuditSink | null): RepoContext {

@@ -60,6 +60,28 @@ Every predicate below is **pure and deterministic**: same records + same `SHA` +
 | **author** | The `Attempt` whose `outcome` produced the completion claim being gated (the attempt bound to `task-submit`). |
 | **audit entry** | An `AuditEntry` row (§7). |
 
+### 2.1 Where the task gate lives (issue #46)
+
+`src/verification/task-gate.ts` implements §3–§5 and §7 for the task gate:
+
+- `evaluateTaskGate(input)` is the pure predicate. It takes the revision as an
+  argument rather than reading one, evaluates **all four** conditions (never
+  short-circuiting), and returns one `GateConditionResult` per condition plus an
+  ordered list of `{condition, reasonCode, detail}`. `C1` and `C3` take no
+  `Decision` parameter at all, so §3's "Jev cannot waive (1) or (3)" is a fact
+  about the signatures rather than a rule someone has to remember.
+- `runTaskGate(store, taskId, options)` builds that input from the store, reads
+  the revision through `src/git/` (`revisionAt`), and records **one**
+  `gate_receipt` row for the evaluation, pass or reject, before returning.
+- `completeTask(store, taskId, …)` is the only supported route to `done`: it
+  evaluates, records, and on a pass requests `task-done` with that receipt.
+- The single-writer guarantee of §7 is enforced in
+  `TaskRepository.beforeUpdate`: a patch setting `status = "done"` without a
+  passing, unconsumed, revision-matched receipt is refused with
+  `status_write_forbidden`, whatever path it arrives by.
+- `/korwf why <taskId>` renders the recorded conditions of the latest receipt,
+  so a refusal is explained from stored fields and not from a message string.
+
 ## 3. Task gate — `TASK_GATE(T)`
 
 The `task-done` transition (`review → done`) commits **iff** `TASK_GATE(T) = ⊤`. It is

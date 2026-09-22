@@ -10,7 +10,11 @@
  *
  * - `task`: a patch touching `goal`/`acceptanceCriteria`/`checks` must bump
  *   `revision` by exactly one; a patch that changes `revision` without
- *   touching a revisioned field is rejected (§5.1).
+ *   touching a revisioned field is rejected (§5.1). And `status = "done"` is
+ *   refused unless an unconsumed passing gate receipt exists for this task at
+ *   this revision (issue #46; docs/gates.md §7 guarantee 1) — the single
+ *   structural reason a worker claim, a `/korwf` command, a bash call, a
+ *   resumed session or a migration cannot complete a task.
  * - `attempt`: once `outcome` is non-null the row is frozen (§4).
  * - `approval`: only `invalidation` is patchable, `null → non-null` (§4).
  */
@@ -32,6 +36,7 @@ import type {
   Workflow,
 } from "../records.ts";
 import { TASK_REVISIONED_FIELDS } from "../records.ts";
+import { GateReceiptStore } from "../gate-receipts.ts";
 import { AppendOnlyRepository, MutableRepository, type RepoContext } from "./base.ts";
 import {
   approvalSpec,
@@ -66,15 +71,70 @@ export class PhaseRepository extends MutableRepository<Phase> {
 }
 
 export class TaskRepository extends MutableRepository<Task> {
+  readonly #receipts: GateReceiptStore;
+  /** One-shot authorisation for the next `status = done` patch. */
+  #pendingReceiptId: string | null = null;
+
   constructor(ctx: RepoContext) {
     super(ctx, taskSpec);
+    this.#receipts = new GateReceiptStore(ctx.db);
   }
 
   forPhase(phaseId: string): readonly Task[] {
     return this.findBy("phaseId", phaseId);
   }
 
+  /**
+   * Present a passing gate receipt to authorise **one** `status = done`
+   * patch, and consume it (issue #46; docs/gates.md §7 guarantee 1).
+   *
+   * Callers do not get to say "this task is done"; they get to say "this
+   * receipt says so", and the store checks the receipt. The authorisation is
+   * cleared by the very next update whatever its outcome, so it cannot leak
+   * into a later, unrelated patch.
+   *
+   * Returns the receipt id on success; throws when the receipt does not
+   * exist, is a rejection, was already consumed, or belongs to another task
+   * or another task revision.
+   */
+  authoriseDone(receiptId: string): string {
+    return this.ctx.write(() => {
+      const receipt = this.#receipts.find(receiptId);
+      if (receipt === undefined || receipt.gate !== "task" || receipt.disposition !== "pass") {
+        this.reject(
+          `status_write_forbidden: receipt ${receiptId} is not a passing task-gate receipt (docs/gates.md §7)`,
+        );
+      }
+      const task = this.require(receipt.subjectId);
+      if (receipt.subjectRevision !== task.revision) {
+        this.reject(
+          `status_write_forbidden: receipt ${receiptId} was issued at task revision ` +
+            `${receipt.subjectRevision}, task ${task.id} is at ${task.revision}`,
+        );
+      }
+      if (!this.#receipts.consume(receiptId, this.ctx.now())) {
+        this.reject(`status_write_forbidden: gate receipt ${receiptId} was already used`);
+      }
+      this.#pendingReceiptId = receiptId;
+      return receiptId;
+    });
+  }
+
   protected override beforeUpdate(before: Task, candidate: Task, patch: Partial<Task>): Task {
+    const authorisation = this.#pendingReceiptId;
+    this.#pendingReceiptId = null;
+    if (patch.status === "done" && before.status !== "done") {
+      if (authorisation === null) {
+        this.reject(
+          `status_write_forbidden: task ${before.id} may only become "done" through a passing ` +
+            `task-gate receipt (PLAN §2.4, docs/gates.md §7). A claim is not a receipt.`,
+        );
+      }
+      const receipt = this.#receipts.find(authorisation);
+      if (receipt === undefined || receipt.subjectId !== before.id || receipt.subjectRevision !== before.revision) {
+        this.reject(`status_write_forbidden: gate receipt ${authorisation} does not authorise task ${before.id}`);
+      }
+    }
     const touchesRevisioned = TASK_REVISIONED_FIELDS.some((field) => field in patch);
     const revisionChanged = "revision" in patch && patch.revision !== before.revision;
     if (touchesRevisioned && candidate.revision !== before.revision + 1) {
