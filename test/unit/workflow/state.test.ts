@@ -166,3 +166,58 @@ describe("AC1: every illegal transition in the Stage 1 table is rejected", () =>
     });
   }
 });
+
+describe("AC1: the same, for every phase (from, to) pair", () => {
+  const pairs: { from: PhaseState; to: PhaseState }[] = [];
+  for (const from of PHASE_STATES) for (const to of PHASE_STATES) pairs.push({ from, to });
+
+  for (const { from, to } of pairs) {
+    const listed = findPhaseTransition(from, to);
+    const label = `phase ${from} -> ${to}`;
+    const gateStatus = from === "gating" ? "integrating" : from === "paused" ? "paused_cap" : from === "done" ? "passed" : from;
+
+    if (listed === undefined) {
+      it(`rejects unlisted ${label}`, () => {
+        const store = freshStore();
+        store.phases.update(PH, { gateStatus });
+        let error: unknown;
+        try {
+          transitionPhase({
+            store,
+            phaseId: PH,
+            to,
+            trigger: PHASE_TRANSITIONS[0].trigger,
+            actor: { kind: "engine", identity: "test" },
+            guards: allGuardsTrue(),
+            evidenceRefs: ["ev:1"],
+            now: () => AT,
+            newId,
+          });
+        } catch (caught) {
+          error = caught;
+        }
+        expect(error, label).toBeInstanceOf(TransitionRejected);
+        expect(["unlisted_edge", "terminal_subject", "unknown_trigger"]).toContain((error as TransitionRejected).code);
+        expect(store.phases.require(PH).gateStatus).toBe(gateStatus);
+      });
+      continue;
+    }
+    it(`accepts listed ${label} (${listed.id}) when every guard holds`, () => {
+      const store = freshStore();
+      store.phases.update(PH, { gateStatus });
+      const result = transitionPhase({
+        store,
+        phaseId: PH,
+        to,
+        trigger: listed.trigger,
+        actor: actorFor(listed.whoMayTrigger),
+        guards: allGuardsTrue(),
+        evidenceRefs: ["ev:1"],
+        now: () => AT,
+        newId,
+      });
+      expect(phaseLifecycleState(result.subject.gateStatus)).toBe(to);
+      expect(result.transitionId).toBe(listed.id);
+    });
+  }
+});
