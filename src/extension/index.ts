@@ -14,6 +14,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { versionMessage } from "./commands/version.ts";
 import { modelsMessage, statusMessage } from "./commands/models.ts";
+import { parsePinArgs, parseUnpinArgs, pinModel, unpinModel } from "./commands/models-pin.ts";
 import { configMessage, disclosureMessage, loadForProject } from "./commands/config.ts";
 import { createFileDisclosureStore, ensureDisclosureAccepted } from "./disclosure.ts";
 import { getPackageVersion } from "./commands/version.ts";
@@ -142,6 +143,19 @@ export default function korwfExtension(pi: ExtensionAPI): void {
             return;
           }
           case "models": {
+            const [modelsSub, ...modelsRest] = rest;
+            if (modelsSub === "pin") {
+              const parsed = parsePinArgs(modelsRest);
+              const outcome = parsed.ok ? pinModel(ctx.cwd, parsed.model, parsed.taskKind) : parsed;
+              ui.notify(outcome.message, outcome.ok ? "info" : "error");
+              return;
+            }
+            if (modelsSub === "unpin") {
+              const parsed = parseUnpinArgs(modelsRest);
+              const outcome = "taskKind" in parsed ? unpinModel(ctx.cwd, parsed.taskKind) : parsed;
+              ui.notify(outcome.message, outcome.ok ? "info" : "error");
+              return;
+            }
             const models = ctx.modelRegistry.getAvailable();
             ui.notify(modelsMessage({ models, availability, now: new Date().toISOString() }), "info");
             return;

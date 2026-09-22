@@ -34,6 +34,9 @@ export type TaskKind =
   | "refactor"
   | "research";
 
+/** Every `TaskKind`, in schema order. Mirrors `$defs/TaskKind.enum` in `schema.json`. */
+export const TASK_KINDS = ["default", "plan", "implement", "test", "review", "docs", "refactor", "research"] as const satisfies readonly TaskKind[];
+
 /** Utility: deep-partial for the raw (pre-default) user config. */
 export type DeepPartial<T> = T extends readonly (infer U)[]
   ? readonly DeepPartial<U>[]
