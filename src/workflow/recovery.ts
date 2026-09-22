@@ -1,0 +1,231 @@
+/**
+ * Bounded recovery policies and side-effect reconciliation (issue #53;
+ * PLAN §3.G).
+ *
+ * > Bounded responses: gather evidence, retry, fallback model (D), replan,
+ * > change worker/profile, request review, ask user, stop. No blind retry of
+ * > side effects; reconcile uncertain outcomes first.
+ *
+ * Two absolutes, and everything in this module exists to hold them:
+ *
+ * 1. **Every policy is bounded.** There is no path through `chooseRecovery`
+ *    that returns `retry` forever. The ladder for each failure category is a
+ *    finite list, each rung has its own cap from config, and the attempt
+ *    ceiling is checked *before* the ladder is consulted. An unbounded retry
+ *    loop is the failure this issue exists to prevent — six attempts on one
+ *    task once burnt ~400k tokens here and produced no files.
+ * 2. **No blind retry of side effects.** A step that may have written, pushed
+ *    or published is not retried until its outcome is reconciled. The
+ *    receipts in `src/storage/action-log.ts` (#42) already refuse a replay;
+ *    this module *consults* them rather than re-deriving the idea, and when
+ *    there is no receipt and no probe, the outcome is unknown and the
+ *    response is terminal.
+ *
+ * What this module does **not** do:
+ *
+ * - It does not classify failures. `src/workflow/failure.ts` (#52) is the
+ *   taxonomy; a `FailureClassification` is an input here. There is no second
+ *   taxonomy.
+ * - It does not decide retry bounds for service calls. `src/jev/resilience.ts`
+ *   (#26) owns transport retry and the circuit breaker; a `service` failure
+ *   that reached this module has already exhausted those.
+ * - It does not pick a fallback model (Stage 5, PLAN §3.D) or produce a new
+ *   plan (Stage 3). Those responses are returned as *decisions* for the
+ *   caller's hooks to execute.
+ *
+ * `chooseRecovery` is pure: no clock, no I/O, no store. `recoverFromFailure`
+ * is the thin shell that reconciles, records the audit row, and returns the
+ * same decision.
+ */
+import type { FailureCategory, FailureClassification } from "./failure.ts";
+import type { StallEvent } from "./stall.ts";
+import type { RecoveryConfig, TerminalRecoveryResponse } from "../config/types.ts";
+
+// ---------------------------------------------------------------------------
+// the fixed menu
+// ---------------------------------------------------------------------------
+
+/** The PLAN §3.G response menu, in escalation order. Nothing else is a response. */
+export const RECOVERY_RESPONSES = [
+  "gather_evidence",
+  "retry",
+  "fallback_model",
+  "replan",
+  "change_worker",
+  "request_review",
+  "ask_user",
+  "stop",
+] as const;
+
+export type RecoveryResponse = (typeof RECOVERY_RESPONSES)[number];
+
+/** One-line meaning of each response, used in explanations and the UI. */
+export const RECOVERY_RESPONSE_DESCRIPTIONS: Readonly<Record<RecoveryResponse, string>> = Object.freeze({
+  gather_evidence: "Run the named observations and classify again; do not change any code yet.",
+  retry: "Attempt the same task again, after any required reconciliation.",
+  fallback_model: "Re-run on the next eligible model under the fallback policy (PLAN §3.D).",
+  replan: "Return the task to planning: its decomposition or its checks are the problem.",
+  change_worker: "Re-run with a different worker role or profile.",
+  request_review: "Ask for an independent review of the work and the evidence before continuing.",
+  ask_user: "Stop automatic recovery and put a concrete question to the user.",
+  stop: "Stop this scope, record the state, and make no further attempts.",
+});
+
+/** Responses that end recovery for a subject. The ladder always reaches one. */
+export const TERMINAL_RESPONSES: readonly RecoveryResponse[] = Object.freeze(["ask_user", "stop"]);
+
+/** Is this response terminal? */
+export function isTerminalResponse(response: RecoveryResponse): response is TerminalRecoveryResponse {
+  return TERMINAL_RESPONSES.includes(response);
+}
+
+// ---------------------------------------------------------------------------
+// the ladders: failure category × attempt number → response
+// ---------------------------------------------------------------------------
+
+/**
+ * The escalation ladder for each failure category.
+ *
+ * Read it as "attempt 1 gets `ladder[0]`, attempt 2 gets `ladder[1]`, …";
+ * running off the end is the terminal response. The lists are deliberately
+ * short — the point of a ladder is that it has a top.
+ *
+ * The ordering rationale per category:
+ *
+ * - `implementation` — the code is wrong and the worker can see the failure,
+ *   so one plain retry is worth it; then a different model, then a review.
+ * - `environment` — retrying an `ENOENT` changes nothing, so evidence first
+ *   (which command, which path), then the user, who owns the machine.
+ * - `missing_information` — nobody supplied the information; no amount of
+ *   retrying invents it. Ask, immediately.
+ * - `dependency` — an unbuilt prerequisite may have completed since; one
+ *   retry, then replan so the dependency becomes an explicit task.
+ * - `test_expectation` — the test asserts the wrong thing. That is a planning
+ *   defect (the check was registered), so replan, then review. Never a plain
+ *   retry: re-running a wrong assertion produces the same wrong assertion.
+ * - `service` — #26 already retried and tripped the breaker, so this module
+ *   does not retry the same route; it changes route, then stops.
+ * - `quota` — a cap is time-based. Changing route is the only useful local
+ *   move; the pause/resume policy is `fallback.allCappedBehaviour`.
+ * - `harness` — the turn never happened (#124). One retry of the *harness*
+ *   is legitimate, then a smaller worker profile, then ask.
+ * - `unknown` — never acted on as a diagnosis: gather the evidence the
+ *   classification asked for, then ask.
+ */
+export const RECOVERY_LADDERS: Readonly<Record<FailureCategory, readonly RecoveryResponse[]>> = Object.freeze({
+  implementation: Object.freeze(["retry", "fallback_model", "request_review"]),
+  environment: Object.freeze(["gather_evidence"]),
+  missing_information: Object.freeze([]),
+  dependency: Object.freeze(["retry", "replan"]),
+  test_expectation: Object.freeze(["replan", "request_review"]),
+  service: Object.freeze(["fallback_model"]),
+  quota: Object.freeze(["fallback_model"]),
+  harness: Object.freeze(["retry", "change_worker"]),
+  unknown: Object.freeze(["gather_evidence"]),
+});
+
+/** Which config cap bounds how often a response may be chosen for one subject. */
+const RESPONSE_CAP_KEY: Readonly<Partial<Record<RecoveryResponse, keyof RecoveryConfig>>> = Object.freeze({
+  gather_evidence: "maxEvidenceGatherings",
+  replan: "maxReplans",
+  fallback_model: "maxModelFallbacks",
+  change_worker: "maxWorkerChanges",
+});
+
+/**
+ * How often each non-terminal response has already been used on this subject.
+ * Anything absent is zero. Supplied by the caller from the recovery log, so
+ * the bound survives a resumed or forked session.
+ */
+export type ResponseUsage = Readonly<Partial<Record<RecoveryResponse, number>>>;
+
+/** Cap for one response under this config, or `null` when it is uncapped. */
+export function responseCap(response: RecoveryResponse, config: RecoveryConfig): number | null {
+  const key = RESPONSE_CAP_KEY[response];
+  if (key === undefined) return null;
+  const value = config[key];
+  return typeof value === "number" ? value : null;
+}
+
+/** `true` when this response still has room under its own cap. */
+export function responseAvailable(
+  response: RecoveryResponse,
+  config: RecoveryConfig,
+  usage: ResponseUsage,
+): boolean {
+  const cap = responseCap(response, config);
+  if (cap === null) return true;
+  return (usage[response] ?? 0) < cap;
+}
+
+// ---------------------------------------------------------------------------
+// side effects
+// ---------------------------------------------------------------------------
+
+/**
+ * A step that recovery might want to retry.
+ *
+ * `sideEffect` is the flag PLAN §3.G asks for. It is declared *with the step*
+ * — by the planner for a task's checks, by the caller for a command — and
+ * never inferred here: guessing whether `npm run deploy` writes is exactly
+ * the judgement that must not be made on a hunch. When it is `true` the step
+ * must also declare how its outcome can be observed, which is what makes a
+ * retry safe.
+ */
+export interface RecoverableStep {
+  /** Stable id: a check id, a command id, a task id. */
+  readonly stepId: string;
+  /** `true` when running this step may change state that a retry would duplicate. */
+  readonly sideEffect: boolean;
+  /**
+   * Idempotency key for the effect (`actionIdFor` from #42), when the step
+   * performs a guarded action. Its receipt is the authoritative answer to
+   * "did this already happen".
+   */
+  readonly actionId?: string | null;
+  /**
+   * Declared reconciliation probe: a read-only observation that answers
+   * whether the effect landed. Named here, executed by the caller.
+   */
+  readonly reconciliationProbe?: ReconciliationProbe | null;
+  /** `true` when the effect leaves this repository (push, publish, deploy). */
+  readonly externalEffect?: boolean;
+}
+
+/** A declared, read-only probe that says whether a step's effect landed. */
+export interface ReconciliationProbe {
+  readonly probeId: string;
+  /** What the probe observes, for the audit row and the user-facing notice. */
+  readonly description: string;
+}
+
+/** What a probe (or a receipt) concluded about an uncertain outcome. */
+export const SIDE_EFFECT_STATUSES = [
+  "none",
+  "not_applied",
+  "already_applied",
+  "partially_applied",
+  "unknown",
+] as const;
+
+export type SideEffectStatus = (typeof SIDE_EFFECT_STATUSES)[number];
+
+/** The outcome of reconciling one step, before any retry decision is taken. */
+export interface ReconciliationOutcome {
+  readonly status: SideEffectStatus;
+  /** Stable id of what produced the verdict: a receipt, a probe, or neither. */
+  readonly source: "no_side_effect" | "action_receipt" | "probe" | "unreconciled";
+  readonly detail: string;
+}
+
+/**
+ * Statuses under which a retry is permitted.
+ *
+ * `not_applied` is the only one: the step demonstrably did not take effect,
+ * so running it again cannot duplicate anything. `already_applied` means the
+ * work is done — retrying would be the double effect; `partially_applied`
+ * and `unknown` mean nobody can say, and "nobody can say" is never permission.
+ */
+export function retryPermittedAfter(outcome: ReconciliationOutcome): boolean {
+  return outcome.status === "none" || outcome.status === "not_applied";
+}
