@@ -721,3 +721,160 @@ export function evaluateC2(
     ],
   };
 }
+
+// ---------------------------------------------------------------------------
+// C3 — policy-required review. No Jev term either.
+// ---------------------------------------------------------------------------
+
+/** Risk ordering, so `a.riskClass >= T.riskClass` is a comparison and not a guess. */
+const RISK_ORDER: Readonly<Record<RiskClass, number>> = { low: 0, medium: 1, high: 2 };
+
+/**
+ * Is this review evidence independent of the author?
+ *
+ * Structural, as docs/gates.md §2 requires: the reviewing attempt must differ
+ * from the authoring attempt **and** its `handedOffFromAttemptId` chain must
+ * not contain it. A model that reviews a handoff of its own work is the same
+ * context wearing a different id (gates.spec.md B7).
+ */
+export function isIndependentReview(
+  row: Evidence,
+  args: { readonly author: Attempt | undefined; readonly attempts: readonly Attempt[] },
+): boolean {
+  if (row.reviewer.kind !== "model") return false;
+  const authorId = args.author?.id;
+  if (authorId === undefined) return true;
+  const byId = new Map(args.attempts.map((a) => [a.id, a]));
+  let current: Attempt | undefined = byId.get(row.reviewer.attemptId);
+  const seen = new Set<string>();
+  while (current !== undefined && !seen.has(current.id)) {
+    if (current.id === authorId) return false;
+    seen.add(current.id);
+    const parent = current.handedOffFromAttemptId;
+    current = parent === null ? undefined : byId.get(parent);
+  }
+  // An implementer or integrator role never counts as an independent review,
+  // whatever the attempt graph says.
+  const reviewer = byId.get(row.reviewer.attemptId);
+  if (reviewer !== undefined && (reviewer.role === "implementer" || reviewer.role === "integrator")) return false;
+  return true;
+}
+
+/**
+ * Condition 3. Reads `Approval` and `Evidence` rows and the **recorded**
+ * policy result; it has no `Decision` parameter, so Jev cannot waive it, and
+ * the high-risk clause is applied on top of the policy result, so a policy
+ * that says `humanApproval: false` for a high-risk task does not get to.
+ */
+export function evaluateC3(
+  input: TaskGateInput,
+  fresh: readonly Evidence[],
+): readonly TaskGateRejection[] {
+  const out: TaskGateRejection[] = [];
+  const { task, workflow, policy } = input;
+
+  if (
+    policy === null ||
+    policy.revision !== input.revision ||
+    policy.taskRevision !== task.revision ||
+    policy.policyVersion !== workflow.policyVersion
+  ) {
+    out.push({
+      condition: "C3",
+      reasonCode: "policy_result_missing",
+      detail:
+        policy === null
+          ? "no policy review result recorded for this task"
+          : "the recorded policy result is stale for this revision, task revision or policy version",
+    });
+  }
+
+  const humanApproval = (policy?.humanApproval ?? false) || task.riskClass === "high";
+  const modelReview = policy?.modelReview ?? false;
+
+  if (modelReview) {
+    const author = claimingAttempt(input);
+    const reviews = fresh.filter((row) => row.reviewer.kind === "model" && row.exitStatus.kind === "exited" && row.exitStatus.code === 0);
+    if (reviews.length === 0) {
+      out.push({
+        condition: "C3",
+        reasonCode: "review_missing",
+        detail: "policy requires an independent model review and no fresh passing review evidence exists",
+      });
+    } else if (!reviews.some((row) => isIndependentReview(row, { author, attempts: input.attempts }))) {
+      out.push({
+        condition: "C3",
+        reasonCode: "review_not_independent",
+        detail: "every fresh review came from the authoring attempt or its handoff chain",
+      });
+    }
+  }
+
+  if (humanApproval) out.push(...approvalRejections(input));
+
+  return out;
+}
+
+/** The `valid approval` clause of docs/gates.md §2, with its reason codes. */
+function approvalRejections(input: TaskGateInput): readonly TaskGateRejection[] {
+  const { task, workflow } = input;
+  const scoped = input.approvals.filter(
+    (a) =>
+      a.workflowId === workflow.id &&
+      a.scope.kind === "task" &&
+      a.scope.taskId === task.id &&
+      a.permittedAction === "complete_task",
+  );
+  if (scoped.length === 0) {
+    return [
+      {
+        condition: "C3",
+        reasonCode: "approval_missing",
+        detail:
+          task.riskClass === "high"
+            ? `task ${task.id} is high risk: a user approval for complete_task is required and none exists`
+            : `policy requires human approval for ${task.id} and none exists`,
+      },
+    ];
+  }
+
+  // A `policy` actor can never satisfy a human approval: that is the whole
+  // point of the class (docs/gates.md §2 "valid approval", B8).
+  const byUser = scoped.filter((a) => a.actor.kind === "user");
+  if (byUser.length === 0) {
+    return [
+      {
+        condition: "C3",
+        reasonCode: "approval_actor_not_user",
+        detail: `every approval for ${task.id} was granted by a non-user actor`,
+      },
+    ];
+  }
+
+  const underRisk = byUser.filter((a) => RISK_ORDER[a.riskClass] >= RISK_ORDER[task.riskClass]);
+  if (underRisk.length === 0) {
+    return [
+      {
+        condition: "C3",
+        reasonCode: "approval_missing",
+        detail: `no approval for ${task.id} covers risk class "${task.riskClass}"`,
+      },
+    ];
+  }
+
+  const reasons: TaskGateRejection[] = [];
+  for (const approval of underRisk) {
+    const reason = approvalInvalidReason(approval, {
+      task: { id: task.id, revision: task.revision },
+      planRevision: workflow.planRevision,
+      now: input.now,
+    });
+    if (reason === null) return [];
+    reasons.push({
+      condition: "C3",
+      reasonCode: `approval_invalid:${reason}`,
+      detail: `approval ${approval.id} is unusable: ${reason}`,
+    });
+  }
+  return reasons;
+}
