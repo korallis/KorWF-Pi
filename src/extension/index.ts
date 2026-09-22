@@ -29,6 +29,8 @@ import { runExport, parseExportArgs } from "./commands/export.ts";
 import { openStore, resolveStorageRoot } from "../storage/index.ts";
 import { readLiveRepoState } from "../git/revision.ts";
 import { registerSessionHooks } from "./session-hooks.ts";
+import { registerCatalogRefresh } from "./catalog-refresh.ts";
+import type { CatalogConfig } from "../models/catalog.ts";
 
 const SUBCOMMANDS = [
   "version",
@@ -60,6 +62,17 @@ export default function korwfExtension(pi: ExtensionAPI): void {
   // any command so a rewound conversation is reconciled against live
   // repository state before it can ask for anything.
   registerSessionHooks(pi);
+
+  // Model catalog (#56): rebuilt on the two real model-related events Pi
+  // exposes (session_start, model_select) — see src/extension/catalog-refresh.ts
+  // for why there is no true "registry changed" event and what "refresh"
+  // means as a result. `getCatalog` always rebuilds from a fresh read, so a
+  // caller (e.g. #57+ model-card consumers, /korwf models) never sees a
+  // catalog stale enough to route to a model that no longer exists.
+  registerCatalogRefresh(pi, (cwd): CatalogConfig | undefined => {
+    const result = loadForProject(cwd);
+    return result.ok ? result.config.models : undefined;
+  });
 
   pi.registerCommand("korwf", {
     description: `KorWF workflow commands: /korwf <${SUBCOMMANDS.join("|")}>`,
