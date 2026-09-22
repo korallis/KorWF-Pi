@@ -284,6 +284,33 @@ export interface StorageConfig {
 }
 
 // ---------------------------------------------------------------------------
+// recovery
+// ---------------------------------------------------------------------------
+
+/** Terminal responses. The recovery ladder always ends on one of these. */
+export type TerminalRecoveryResponse = "ask_user" | "stop";
+
+/**
+ * `recovery` — bounded recovery policy (PLAN §3.G, issue #53).
+ *
+ * Every number here is a ceiling, not a target. The failure mode this section
+ * exists to prevent is an unbounded retry loop: six attempts on one task that
+ * produced nothing. Enforcement is `src/workflow/recovery.ts`.
+ */
+export interface RecoveryConfig {
+  readonly maxAttemptsPerTask: number;
+  readonly maxAttemptsPerPhase: number;
+  readonly maxEvidenceGatherings: number;
+  readonly maxReplans: number;
+  readonly maxModelFallbacks: number;
+  readonly maxWorkerChanges: number;
+  /** Fixed `true`: a side-effecting step is never retried unreconciled. */
+  readonly requireReconciliationBeforeRetry: true;
+  readonly unreconcilableSideEffect: TerminalRecoveryResponse;
+  readonly finalResponse: TerminalRecoveryResponse;
+}
+
+// ---------------------------------------------------------------------------
 // root
 // ---------------------------------------------------------------------------
 
@@ -299,6 +326,7 @@ export interface KorwfConfig {
   readonly jev: JevConfig;
   readonly notifications: NotificationsConfig;
   readonly storage: StorageConfig;
+  readonly recovery: RecoveryConfig;
 }
 
 /** Raw user input as read from the config file. `{}` is valid. */
@@ -315,4 +343,5 @@ export const CONFIG_SECTIONS = [
   "jev",
   "notifications",
   "storage",
+  "recovery",
 ] as const satisfies readonly (keyof KorwfConfig)[];

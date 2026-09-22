@@ -50,6 +50,10 @@
     "storage": {
       "$ref": "#/$defs/Storage",
       "default": {}
+    },
+    "recovery": {
+      "$ref": "#/$defs/Recovery",
+      "default": {}
     }
   },
   "$defs": {
@@ -1377,6 +1381,79 @@
           "type": "integer",
           "minimum": 0,
           "default": 5000
+        }
+      }
+    },
+    "Recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Bounded recovery policy (PLAN §3.G). Every response is drawn from a fixed menu and every count is capped; the last response is always `ask_user` or `stop`.",
+      "properties": {
+        "maxAttemptsPerTask": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3,
+          "description": "Hard ceiling on attempts for one task, counting the first. Reaching it ends recovery with `ask_user` or `stop`; nothing may raise it mid-task."
+        },
+        "maxAttemptsPerPhase": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 2,
+          "description": "Hard ceiling on recovery rounds for one phase gate."
+        },
+        "maxEvidenceGatherings": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 1,
+          "description": "How often `gather_evidence` may be chosen for one subject before it stops being an option. Gathering evidence forever is a stall, not a recovery."
+        },
+        "maxReplans": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 1,
+          "description": "How often `replan` may be chosen for one subject."
+        },
+        "maxModelFallbacks": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 1,
+          "description": "How often `fallback_model` may be chosen for one subject. The route itself is chosen by `fallback` (PLAN §3.D), not here."
+        },
+        "maxWorkerChanges": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3,
+          "default": 1,
+          "description": "How often `change_worker` may be chosen for one subject."
+        },
+        "requireReconciliationBeforeRetry": {
+          "type": "boolean",
+          "const": true,
+          "default": true,
+          "description": "A step that may have had side effects is never retried until its outcome is reconciled. Fixed true: PLAN §3.G, and a config that could switch it off would be a way to permit a double effect."
+        },
+        "unreconcilableSideEffect": {
+          "type": "string",
+          "enum": [
+            "ask_user",
+            "stop"
+          ],
+          "default": "ask_user",
+          "description": "Response when a side-effecting step cannot be reconciled (no probe, or the probe itself failed). Never `retry`."
+        },
+        "finalResponse": {
+          "type": "string",
+          "enum": [
+            "ask_user",
+            "stop"
+          ],
+          "default": "ask_user",
+          "description": "Response once the ladder is exhausted. Both options are terminal; unattended runs that must not queue a question set `stop`."
         }
       }
     }
