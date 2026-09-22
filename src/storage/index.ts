@@ -13,6 +13,7 @@
  * duplicate-name clash still fails the build, which is what we want to hear about.
  */
 export * from "./action-log.ts";
+export * from "./approval-requests.ts";
 export * from "./gate-receipts.ts";
 export * from "./artifacts.ts";
 export * from "./db.ts";

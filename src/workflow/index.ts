@@ -31,6 +31,7 @@
  * which is the outcome we actually want to hear about.
  */
 export * from "./approval-classes.ts";
+export * from "./approvals.ts";
 export * from "./attempt-budget.ts";
 export * from "./attempt-controller.ts";
 export * from "./evaluate-plan.ts";

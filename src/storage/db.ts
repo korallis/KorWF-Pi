@@ -25,6 +25,7 @@ import { BlockerStore, TransitionLogStore } from "./transition-log.ts";
 import { ActionLogStore } from "./action-log.ts";
 import { GateReceiptStore } from "./gate-receipts.ts";
 import { RecoveryLogStore } from "./recovery-log.ts";
+import { ApprovalRequestStore } from "./approval-requests.ts";
 import { reconcileAbandonedAttempts, type ReconcileOptions, type ReconciliationReport } from "./reconcile.ts";
 import type { AuditEntry, AuditEntryId, IsoTimestamp, RecordTable, WorkflowId } from "./records.ts";
 import { RECORDS_SCHEMA_VERSION } from "./records.ts";
@@ -119,6 +120,8 @@ export class Store {
   readonly gateReceipts: GateReceiptStore;
   /** Bounded-recovery decisions (#53), see recovery-log.ts. */
   readonly recoveries: RecoveryLogStore;
+  /** Queued human-approval questions (#49). Never an authorisation, see approval-requests.ts. */
+  readonly approvalRequests: ApprovalRequestStore;
 
   readonly #db: Database;
   readonly #lock: LockHandle | null;
@@ -171,6 +174,7 @@ export class Store {
     this.actions = new ActionLogStore(this.#db);
     this.gateReceipts = new GateReceiptStore(this.#db);
     this.recoveries = new RecoveryLogStore(this.#db);
+    this.approvalRequests = new ApprovalRequestStore(this.#db);
   }
 
   #context(audit: AuditSink | null): RepoContext {
