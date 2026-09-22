@@ -176,6 +176,7 @@ export function applyRestart(options: ApplyRestartOptions): { readonly newAttemp
         `to checkpoint ${options.lastCheckpointCommit ?? "none (no prior checkpoint)"} per midTaskPolicy=restart ` +
         `(${discard.kind}${discard.kind === "skipped" ? `: ${discard.reason}` : `: ${discard.changedPaths.length} path(s) discarded`})`,
       now: options.now,
+      subjectKind: "task",
       subjectId: oldAttempt.taskId,
       gitRevision: options.lastCheckpointCommit,
       externalEffect: false,
