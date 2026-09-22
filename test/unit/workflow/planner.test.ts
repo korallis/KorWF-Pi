@@ -176,3 +176,96 @@ describe("AC: malformed planner output produces a retry prompt and is never retu
     expect(result.warnings.some((w) => w.rule === "no_checks")).toBe(true);
   });
 });
+
+describe("generated tasks are sized against the model's output ceiling (#124)", () => {
+  const limits = { maxTokens: 16_384, contextWindow: 200_000 };
+
+  it("marks a task whose single artifact exceeds the decompose fraction", () => {
+    const plan = minimalPlan({
+      tasks: [
+        planTask({
+          expectedArtifacts: [{ path: "src/huge.ts", estimate: { unit: "lines", value: 4_000 } }],
+        }),
+      ],
+    });
+    const sizing = sizePlanTasks(plan, limits);
+    expect(sizing[0]?.sizing.mustDecompose).toBe(true);
+    expect(tasksNeedingDecomposition(sizing)).toEqual(["t1"]);
+  });
+
+  it("leaves a small artifact alone", () => {
+    const plan = minimalPlan({
+      tasks: [planTask({ expectedArtifacts: [{ path: "src/small.ts", estimate: { unit: "lines", value: 40 } }] })],
+    });
+    const sizing = sizePlanTasks(plan, limits);
+    expect(sizing[0]?.sizing.verdict).toBe("fits");
+    expect(tasksNeedingDecomposition(sizing)).toEqual([]);
+  });
+
+  it("produces incremental write-then-edit steps for an over-budget artifact", () => {
+    const plan = minimalPlan({
+      tasks: [planTask({ expectedArtifacts: [{ path: "docs/big.md", estimate: { unit: "lines", value: 3_000 } }] })],
+    });
+    const steps = sizePlanTasks(plan, limits)[0]?.decompositions[0]?.steps ?? [];
+    expect(steps.length).toBeGreaterThan(1);
+    expect(steps[0]?.kind).toBe("write");
+    expect(steps[1]?.kind).toBe("edit");
+  });
+
+  it("still sizes when the model reports no ceiling (unreported is not unlimited)", () => {
+    const plan = minimalPlan({
+      tasks: [planTask({ expectedArtifacts: [{ path: "src/x.ts", estimate: { unit: "tokens", value: 12_000 } }] })],
+    });
+    const sizing = sizePlanTasks(plan);
+    expect(sizing[0]?.sizing.budget.assumed).toBe(true);
+    expect(sizing[0]?.sizing.mustDecompose).toBe(true);
+  });
+
+  it("flags rather than splits an artifact the planner declared atomic", () => {
+    const plan = minimalPlan({
+      tasks: [
+        planTask({
+          expectedArtifacts: [{ path: "src/blob.bin", estimate: { unit: "tokens", value: 40_000 }, atomic: true }],
+        }),
+      ],
+    });
+    expect(sizePlanTasks(plan, limits)[0]?.sizing.verdict).toBe("flag");
+  });
+
+  it("generatePlan returns sizing for every task", async () => {
+    const result = await generatePlan({
+      intake: intake(),
+      context: [],
+      workerLimits: limits,
+      model: () => minimalPlan(),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.sizing).toHaveLength(1);
+  });
+
+  it("puts the worker model's ceiling in the prompt so the planner can size tasks", () => {
+    const prompt = buildPlannerPrompt({ intake: intake(), context: [], workerLimits: limits });
+    expect(prompt).toContain("16384");
+    expect(prompt).toContain("not its context window");
+  });
+});
+
+describe("deterministic fallback: a valid plan with no model call (AGENTS.md §4)", () => {
+  it("produces a document that passes its own validator", () => {
+    expect(validatePlanDocument(deterministicPlanSkeleton(intake())).ok).toBe(true);
+  });
+
+  it("satisfies PLAN §2.3 with an explicitly required human check", () => {
+    const plan = deterministicPlanSkeleton(intake());
+    expect(plan.tasks[0]?.checks).toHaveLength(1);
+    expect(plan.tasks[0]?.checks[0]?.kind).toBe("human");
+    expect(plan.tasks[0]?.checks[0]?.required).toBe(true);
+  });
+
+  it("says plainly that nothing was analysed rather than inventing work", () => {
+    const plan = deterministicPlanSkeleton(intake());
+    expect(plan.architectureSummary).toContain("No planner model was available");
+    expect(plan.openQuestions?.[0]).toContain("no model call");
+  });
+});
