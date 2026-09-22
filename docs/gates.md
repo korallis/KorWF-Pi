@@ -126,6 +126,33 @@ Rules:
 - Command identity is compared against the **definition**, so evidence produced by running a
   different command (e.g. `true`) under a registered check id is `fail`, not `pass`.
 
+### 4.1 Where these states come from (issue #45)
+
+`src/verification/checks.ts` (`runCheck`) is the only producer of deterministic
+`Evidence`, and `src/verification/evidence.ts` maps one run onto the table above:
+
+- `Evidence.revision` is read from the worktree through `src/git/` **at run time**, never
+  supplied by the caller and never cached, so §2 freshness is a property of the run rather
+  than of what the runner was told.
+- A command that could not be executed — absent binary, `EACCES`, missing `cwd`, no
+  revision to pin to — is `{unavailable, reason}`. A shell exit `127` accompanied by a
+  not-found message is `unavailable`; a program that *chooses* exit 127 is an ordinary
+  `{exited, 127}`, hence `fail`. Neither is ever `pass`.
+- A check whose command cannot fail (`isVerifyingCheck`, issue #44) is refused before it
+  runs, recorded as `{unavailable, weak_check}` at the current revision.
+- A deadline produces `{timed_out}` after killing the whole process tree; descendants are
+  snapshotted **before** the kill because a detached child reparents to PID 1 (ADR 0004).
+- `human` checks never reach `runCheck`'s evidence path: `requestHumanCheck` returns a
+  pending approval request, so a human check is satisfied only by a human-reviewer
+  `Evidence` row created from a granted `Approval`.
+- Stored `stdout`/`stderr` pass through `src/security/redact.ts` before truncation, so a
+  truncated snippet cannot end mid-secret, and the environment is fingerprinted by variable
+  **name** only.
+
+Project-wide checks from configuration are merged into the task's registered list by
+`registeredChecks` under a `project:` id prefix, so a plan cannot silence `npm test` by
+registering a check of its own with the same name.
+
 ## 5. Condition 2 — Jev evidence-gap assessment and the Jev-disabled fallback
 
 Condition 2 is a **disjunction of two recorded outcomes**. Exactly one of them must be
