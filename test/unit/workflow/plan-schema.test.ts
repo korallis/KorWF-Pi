@@ -224,6 +224,111 @@ describe("AC: paths are repository-relative (no machine-specific paths)", () => 
   });
 });
 
+describe("AC: dependency-graph validation including cycles (PLAN §3.C)", () => {
+  it("accepts a linear chain and returns a topological order", () => {
+    const tasks: PlanTask[] = [
+      planTask({ id: "t1" }),
+      planTask({ id: "t2", dependencies: ["t1"] }),
+      planTask({ id: "t3", dependencies: ["t2"] }),
+    ];
+    const graph = validateDependencyGraph(tasks);
+    expect(graph.ok).toBe(true);
+    expect(graph.cycles).toEqual([]);
+    expect(graph.topologicalOrder.indexOf("t1")).toBeLessThan(graph.topologicalOrder.indexOf("t3"));
+  });
+
+  it("detects a two-node cycle", () => {
+    const tasks: PlanTask[] = [
+      planTask({ id: "t1", dependencies: ["t2"] }),
+      planTask({ id: "t2", dependencies: ["t1"] }),
+    ];
+    const graph = validateDependencyGraph(tasks);
+    expect(graph.ok).toBe(false);
+    expect(graph.cycles).toHaveLength(1);
+    expect(graph.errors[0]?.rule).toBe("dependency_cycle");
+    expect(graph.errors[0]?.message).toContain("->");
+  });
+
+  it("detects a longer cycle and names every member", () => {
+    const tasks: PlanTask[] = [
+      planTask({ id: "t1", dependencies: ["t3"] }),
+      planTask({ id: "t2", dependencies: ["t1"] }),
+      planTask({ id: "t3", dependencies: ["t2"] }),
+    ];
+    const graph = validateDependencyGraph(tasks);
+    expect(graph.ok).toBe(false);
+    expect(graph.cycles[0]).toHaveLength(3);
+  });
+
+  it("reports a cycle once, not once per rotation", () => {
+    const tasks: PlanTask[] = [
+      planTask({ id: "t1", dependencies: ["t2"] }),
+      planTask({ id: "t2", dependencies: ["t3"] }),
+      planTask({ id: "t3", dependencies: ["t1"] }),
+    ];
+    expect(validateDependencyGraph(tasks).cycles).toHaveLength(1);
+  });
+
+  it("rejects a self-dependency", () => {
+    const graph = validateDependencyGraph([planTask({ id: "t1", dependencies: ["t1"] })]);
+    expect(graph.ok).toBe(false);
+    expect(graph.errors[0]?.rule).toBe("self_dependency");
+  });
+
+  it("rejects a dependency on a task that is not in the plan", () => {
+    const graph = validateDependencyGraph([planTask({ id: "t1", dependencies: ["ghost"] })]);
+    expect(graph.ok).toBe(false);
+    expect(graph.errors[0]).toMatchObject({ path: "tasks[0].dependencies[0]", rule: "unknown_reference" });
+  });
+
+  it("rejects a dependency that points into a later phase", () => {
+    const phases = [planPhaseAt(0), planPhaseAt(1)];
+    const tasks: PlanTask[] = [
+      planTask({ id: "t1", phaseId: "p0", dependencies: ["t2"] }),
+      planTask({ id: "t2", phaseId: "p1" }),
+    ];
+    const graph = validateDependencyGraph(tasks, phases);
+    expect(graph.ok).toBe(false);
+    expect(graph.errors[0]?.message).toContain("later phase");
+  });
+
+  it("handles a deep chain without exhausting the call stack", () => {
+    const tasks: PlanTask[] = Array.from({ length: 5_000 }, (_unused, i) =>
+      planTask({ id: `t${i}`, dependencies: i === 0 ? [] : [`t${i - 1}`] }),
+    );
+    const graph = validateDependencyGraph(tasks);
+    expect(graph.ok).toBe(true);
+    expect(graph.topologicalOrder).toHaveLength(5_000);
+  });
+
+  it("surfaces the cycle through validatePlanDocument as an error", () => {
+    const plan = minimalPlan({
+      tasks: [planTask({ id: "t1", dependencies: ["t2"] }), planTask({ id: "t2", dependencies: ["t1"] })],
+    });
+    const result = validatePlanDocument(plan);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.some((e) => e.rule === "dependency_cycle")).toBe(true);
+  });
+});
+
+describe("ownership overlap is a warning, not a rejection (PLAN §3.E)", () => {
+  it("warns when two tasks in one phase own the same path", () => {
+    const issues = ownershipOverlaps([planTask({ id: "t1" }), planTask({ id: "t2" })]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.rule).toBe("ownership_conflict");
+    expect(issues[0]?.severity).toBe("warning");
+  });
+
+  it("does not warn when the same path is owned in different phases", () => {
+    const issues = ownershipOverlaps([
+      planTask({ id: "t1", phaseId: "p0" }),
+      planTask({ id: "t2", phaseId: "p1" }),
+    ]);
+    expect(issues).toEqual([]);
+  });
+});
+
 function planPhaseAt(order: number) {
   return {
     id: `p${order}`,
