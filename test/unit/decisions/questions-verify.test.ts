@@ -25,7 +25,7 @@ import {
   type EvidenceGapState,
   type TestExercisesState,
 } from "../../../src/decisions/questions/verify.ts";
-import { assertBoundaries } from "../../../src/decisions/question.ts";
+import { assertBoundaries, type AnyQuestionDefinition } from "../../../src/decisions/question.ts";
 
 const CLAIM_STATE: ClaimSupportedState = {
   criterionId: "ac1",
@@ -66,7 +66,7 @@ describe("AC1/AC2 the verify question family is registered and versioned", () =>
   it("AC2 every question declares boundary cases its own fallback satisfies", () => {
     for (const question of VERIFY_QUESTIONS) {
       expect(question.boundaries.length).toBeGreaterThan(0);
-      expect(() => assertBoundaries(question)).not.toThrow();
+      expect(() => assertBoundaries(question as AnyQuestionDefinition)).not.toThrow();
     }
   });
 
