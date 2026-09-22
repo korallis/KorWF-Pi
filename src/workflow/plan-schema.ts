@@ -719,3 +719,73 @@ function canonicalCycleKey(cycle: readonly string[]): string {
   const start = cycle.indexOf(sorted[0] as string);
   return [...cycle.slice(start), ...cycle.slice(0, start)].join(">");
 }
+
+// ---------------------------------------------------------------------------
+// Ownership overlap (PLAN §3.E: one owner per path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Tasks in the same phase that declare the same ownership path may run
+ * concurrently and collide. Reported as warnings, not errors: the scheduler
+ * (#39) serialises them, and a plan is not wrong for having them.
+ */
+export function ownershipOverlaps(tasks: readonly PlanTask[]): readonly PlanIssue[] {
+  const byPath = new Map<string, { phaseId: string; taskIds: string[] }>();
+  for (const task of tasks) {
+    for (const path of task.ownership.paths) {
+      const key = `${task.phaseId}\u0000${path}`;
+      const entry = byPath.get(key);
+      if (entry === undefined) byPath.set(key, { phaseId: task.phaseId, taskIds: [task.id] });
+      else entry.taskIds.push(task.id);
+    }
+  }
+  const issues: PlanIssue[] = [];
+  for (const [key, entry] of byPath) {
+    if (entry.taskIds.length < 2) continue;
+    const path = key.split("\u0000")[1] ?? "";
+    issues.push({
+      rule: "ownership_conflict",
+      path: "tasks",
+      severity: "warning",
+      message:
+        `tasks ${entry.taskIds.join(", ")} in phase "${entry.phaseId}" all claim ownership of "${path}"; ` +
+        `they cannot run in parallel and must be serialised or merged`,
+    });
+  }
+  return issues;
+}
+
+// ---------------------------------------------------------------------------
+// Readiness (PLAN §2.3, enforced in code)
+// ---------------------------------------------------------------------------
+
+export interface TaskReadiness {
+  readonly taskId: string;
+  /** `false` whenever a blocker applies. There is no override. */
+  readonly canBecomeReady: boolean;
+  /** The blocker to persist on the Task record, or `null`. */
+  readonly blocker: string | null;
+  readonly reason: string | null;
+}
+
+/**
+ * The PLAN §2.3 rule as a function. A task with no checks can never become
+ * `ready` — and because `plan-store.ts` and the transition guard both call
+ * this, there is no code path that produces a `ready` task without checks.
+ */
+export function taskReadiness(task: Pick<PlanTask, "id" | "checks">): TaskReadiness {
+  if (task.checks.length === 0) {
+    return {
+      taskId: task.id,
+      canBecomeReady: false,
+      blocker: NO_CHECKS_BLOCKER,
+      reason: `task "${task.id}" registers no verification checks (PLAN §2.3)`,
+    };
+  }
+  return { taskId: task.id, canBecomeReady: true, blocker: null, reason: null };
+}
+
+/** The same rule expressed over persisted `CheckDefinition`s, for the gate. */
+export function hasRegisteredChecks(checks: readonly CheckDefinition[]): boolean {
+  return checks.length > 0;
+}
