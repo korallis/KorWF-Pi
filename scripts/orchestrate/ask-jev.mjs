@@ -20,7 +20,7 @@
 // no Jev key.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Jev, noul, score } from "./jev.mjs";
 import {
@@ -176,6 +176,36 @@ function recordAttempt(n) {
     catch (e) { console.error(`cannot read --report-file ${reportFile}: ${e.message}`); process.exit(2); }
   }
   const statePath = join(ROOT, ".orchestrate/state.json");
+
+  // Read-modify-write under an exclusive lock. Two `record-attempt` calls running in
+  // parallel (reviewing two PRs at once) both read the same state and the second write
+  // clobbered the first: #48's attempt reported success and then did not exist, so
+  // `--review` failed with "no attempts recorded". O_EXCL is the same primitive the
+  // product's own store uses for coordinator ownership (ADR 0006).
+  const lockPath = `${statePath}.lock`;
+  let lockFd;
+  for (let i = 0; i < 100; i++) {
+    try { lockFd = openSync(lockPath, "wx"); break; }
+    catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      // Steal a lock whose owner died (e.g. the crash that prompted this fix).
+      try {
+        const age = Date.now() - statSync(lockPath).mtimeMs;
+        if (age > 30_000) { unlinkSync(lockPath); continue; }
+      } catch {}
+      execFileSync("sleep", ["0.1"]);
+    }
+  }
+  if (lockFd === undefined) { console.error(`could not acquire ${lockPath}`); process.exit(3); }
+
+  try {
+    recordUnderLock();
+  } finally {
+    closeSync(lockFd);
+    try { unlinkSync(lockPath); } catch {}
+  }
+
+  function recordUnderLock() {
   const s = JSON.parse(readFileSync(statePath, "utf8"));
   const list = s.attempts[String(num)] ??= [];
   const now = new Date().toISOString();
@@ -186,8 +216,15 @@ function recordAttempt(n) {
     outcome, pr, report,
   });
   writeFileSync(statePath, JSON.stringify(s, null, 2));
+  // Read it back: a silent no-op write is exactly the failure this lock exists to stop.
+  const check = JSON.parse(readFileSync(statePath, "utf8")).attempts?.[String(num)] ?? [];
+  if (check.length !== list.length) {
+    console.error(`state write did not persist for #${num} (expected ${list.length} attempts, found ${check.length})`);
+    process.exit(3);
+  }
   console.log(`recorded agentic attempt ${list.length} for #${num} (outcome=${outcome}${pr ? `, pr=${pr}` : ""})`);
   console.log(`next: node scripts/orchestrate/run.mjs --review ${num} && node scripts/orchestrate/run.mjs --merge ${num}`);
+  }
 }
 
 const cmds = { "pick-issue": () => pickIssue(), "select-model": () => selectModel(arg), "record-attempt": () => recordAttempt(arg), "ask": () => {
