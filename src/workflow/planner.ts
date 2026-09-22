@@ -108,3 +108,77 @@ export function planSchemaText(): string {
     "}",
   ].join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Prompt
+// ---------------------------------------------------------------------------
+
+export interface PlannerPromptInput {
+  readonly intake: PlannerIntake;
+  readonly context: readonly PlannerContextExcerpt[];
+  /** Output limits of the model that will *execute* the tasks, for sizing guidance. */
+  readonly workerLimits?: ModelOutputLimits;
+  readonly workerThinking?: ThinkingLevel;
+  /** Characters of each excerpt embedded. Excerpts are truncated, never dropped silently. */
+  readonly maxExcerptChars?: number;
+}
+
+export const DEFAULT_MAX_EXCERPT_CHARS = 1_200;
+
+/**
+ * Build the planner prompt: intake, retrieved context with full provenance,
+ * the schema, and the rules that are enforced in code.
+ *
+ * The rules are restated here *and* enforced in `plan-schema.ts`. The prompt
+ * exists to make a well-formed plan likely; the validator is what makes a
+ * malformed one impossible to persist.
+ */
+export function buildPlannerPrompt(input: PlannerPromptInput): string {
+  const { intake } = input;
+  const maxChars = input.maxExcerptChars ?? DEFAULT_MAX_EXCERPT_CHARS;
+  const lines: string[] = [
+    "You are the planner. Produce a structured plan. You do not implement anything.",
+    "",
+    "## Goal",
+    intake.goal,
+    "",
+    "## Repository",
+    intake.greenfield
+      ? `greenfield: no commits yet. Phase 0 must bootstrap the repository and its test scaffolding before any feature work (PLAN §2.7).`
+      : `existing: ${intake.repoName} at ${intake.baseRevision.slice(0, 12)}`,
+    `mode: ${intake.mode}`,
+    `out of scope: ${intake.exclusions.length === 0 ? "nothing declared" : intake.exclusions.join(", ")}`,
+  ];
+
+  if (intake.clarifications.length > 0) {
+    lines.push("", "## Clarifications from the user");
+    for (const c of intake.clarifications) lines.push(`- ${c.prompt}`, `  ${c.answer}`);
+  }
+
+  lines.push("", "## Retrieved context");
+  if (input.context.length === 0) {
+    lines.push("(none retrieved; plan from the goal alone and record what you had to assume in openQuestions)");
+  } else {
+    for (const excerpt of input.context) lines.push(...renderExcerpt(excerpt, maxChars));
+  }
+
+  lines.push("", "## Output schema", "Return exactly one JSON document of this shape:", "", planSchemaText());
+  lines.push("", ...planRulesText(input.workerLimits, input.workerThinking));
+  return lines.join("\n");
+}
+
+function renderExcerpt(excerpt: PlannerContextExcerpt, maxChars: number): string[] {
+  const p = excerpt.provenance;
+  const range = p.range === null ? "whole file" : `lines ${p.range.startLine}-${p.range.endLine}`;
+  const truncated = excerpt.text.length > maxChars;
+  const body = truncated ? `${excerpt.text.slice(0, maxChars)}\n… [truncated]` : excerpt.text;
+  return [
+    "",
+    `### ${p.path} (${range})`,
+    `revision ${p.revision.slice(0, 12)} · retrieved by ${p.retrievalMethod} · sha256 ${p.contentHash.slice(0, 12)}` +
+      (excerpt.pinned === true ? " · pinned (must be honoured)" : ""),
+    "```",
+    body,
+    "```",
+  ];
+}
