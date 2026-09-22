@@ -31,7 +31,7 @@ import {
 } from "../../../src/workflow/approvals.ts";
 import { HIGH_RISK_CLASSES, WORKFLOW_MODES } from "../../../src/workflow/approval-classes.ts";
 import { requestKeyFor } from "../../../src/storage/approval-requests.ts";
-import type { ApprovalId, TaskId, WorkflowId } from "../../../src/storage/records.ts";
+import type { TaskId, WorkflowId } from "../../../src/storage/records.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 import { makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
 
