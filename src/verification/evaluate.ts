@@ -31,7 +31,6 @@
 import { ask, type AskContext, type DecisionResult } from "../decisions/ask.ts";
 import {
   claimSupportedQuestion,
-  evidenceGapFallback,
   evidenceGapQuestion,
   testExercisesQuestion,
   TEST_EXERCISES_MIN_LEVEL,
@@ -42,6 +41,9 @@ import {
 } from "../decisions/questions/verify.ts";
 import { FALLBACK_USAGE, UNPRICED_JEV_USAGE } from "../decisions/record.ts";
 import { RECORDS_SCHEMA_VERSION, type Decision, type RiskClass, type TaskId } from "../storage/records.ts";
+// The gate owns the question id; importing it means the writer and the reader
+// cannot drift apart into two rows that never match.
+import { TASK_EVIDENCE_GAP_QUESTION } from "./task-gate.ts";
 
 // ---------------------------------------------------------------------------
 // Thresholds per risk class (issue #47 Scope: "thresholds per risk class from
@@ -650,7 +652,7 @@ export function explainEvidenceGap(evaluation: EvidenceGapEvaluation): readonly 
  * 3. **A gap is recorded as a gap.** `action` is `"gap"` whenever any
  *    criterion is a gap — including when the gap came from an abstention.
  */
-export const TASK_EVIDENCE_GAP_QUESTION_ID = "task_evidence_gap" as const;
+export const TASK_EVIDENCE_GAP_QUESTION_ID: string = TASK_EVIDENCE_GAP_QUESTION;
 
 /** Version pinned on the gate Decision; must match `Workflow.policyVersion`'s pin. */
 export const TASK_EVIDENCE_GAP_QUESTION_VERSION = "1" as const;
@@ -736,7 +738,9 @@ export function recordGateDecision(
   return sink.insert(buildGateDecision(evaluation, options));
 }
 
-export { TEST_EXERCISES_MIN_LEVEL };
-export type { ClaimVerdict, CriterionRef, EvidenceGapState, EvidenceSummary, RiskClass };
-export { ask, claimSupportedQuestion, evidenceGapFallback, evidenceGapQuestion, testExercisesQuestion };
-export type { AskContext, DecisionResult };
+// ---------------------------------------------------------------------------
+// Re-exports, so a caller needs one import for the whole evaluator surface
+// ---------------------------------------------------------------------------
+
+export { TEST_EXERCISES_MIN_LEVEL, claimSupportedQuestion, evidenceGapQuestion, testExercisesQuestion };
+export type { ClaimVerdict, CriterionRef, EvidenceGapState, EvidenceSummary };

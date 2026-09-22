@@ -12,6 +12,7 @@
  * fails the build, which is the outcome worth hearing about.
  */
 export * from "./checks.ts";
+export * from "./evaluate.ts";
 export * from "./evidence.ts";
 export * from "./flaky.ts";
 export * from "./task-gate.ts";
