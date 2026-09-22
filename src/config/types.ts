@@ -65,6 +65,8 @@ export interface ModelOverride {
 export interface ModelsConfig {
   readonly allowlist: ModelAllowlist;
   readonly overrides: Readonly<Record<ModelRef, ModelOverride>>;
+  /** Opt-in main-session routing (PLAN §3.D "Main session"). Default `false`. */
+  readonly routeMainSession: boolean;
 }
 
 // ---------------------------------------------------------------------------

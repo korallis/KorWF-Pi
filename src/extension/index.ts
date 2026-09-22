@@ -31,6 +31,7 @@ import { readLiveRepoState } from "../git/revision.ts";
 import { registerSessionHooks } from "./session-hooks.ts";
 import { registerCatalogRefresh } from "./catalog-refresh.ts";
 import type { CatalogConfig } from "../models/catalog.ts";
+import { registerMainSessionRouting } from "./main-session-routing.ts";
 
 const SUBCOMMANDS = [
   "version",
@@ -72,6 +73,17 @@ export default function korwfExtension(pi: ExtensionAPI): void {
   registerCatalogRefresh(pi, (cwd): CatalogConfig | undefined => {
     const result = loadForProject(cwd);
     return result.ok ? result.config.models : undefined;
+  });
+
+  // Opt-in main-session routing (#67; PLAN §3.D "Main session"). Default
+  // off (`models.routeMainSession: false`): `requestSwitch` refuses to
+  // queue anything, so the user's own session is never re-routed without
+  // opting in. When enabled, a queued switch is only ever applied on the
+  // next `agent_settled` boundary — not mid-turn, not mid-tool-call, not
+  // while another process holds the store lock (`src/storage/lock.ts`).
+  registerMainSessionRouting(pi, (cwd) => {
+    const result = loadForProject(cwd);
+    return result.ok ? { routeMainSession: result.config.models.routeMainSession } : undefined;
   });
 
   pi.registerCommand("korwf", {
