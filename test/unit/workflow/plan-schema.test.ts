@@ -12,7 +12,7 @@ import {
   validatePlanDocument,
   type PlanTask,
 } from "../../../src/workflow/plan-schema.ts";
-import { minimalPlan, planTask } from "../../helpers/plan.ts";
+import { minimalPlan, planTask, planWithoutChecks } from "../../helpers/plan.ts";
 
 describe("AC: validatePlanDocument accepts a well-formed plan", () => {
   it("accepts the minimal plan and returns it normalised", () => {
@@ -112,6 +112,115 @@ describe("AC: malformed planner output is rejected with a path-qualified error",
     const text = formatPlanIssues(result.errors);
     expect(text).toContain("! phases:");
     expect(text).toContain("[required]");
+  });
+});
+
+describe("AC: a task with checks: [] is flagged no_checks and can never become ready (PLAN §2.3)", () => {
+  it("accepts the plan but warns with the no_checks rule", () => {
+    const result = validatePlanDocument(planWithoutChecks());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const warning = result.warnings.find((w) => w.rule === "no_checks");
+    expect(warning?.path).toBe("tasks[0].checks");
+    expect(warning?.severity).toBe("warning");
+  });
+
+  it("taskReadiness refuses readiness and names the blocker", () => {
+    const readiness = taskReadiness({ id: "t1", checks: [] });
+    expect(readiness.canBecomeReady).toBe(false);
+    expect(readiness.blocker).toBe(NO_CHECKS_BLOCKER);
+  });
+
+  it("taskReadiness allows readiness once one check exists", () => {
+    const readiness = taskReadiness(planTask());
+    expect(readiness.canBecomeReady).toBe(true);
+    expect(readiness.blocker).toBeNull();
+  });
+
+  it("there is no option that makes a checkless task ready", () => {
+    // The signature takes only the task: no policy, no override, no flag.
+    expect(taskReadiness({ id: "x", checks: [] }).canBecomeReady).toBe(false);
+  });
+});
+
+describe("AC: checks must be executable, not prose (PLAN §2.3)", () => {
+  it("rejects a command check whose command is a sentence", () => {
+    const bad = planTask({
+      checks: [{ ...planTask().checks[0]!, command: "Please run the tests and confirm they pass." }],
+    });
+    const result = validatePlanDocument(minimalPlan({ tasks: [bad] }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors[0]).toMatchObject({ path: "tasks[0].checks[0].command", rule: "check_shape" });
+  });
+
+  it("accepts a human check whose command is an instruction", () => {
+    const humanCheck = planTask({
+      checks: [
+        {
+          id: "c1",
+          kind: "human" as const,
+          command: "Confirm the printed receipt is legible on paper.",
+          cwd: ".",
+          expectedExitCode: 0,
+          coversCriteria: ["ac1"],
+          required: true,
+        },
+      ],
+    });
+    expect(validatePlanDocument(minimalPlan({ tasks: [humanCheck] })).ok).toBe(true);
+  });
+
+  it("rejects coversCriteria that names a criterion not on the task", () => {
+    const bad = planTask({ checks: [{ ...planTask().checks[0]!, coversCriteria: ["nope"] }] });
+    const result = validatePlanDocument(minimalPlan({ tasks: [bad] }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors[0]).toMatchObject({
+      path: "tasks[0].checks[0].coversCriteria[0]",
+      rule: "unknown_reference",
+    });
+  });
+
+  it("warns about an acceptance criterion no check covers", () => {
+    const task = planTask({
+      acceptanceCriteria: [
+        { id: "ac1", text: "covered" },
+        { id: "ac2", text: "not covered" },
+      ],
+    });
+    const result = validatePlanDocument(minimalPlan({ tasks: [task] }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.warnings.some((w) => w.rule === "criterion_coverage")).toBe(true);
+  });
+});
+
+describe("AC: paths are repository-relative (no machine-specific paths)", () => {
+  it("rejects an absolute ownership path", () => {
+    const result = validatePlanDocument(
+      minimalPlan({ tasks: [planTask({ ownership: { paths: ["/etc/passwd"], components: [] } })] }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors[0]).toMatchObject({ path: "tasks[0].ownership.paths[0]", rule: "path_shape" });
+  });
+
+  it("rejects a traversing ownership path", () => {
+    const result = validatePlanDocument(
+      minimalPlan({ tasks: [planTask({ ownership: { paths: ["../../secrets"], components: [] } })] }),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors[0]?.rule).toBe("path_shape");
+  });
+
+  it("rejects an absolute check cwd", () => {
+    const bad = planTask({ checks: [{ ...planTask().checks[0]!, cwd: "/tmp" }] });
+    const result = validatePlanDocument(minimalPlan({ tasks: [bad] }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors.some((e) => e.path === "tasks[0].checks[0].cwd")).toBe(true);
   });
 });
 
