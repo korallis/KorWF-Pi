@@ -274,3 +274,53 @@ describe("AC2 abstention and unknown are gaps, never passes", () => {
     expect(result.rule).toBe("verify.evidence_gap:no_criteria");
   });
 });
+
+describe("AC3 every evaluation writes Decision records with raw distributions", () => {
+  it("AC3 records one Decision per question, with the distribution as returned", async () => {
+    const ctx = ctxWith({ claim: CLAIM_SUPPORTED, gap: GAP_YES, test: TEST_EXERCISES_NONE });
+    await evaluateEvidenceGap(scenario3(), { ctx, subject: { taskId: "tk-1", taskRevision: 1 } });
+
+    const rows = ctx.sink.rows;
+    // one claim + one gap + one test question, for one criterion
+    expect(rows).toHaveLength(3);
+    expect(rows.map((r) => r.questionId).sort()).toEqual([
+      "verify.claim_supported",
+      "verify.evidence_gap",
+      "verify.test_exercises",
+    ]);
+    for (const row of rows) {
+      expect(row.questionVersion).toBe("1");
+      expect(row.jevModelVersion).toBe(MODEL);
+      expect(Object.keys(row.rawDistribution).length).toBeGreaterThan(0);
+      expect(row.subject).toEqual({ taskId: "tk-1", taskRevision: 1 });
+      expect(row.override).toBeNull();
+    }
+    const gapRow = rows.find((r) => r.questionId === "verify.evidence_gap")!;
+    expect(gapRow.rawDistribution["true"]).toBeCloseTo(0.92, 6);
+    expect(gapRow.action).toBe("gap");
+  });
+
+  it("AC3 records a Decision in disabled mode too, with policyRule fallback", async () => {
+    const ctx = disabledCtx();
+    const result = await evaluateEvidenceGap(scenario3(), { ctx });
+    expect(ctx.sink.rows).toHaveLength(3);
+    for (const row of ctx.sink.rows) {
+      expect(row.jevModelVersion).toBeNull();
+      expect(row.policyRule.startsWith("fallback")).toBe(true);
+      expect(row.usage.requests).toBe(0);
+    }
+    // A fallback answer is never presented as Jev's judgement.
+    expect(result.findings[0]!.claim).toEqual({ evaluated: false, reason: "jev_disabled" });
+    expect(result.findings[0]!.semanticGap).toEqual({ evaluated: false, reason: "jev_disabled" });
+    expect(result.degraded).toBe(true);
+  });
+
+  it("AC3 the abstention itself is recorded, distribution included", async () => {
+    const ctx = ctxWith({ claim: CLAIM_SUPPORTED, gap: { type: "noul", noul: 0.5 }, test: TEST_EXERCISES_FULL });
+    await evaluateEvidenceGap(scenario3(), { ctx });
+    const gapRow = ctx.sink.rows.find((r) => r.questionId === "verify.evidence_gap")!;
+    expect(gapRow.rawDistribution).toEqual({ true: 0.5, false: 0.5 });
+    expect(gapRow.jevModelVersion).toBeNull();
+    expect(gapRow.policyRule).toBe("fallback:criterion_mapping");
+  });
+});
