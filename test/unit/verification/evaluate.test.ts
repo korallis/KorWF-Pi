@@ -13,12 +13,10 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_EVALUATOR_THRESHOLDS,
-  buildGateDecision,
   evaluateCriterion,
   evaluateEvidenceGap,
   evaluateMappingOnly,
   explainEvidenceGap,
-  recordGateDecision,
   thresholdsFor,
   type EvidenceGapInput,
 } from "../../../src/verification/evaluate.ts";
