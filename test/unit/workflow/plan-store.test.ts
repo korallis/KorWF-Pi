@@ -16,7 +16,7 @@ import {
   summarisePersistedPlan,
 } from "../../../src/workflow/plan-store.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
-import { makeWorkflow } from "../../helpers/records.ts";
+import { makeApproval, makeWorkflow } from "../../helpers/records.ts";
 import { minimalPlan, planTask, planWithoutChecks } from "../../helpers/plan.ts";
 
 const AT = "2026-01-01T00:00:00.000Z";
@@ -232,5 +232,82 @@ describe("AC: re-running produces revision N+1 and marks superseded tasks", () =
     expect(() => revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() })).toThrow(
       PlanPersistError,
     );
+  });
+});
+
+describe("AC: a revision bump invalidates approvals on changed tasks (Stage 1 rules)", () => {
+  function approve(store: Store, taskId: string, taskRevision: number, planRevision: number) {
+    return store.approvals.insert(
+      makeApproval({
+        id: `ap-${taskId}-${taskRevision}` as never,
+        scope: { kind: "task", taskId: taskId as never },
+        taskRevision,
+        planRevision,
+      }),
+    );
+  }
+
+  it("invalidates a task approval with task_revision_changed when its definition changed", () => {
+    const store = freshStore();
+    const first = persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    const approval = approve(store, first.tasks[0]!.id, 1, 1);
+    const changed = minimalPlan({
+      tasks: [planTask({ acceptanceCriteria: [{ id: "ac1", text: "It exports greet() and farewell()." }] })],
+    });
+    const second = revisePlan({ store, workflowId: WF, plan: changed, now: () => AT, newId: idFactory() });
+    expect(second.invalidatedApprovals).toEqual([{ approvalId: approval.id, reason: "task_revision_changed" }]);
+    expect(store.approvals.require(approval.id).invalidation?.reason).toBe("task_revision_changed");
+  });
+
+  it("invalidates an unchanged task's approval with plan_revision_changed", () => {
+    const store = freshStore();
+    const first = persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    const approval = approve(store, first.tasks[0]!.id, 1, 1);
+    revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(store.approvals.require(approval.id).invalidation?.reason).toBe("plan_revision_changed");
+  });
+
+  it("invalidates the approval of a task this revision dropped", () => {
+    const store = freshStore();
+    const plan = minimalPlan({ tasks: [planTask({ id: "t1" }), planTask({ id: "t2", goal: "Drop me" })] });
+    const first = persistPlan({ store, workflowId: WF, plan, now: () => AT, newId: idFactory() });
+    const dropped = first.tasks.find((t) => t.goal === "Drop me")!;
+    const approval = approve(store, dropped.id, 1, 1);
+    revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(store.approvals.require(approval.id).invalidation?.reason).toBe("task_revision_changed");
+  });
+
+  it("invalidates nothing when the first plan is written", () => {
+    const store = freshStore();
+    const result = persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(result.invalidatedApprovals).toEqual([]);
+  });
+
+  it("never reactivates an already-invalidated approval", () => {
+    const store = freshStore();
+    const first = persistPlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    const approval = approve(store, first.tasks[0]!.id, 1, 1);
+    revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    const second = revisePlan({ store, workflowId: WF, plan: minimalPlan(), now: () => AT, newId: idFactory() });
+    expect(second.invalidatedApprovals).toEqual([]);
+    expect(store.approvals.require(approval.id).invalidation?.reason).toBe("plan_revision_changed");
+  });
+});
+
+describe("a persisted plan can be read back and inspected", () => {
+  it("returns phases in order with their tasks", () => {
+    const store = freshStore();
+    const plan = minimalPlan({
+      phases: [
+        { id: "p1", order: 0, goal: "First", acceptanceCriteria: [{ id: "pac1", text: "done" }] },
+        { id: "p2", order: 1, goal: "Second", acceptanceCriteria: [{ id: "pac2", text: "done" }] },
+      ],
+      tasks: [planTask({ id: "t1", phaseId: "p1" }), planTask({ id: "t2", phaseId: "p2", goal: "Second task" })],
+    });
+    persistPlan({ store, workflowId: WF, plan, now: () => AT, newId: idFactory() });
+    const stored = readStoredPlan(store, WF);
+    expect(stored.phases.map((p) => p.phase.goal)).toEqual(["First", "Second"]);
+    expect(stored.phases[1]?.tasks[0]?.goal).toBe("Second task");
+    expect(stored.workflow.planRevision).toBe(1);
   });
 });
