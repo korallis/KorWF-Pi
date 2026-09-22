@@ -196,3 +196,127 @@ export const ENVIRONMENT_ERROR_CODES = [
 
 /** Network-level syscall codes, which are service failures, not environment ones. */
 export const SERVICE_ERROR_CODES = ["econnreset", "econnrefused", "enotfound", "etimedout", "epipe", "eai_again"] as const;
+
+/** Phrases that mean a prerequisite artefact or package is not ready. */
+export const DEPENDENCY_PHRASES = [
+  "cannot find module",
+  "module not found",
+  "could not resolve",
+  "unresolved import",
+  "no matching version found",
+  "unmet peer dependency",
+  "failed to resolve entry",
+  "workspace package is not built",
+] as const;
+
+/** Phrases that mean the test asserts something the requirement never implied. */
+export const TEST_EXPECTATION_PHRASES = [
+  "snapshot mismatch",
+  "does not match stored snapshot",
+  "obsolete snapshot",
+  "snapshot file is outdated",
+  "toматchsnapshot", // placeholder guarded below; never matched in practice
+] as const;
+
+/** Explicit markers a worker uses to say the task is under-specified. */
+export const MISSING_INFORMATION_PHRASES = [
+  "missing information:",
+  "needs information:",
+  "requirement is ambiguous",
+  "no acceptance criterion covers",
+  "unspecified in the issue",
+] as const;
+
+/** `true` when tsc-style or parser-level errors prove the change itself is wrong. */
+const TS_ERROR_RE = /\berror ts\d{3,5}\b/;
+const PARSE_ERROR_RE = /\b(syntaxerror|parse error|unexpected token)\b/;
+
+/**
+ * The deterministic rules, in priority order. The first to fire wins, and a
+ * rule match is always confidence 1 with `needsEvidence: false` — these are
+ * facts about the observation, not judgements about it.
+ */
+export const FAILURE_RULES: readonly FailureRule[] = Object.freeze([
+  {
+    id: "rule:http-429-quota",
+    category: "quota",
+    match: (s) => (s.httpStatus === 429 ? "HTTP 429" : null),
+  },
+  {
+    id: "rule:http-402-quota",
+    category: "quota",
+    match: (s) => (s.httpStatus === 402 ? "HTTP 402" : null),
+  },
+  {
+    id: "rule:quota-phrase",
+    category: "quota",
+    match: (_s, text) => firstMatch(text, QUOTA_PHRASES),
+  },
+  {
+    id: "rule:http-5xx-service",
+    category: "service",
+    match: (s) =>
+      typeof s.httpStatus === "number" && s.httpStatus >= 500 && s.httpStatus <= 599 ? `HTTP ${s.httpStatus}` : null,
+  },
+  {
+    id: "rule:service-error-code",
+    category: "service",
+    match: (s) => {
+      const code = s.errorCode?.toLowerCase();
+      return code !== undefined && (SERVICE_ERROR_CODES as readonly string[]).includes(code) ? code.toUpperCase() : null;
+    },
+  },
+  {
+    id: "rule:service-phrase",
+    category: "service",
+    match: (_s, text) => firstMatch(text, SERVICE_PHRASES),
+  },
+  {
+    id: "rule:check-unavailable",
+    category: "environment",
+    match: (s) => (s.checkStatus === "unavailable" ? "check status unavailable" : null),
+  },
+  {
+    id: "rule:command-not-found",
+    category: "environment",
+    match: (s, text) =>
+      s.exitCode === 127 || text.includes("command not found") || text.includes("not recognized as an internal")
+        ? "command not found"
+        : null,
+  },
+  {
+    id: "rule:environment-error-code",
+    category: "environment",
+    match: (s, text) => {
+      const code = s.errorCode?.toLowerCase();
+      if (code !== undefined && (ENVIRONMENT_ERROR_CODES as readonly string[]).includes(code)) return code.toUpperCase();
+      const found = firstMatch(text, ENVIRONMENT_ERROR_CODES);
+      return found === null ? null : found.toUpperCase();
+    },
+  },
+  {
+    id: "rule:dependency-phrase",
+    category: "dependency",
+    match: (_s, text) => firstMatch(text, DEPENDENCY_PHRASES),
+  },
+  {
+    id: "rule:test-expectation-phrase",
+    category: "test_expectation",
+    match: (_s, text) => firstMatch(text, TEST_EXPECTATION_PHRASES),
+  },
+  {
+    id: "rule:missing-information-marker",
+    category: "missing_information",
+    match: (_s, text) => firstMatch(text, MISSING_INFORMATION_PHRASES),
+  },
+  {
+    id: "rule:compile-error",
+    category: "implementation",
+    match: (_s, text) => {
+      const ts = TS_ERROR_RE.exec(text);
+      if (ts !== null) return ts[0];
+      const parse = PARSE_ERROR_RE.exec(text);
+      return parse === null ? null : parse[0];
+    },
+  },
+]);
