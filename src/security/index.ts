@@ -15,7 +15,9 @@
  * `export *` is additive, so modules added in parallel do not conflict; a genuine
  * duplicate-name clash still fails the build, which is what we want to hear about.
  */
+export * from "./bash-classifier.ts";
 export * from "./deny-list.ts";
+export * from "./execution-policy.ts";
 export * from "./outbound.ts";
 export * from "./redact.ts";
 export * from "./secrets.ts";
