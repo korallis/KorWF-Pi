@@ -57,14 +57,20 @@ const ZERO_TASK_COUNTS: Record<Task["status"], number> = {
   paused_cap: 0,
 };
 
-/** The store surfaces board building needs — read-only by type. */
-export type BoardReadStore = Pick<Store, "tasks" | "phases" | "evidence" | "attempts" | "blockers">;
+/** The store surfaces `buildTaskBoard` needs — read-only by type. */
+export type TaskBoardReadStore = Pick<Store, "tasks" | "phases" | "evidence" | "attempts" | "blockers">;
+
+/** The store surfaces `buildPhaseBoard` needs — read-only by type. */
+export type PhaseBoardReadStore = Pick<Store, "tasks" | "phases" | "blockers">;
+
+/** @deprecated use `TaskBoardReadStore` or `PhaseBoardReadStore`. Kept for callers needing both. */
+export type BoardReadStore = TaskBoardReadStore & PhaseBoardReadStore;
 
 function taskDoneStatuses(): ReadonlySet<Task["status"]> {
   return new Set(["done"]);
 }
 
-function unmetDependencyIds(store: BoardReadStore, dependencies: readonly TaskId[]): readonly TaskId[] {
+function unmetDependencyIds(store: TaskBoardReadStore, dependencies: readonly TaskId[]): readonly TaskId[] {
   const done = taskDoneStatuses();
   return dependencies.filter((depId) => {
     const dep = store.tasks.get(depId);
@@ -72,20 +78,20 @@ function unmetDependencyIds(store: BoardReadStore, dependencies: readonly TaskId
   });
 }
 
-function lastAttemptModel(store: BoardReadStore, taskId: TaskId): string | null {
+function lastAttemptModel(store: TaskBoardReadStore, taskId: TaskId): string | null {
   const attempts = store.attempts.forTask(taskId);
   if (attempts.length === 0) return null;
   const last = [...attempts].sort((a, b) => a.timestamps.startedAt.localeCompare(b.timestamps.startedAt)).at(-1);
   return last?.usedModel ?? null;
 }
 
-function evidenceCountForTask(store: BoardReadStore, taskId: TaskId): number {
+function evidenceCountForTask(store: TaskBoardReadStore, taskId: TaskId): number {
   return store.evidence.list().filter((e) => e.taskId === taskId).length;
 }
 
 /** Build the rows for `/korwf tasks`, optionally filtered. */
 export function buildTaskBoard(
-  store: BoardReadStore,
+  store: TaskBoardReadStore,
   workflowId: WorkflowId,
   filter: TaskBoardFilter = {},
 ): readonly TaskBoardRow[] {
@@ -113,7 +119,7 @@ export function buildTaskBoard(
 
 /** Build the rows for `/korwf phases`, optionally filtered by gate status. */
 export function buildPhaseBoard(
-  store: BoardReadStore,
+  store: PhaseBoardReadStore,
   workflowId: WorkflowId,
   filter: PhaseBoardFilter = {},
 ): readonly PhaseBoardRow[] {
