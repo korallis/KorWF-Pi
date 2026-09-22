@@ -32,4 +32,6 @@ export interface RawToolOutput {
   readonly args: readonly string[];
   readonly stdout: string;
   readonly exitCode: number;
+  /** True when the tool binary itself could not be found (ENOENT), not when it ran and found nothing. */
+  readonly unavailable?: true;
 }

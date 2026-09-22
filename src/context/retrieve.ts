@@ -44,7 +44,10 @@ function run(tool: "rg" | "git", args: readonly string[], cwd: string): RawToolO
     });
     return { tool, args, stdout, exitCode: 0 };
   } catch (error) {
-    const err = error as { stdout?: string; status?: number | null };
+    const err = error as { stdout?: string; status?: number | null; code?: string };
+    if (err.code === "ENOENT") {
+      return { tool, args, stdout: "", exitCode: 1, unavailable: true };
+    }
     return { tool, args, stdout: err.stdout ?? "", exitCode: err.status ?? 1 };
   }
 }
