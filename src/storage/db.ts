@@ -21,6 +21,7 @@ import { resolveArtifactDir, resolveDatabasePath, resolveLockfilePath } from "./
 import { ArtifactStore } from "./artifacts.ts";
 import { DecisionCacheStore } from "./decision-cache.ts";
 import { DecisionTraceStore } from "./trace-store.ts";
+import { BlockerStore, TransitionLogStore } from "./transition-log.ts";
 import { reconcileAbandonedAttempts, type ReconcileOptions, type ReconciliationReport } from "./reconcile.ts";
 import type { AuditEntry, AuditEntryId, IsoTimestamp, RecordTable, WorkflowId } from "./records.ts";
 import { RECORDS_SCHEMA_VERSION } from "./records.ts";
@@ -105,6 +106,10 @@ export class Store {
   readonly decisionCache: DecisionCacheStore;
   /** Decision traces (#31); observability about `decision` rows, see trace-store.ts. */
   readonly decisionTraces: DecisionTraceStore;
+  /** Accepted *and* rejected task/phase transitions (#41), see transition-log.ts. */
+  readonly transitionLog: TransitionLogStore;
+  /** First-class blockers (#41); `blocked` is derived from unresolved rows here. */
+  readonly blockers: BlockerStore;
 
   readonly #db: Database;
   readonly #lock: LockHandle | null;
@@ -152,6 +157,8 @@ export class Store {
     this.ledger = new LedgerRepository(ctx);
     this.decisionCache = new DecisionCacheStore(this.#db);
     this.decisionTraces = new DecisionTraceStore(this.#db);
+    this.transitionLog = new TransitionLogStore(this.#db);
+    this.blockers = new BlockerStore(this.#db);
   }
 
   #context(audit: AuditSink | null): RepoContext {

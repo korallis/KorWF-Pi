@@ -23,3 +23,4 @@ export * from "./reconcile.ts";
 export * from "./records.ts";
 export * from "./sqlite.ts";
 export * from "./trace-store.ts";
+export * from "./transition-log.ts";
