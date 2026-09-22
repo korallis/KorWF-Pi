@@ -24,10 +24,14 @@ export type {
   ClarificationPrompt,
   ClarificationQuestion,
   ClarificationResult,
+  FreeTextClassification,
   ParsedMode,
   ParsedPlanArgs,
   ResolvedRepo,
 } from "./intake.ts";
+export { classifyFreeText } from "./intake.ts";
+export { classifyByRules, DETERMINISTIC_RULES } from "./intake-rules.ts";
+export type { IntakeClass, IntakeClassification, IntakeRule, RuleMatch } from "./intake-rules.ts";
 export {
   ASSUMED_MAX_OUTPUT_TOKENS,
   BYTES_PER_TOKEN,
