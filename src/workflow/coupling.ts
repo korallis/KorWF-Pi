@@ -294,6 +294,97 @@ export function ownershipConflict(a: Task, b: Task): OwnershipIntersection {
   return ownershipIntersection(a.ownership, b.ownership);
 }
 
+// ---------------------------------------------------------------------------
+// The coupling cache (issue #76 Scope: "scheduler consults a
+// canRunConcurrently(a, b) cache")
+// ---------------------------------------------------------------------------
+
+/** Cache key for an unordered task pair at the revisions it was judged at. */
+export function couplingKey(a: Task, b: Task): string {
+  const left = `${a.id}@${a.revision}`;
+  const right = `${b.id}@${b.revision}`;
+  return left <= right ? `${left}|${right}` : `${right}|${left}`;
+}
+
+/** One cached semantic-coupling verdict. */
+export interface CachedCoupling {
+  readonly verdict: CouplingVerdict;
+  /** `id@version` of the question that produced it, or `null` for a fallback. */
+  readonly source: string | null;
+  readonly decisionId: string | null;
+}
+
+/**
+ * Memoised `tasks.coupling@1` verdicts, keyed by the unordered task pair
+ * **at the revisions asked about**.
+ *
+ * Including the revision is not decoration. `Task.revision` bumps whenever
+ * `goal`, `acceptanceCriteria` or `checks` change — exactly the fields the
+ * question is asked about — so an edited task cannot be served a verdict
+ * computed for its earlier wording. The cache misses instead, and a miss
+ * reads as `"unknown"`, which serialises.
+ *
+ * A miss is never an error, and `get` never throws: the absence of a
+ * verdict is a legitimate, expected state (no Jev key, request refused,
+ * deadline exceeded) and it is the safe one.
+ */
+export class CouplingCache {
+  readonly #entries = new Map<string, CachedCoupling>();
+
+  /** The cached verdict for this pair, or `"unknown"` when there is none. */
+  verdict(a: Task, b: Task): CouplingVerdict {
+    return this.#entries.get(couplingKey(a, b))?.verdict ?? "unknown";
+  }
+
+  /** The full cached entry, or `undefined` on a miss. */
+  get(a: Task, b: Task): CachedCoupling | undefined {
+    return this.#entries.get(couplingKey(a, b));
+  }
+
+  has(a: Task, b: Task): boolean {
+    return this.#entries.has(couplingKey(a, b));
+  }
+
+  /**
+   * Record a verdict for a pair. Storing `"unknown"` is meaningful — it
+   * says "this pair was asked about and the answer was not usable" — and
+   * behaves identically to a miss at decision time.
+   */
+  set(a: Task, b: Task, entry: CachedCoupling): void {
+    this.#entries.set(couplingKey(a, b), entry);
+  }
+
+  /** Drop every entry mentioning `taskId`, whatever revision it was judged at. */
+  invalidateTask(taskId: TaskId): number {
+    let removed = 0;
+    for (const key of [...this.#entries.keys()]) {
+      if (key.split("|").some((side) => side.slice(0, side.lastIndexOf("@")) === taskId)) {
+        this.#entries.delete(key);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  clear(): void {
+    this.#entries.clear();
+  }
+
+  /** A `CouplingSignal` for #75's `planPass`, reading this cache. */
+  signal(): CouplingSignal {
+    return (a: Task, b: Task) => this.verdict(a, b);
+  }
+}
+
+/** Revision pair a cached verdict was computed against, for auditing. */
+export function couplingRevisions(a: Task, b: Task): readonly [Revision, Revision] {
+  return a.id <= b.id ? [a.revision, b.revision] : [b.revision, a.revision];
+}
+
 /** Human-readable naming of what two tasks both claim. */
 export function describeOverlap(overlap: OwnershipIntersection): string {
   const parts = [
