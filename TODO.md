@@ -99,7 +99,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Dirty-tree preservation and repository identity check.
 - [x] Progress, artifacts, usage capture; global/per-worker limits; pause/resume/cancel; process-tree termination. (#71)
 - [x] Crash-interrupted attempt reconciliation.
-- [ ] Single-worker end-to-end run in a disposable repo; simulated-cap test with visible fallback (scenario 4).
+- [x] Single-worker end-to-end run in a disposable repo; simulated-cap test with visible fallback (scenario 4).
 
 ## 6. Parallel orchestration, integration, unattended operation (Stage 6)
 
