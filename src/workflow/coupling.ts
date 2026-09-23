@@ -26,8 +26,8 @@
  *    never the main tree.
  */
 import type { Ownership, Revision, Task, TaskId } from "../storage/records.ts";
-import type { RoleId } from "../workers/roles.ts";
-import type { GitEnvRunner, WorktreeIdentity } from "../git/index.ts";
+import { isReadOnlyRole, type RoleId } from "../workers/roles.ts";
+import { worktreeIdentity, type GitEnvRunner, type WorktreeIdentity } from "../git/index.ts";
 import type { CouplingSignal, CouplingVerdict } from "./scheduler.ts";
 
 /** Why two tasks may not run at the same time; `null` when they may. */
@@ -540,4 +540,123 @@ export function selectConcurrentBatch(
     admitted.push(task);
   }
   return { parallel, serial };
+}
+
+// ---------------------------------------------------------------------------
+// A writing worker never works in the user's tree
+// ---------------------------------------------------------------------------
+
+/** Why a proposed worker working directory was refused. */
+export const WORKER_TREE_REFUSALS = [
+  "not_a_repository",
+  "different_repository",
+  "is_main_tree",
+] as const;
+export type WorkerTreeRefusal = (typeof WORKER_TREE_REFUSALS)[number];
+
+export class WorkerTreeRefused extends Error {
+  readonly code: WorkerTreeRefusal;
+  constructor(code: WorkerTreeRefusal, message: string) {
+    super(message);
+    this.name = "WorkerTreeRefused";
+    this.code = code;
+  }
+}
+
+/** Inputs to {@link checkWorkerTree}. */
+export interface WorkerTreeCheck {
+  /** Identity of the tree the worker would run in (#70's `worktreeIdentity`). */
+  readonly worker: WorktreeIdentity | null;
+  /** Identity of the user's main tree. */
+  readonly main: WorktreeIdentity | null;
+  /** Whether the worker's role may mutate the tree (#69's `readOnly`, inverted). */
+  readonly writes: boolean;
+}
+
+/** Result of the worker-tree check; `ok: false` carries the refusal code. */
+export interface WorkerTreeVerdict {
+  readonly ok: boolean;
+  readonly code: WorkerTreeRefusal | null;
+  readonly detail: string;
+}
+
+/**
+ * May a worker with this role run in this tree?
+ *
+ * PLAN §3.E: "Separate Git worktrees for parallel writing workers ... never
+ * concurrent uncontrolled integration into the user's tree." So a *writing*
+ * role is admitted only in a linked worktree of the same repository — the
+ * main tree is refused, and a tree belonging to a different repository is
+ * refused too, since a correct-looking linked worktree of the wrong repo is
+ * still the wrong place to write.
+ *
+ * A read-only role (`writes: false`) is allowed in the main tree: #69's
+ * scout and reviewer contracts already forbid every mutation tool, so
+ * reading the user's tree is the point of having them. What this function
+ * does *not* do is verify that the role's tool set is actually restricted —
+ * `src/workers/contract.ts` owns that, and this check composes with it
+ * rather than duplicating it.
+ */
+export function checkWorkerTree(input: WorkerTreeCheck): WorkerTreeVerdict {
+  if (input.worker === null) {
+    return { ok: false, code: "not_a_repository", detail: "worker working directory is not inside a git repository" };
+  }
+  if (input.main !== null && input.main.commonDir !== input.worker.commonDir) {
+    return {
+      ok: false,
+      code: "different_repository",
+      detail:
+        `worker tree ${input.worker.toplevel} belongs to a different repository ` +
+        `than the project tree ${input.main.toplevel}`,
+    };
+  }
+  if (!input.writes) {
+    return { ok: true, code: null, detail: "read-only role; may observe any tree of this repository" };
+  }
+  const isMain =
+    input.main !== null
+      ? input.worker.gitDir === input.main.gitDir || input.worker.toplevel === input.main.toplevel
+      : !input.worker.isLinkedWorktree;
+  if (isMain) {
+    return {
+      ok: false,
+      code: "is_main_tree",
+      detail:
+        `a writing worker may not run in ${input.worker.toplevel}: it is the user's main tree. ` +
+        `Create an attempt worktree (src/workers/worktree.ts) and run there.`,
+    };
+  }
+  return { ok: true, code: null, detail: `writing worker admitted in linked worktree ${input.worker.toplevel}` };
+}
+
+/** Throwing form of {@link checkWorkerTree}, for call sites that cannot continue. */
+export function assertWorkerTree(input: WorkerTreeCheck): void {
+  const verdict = checkWorkerTree(input);
+  if (!verdict.ok && verdict.code !== null) throw new WorkerTreeRefused(verdict.code, verdict.detail);
+}
+
+/** Inputs to {@link checkRoleWorkerTree}, resolved from paths via git. */
+export interface RoleWorkerTreeCheck {
+  readonly role: RoleId;
+  /** Directory the worker would be launched in. */
+  readonly workerCwd: string;
+  /** Any path inside the user's project tree. */
+  readonly projectRoot: string;
+  readonly runner?: GitEnvRunner;
+}
+
+/**
+ * {@link checkWorkerTree} with both identities resolved from git and the
+ * write capability taken from #69's role table — `isReadOnlyRole` is the
+ * single definition of which roles may mutate, so a new writing role is
+ * covered here the moment it is added there, with no list to keep in step.
+ *
+ * `src/git/` is the only module that runs git (ADR 0002); this function
+ * calls into `worktreeIdentity` rather than shelling out itself.
+ */
+export function checkRoleWorkerTree(input: RoleWorkerTreeCheck): WorkerTreeVerdict {
+  const runner = input.runner;
+  const worker = runner === undefined ? worktreeIdentity(input.workerCwd) : worktreeIdentity(input.workerCwd, runner);
+  const main = runner === undefined ? worktreeIdentity(input.projectRoot) : worktreeIdentity(input.projectRoot, runner);
+  return checkWorkerTree({ worker, main, writes: !isReadOnlyRole(input.role) });
 }
