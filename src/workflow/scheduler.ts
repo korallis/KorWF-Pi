@@ -24,6 +24,10 @@
  */
 import type { Phase, PhaseId, Task, TaskId, WorkflowId } from "../storage/records.ts";
 import type { Store } from "../storage/db.ts";
+import type { IsoTimestamp } from "../storage/records.ts";
+import type { TransitionActor } from "../storage/transition-log.ts";
+import { readySet, topoOrder } from "./graph.ts";
+import { hasExecutableCheck, TransitionRejected, transitionTask } from "./state.ts";
 
 export type { Phase, Task };
 
@@ -142,4 +146,186 @@ export function mayRunConcurrently(
     };
   }
   return { ok: true, reason: null, detail: "" };
+}
+
+// ---------------------------------------------------------------------------
+// Ready-task selection
+// ---------------------------------------------------------------------------
+
+/** Inputs to one scheduling pass. Everything is read fresh from the store. */
+export interface PlanPassParams {
+  readonly store: Store;
+  readonly phaseIds: readonly PhaseId[];
+  /** Tasks already dispatched by this loop and not yet settled. */
+  readonly inFlight: readonly TaskId[];
+  /** Concurrency ceiling from config (`budgets.workflow.maxConcurrency`); `null` = uncapped. */
+  readonly limit: number | null;
+  /** Semantic-coupling signal; omitted means "uncertain", i.e. serial. */
+  readonly coupling?: CouplingSignal;
+}
+
+/**
+ * The tasks that may be dispatched right now, computed from a **freshly
+ * read** task set — never from a ready-set the caller cached. A stale ready
+ * set is how a dependency that failed after the last pass gets its dependent
+ * dispatched anyway, so this function takes ids and re-reads the rows.
+ *
+ * Order of restriction, all of which must hold:
+ *  1. `graph.readySet` — every dependency `done`, no cycle (#40);
+ *  2. `state.hasExecutableCheck` — #37's rule, the same predicate #41's
+ *     `checks_registered` guard uses, so a task the transition would refuse
+ *     is not offered here either;
+ *  3. topological order from `graph.topoOrder`, so dispatch order is stable
+ *     and dependency-respecting;
+ *  4. ownership/coupling against both in-flight tasks and the tasks already
+ *     selected on this pass;
+ *  5. the concurrency ceiling.
+ *
+ * This is a pure projection: it writes nothing. The claim that actually
+ * prevents a duplicate dispatch is `claimTask` below.
+ */
+export function planPass(params: PlanPassParams): DispatchPlan {
+  const { store, phaseIds, limit } = params;
+  const coupling = params.coupling ?? UNCERTAIN_COUPLING;
+  const inFlight = [...new Set(params.inFlight)];
+
+  const tasks = phaseIds.flatMap((phaseId) => store.tasks.forPhase(phaseId));
+  const byId = new Map(tasks.map((t) => [t.id, t] as const));
+  const held: HeldTask[] = [];
+
+  const order = topoOrder(tasks);
+  const rank = new Map(order.order.map((id, index) => [id, index] as const));
+  const ready = [...readySet(tasks)].sort(
+    (a, b) => (rank.get(a) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b) ?? Number.MAX_SAFE_INTEGER),
+  );
+
+  // Held tasks the loop must not run alongside: in-flight ones plus the ones
+  // selected on this same pass.
+  const blocking: Task[] = inFlight.flatMap((id) => {
+    const task = byId.get(id);
+    return task === undefined ? [] : [task];
+  });
+  const selected: TaskId[] = [];
+
+  for (const taskId of ready) {
+    const task = byId.get(taskId);
+    if (task === undefined) continue;
+    if (!hasExecutableCheck(task)) {
+      held.push({
+        taskId,
+        reason: "claim_lost",
+        detail: `task ${taskId} has no executable check and cannot be dispatched (PLAN §2.3)`,
+      });
+      continue;
+    }
+    if (limit !== null && inFlight.length + selected.length >= limit) {
+      held.push({
+        taskId,
+        reason: "concurrency_cap",
+        detail: `concurrency limit ${limit} reached`,
+      });
+      continue;
+    }
+    const conflict = blocking
+      .map((other) => mayRunConcurrently(task, other, coupling))
+      .find((verdict) => !verdict.ok);
+    if (conflict !== undefined && conflict.reason !== null) {
+      held.push({ taskId, reason: conflict.reason, detail: conflict.detail });
+      continue;
+    }
+    selected.push(taskId);
+    blocking.push(task);
+  }
+
+  return { dispatch: selected, held, inFlight: inFlight.length, limit };
+}
+
+// ---------------------------------------------------------------------------
+// Claiming: the duplicate-dispatch prevention
+// ---------------------------------------------------------------------------
+
+export interface ClaimParams {
+  readonly store: Store;
+  readonly taskId: TaskId;
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  /** `authorization_current` (PLAN §2.4); resolved by the caller against live approvals. */
+  readonly authorizationCurrent: (task: Task) => boolean;
+  /**
+   * `dispatch_allowed`: allowlist, pin, capability, budget and model
+   * availability. Supplied by the caller because those live in `models/`
+   * (#60, #63, #65) and `telemetry/` (#30), not here. Ownership is the one
+   * part of that precondition this module decides, and `planPass` has
+   * already decided it for the ids it returns.
+   */
+  readonly dispatchAllowed: (task: Task) => boolean;
+  readonly evidenceRefs?: readonly string[];
+}
+
+/** Outcome of a claim attempt. `ok: false` is an ordinary, expected result. */
+export interface ClaimResult {
+  readonly taskId: TaskId;
+  readonly ok: boolean;
+  readonly task: Task | null;
+  readonly reason: string | null;
+}
+
+/**
+ * Claim a ready task for dispatch: `task-dispatch` (`ready` → `running`)
+ * through `state.ts`, the only writer of `Task.status`.
+ *
+ * **This is what prevents a duplicate dispatch**, and it is worth being
+ * precise about how, because it is not a lock this module holds. The
+ * transition runs inside the store's write transaction and carries
+ * `expected: { status: "ready", revision }` — the snapshot the scheduler
+ * selected against. Two claims of the same task therefore serialise in
+ * SQLite: the first commits `running`, and the second finds the row no
+ * longer `ready`, is rejected with `stale_snapshot`, and returns `ok: false`
+ * here. No in-process set could give that guarantee across two coordinator
+ * processes; the transaction does.
+ *
+ * A rejected claim is returned, not thrown: losing a race is a normal
+ * scheduling outcome and the loop simply moves on to the next ready task.
+ */
+export function claimTask(params: ClaimParams): ClaimResult {
+  const { store, taskId, actor, now, newId } = params;
+  const task = store.tasks.get(taskId);
+  if (task === undefined) {
+    return { taskId, ok: false, task: null, reason: `unknown task ${taskId}` };
+  }
+  if (task.status !== "ready") {
+    return {
+      taskId,
+      ok: false,
+      task: null,
+      reason: `task ${taskId} is ${task.status}, not ready: nothing to claim`,
+    };
+  }
+  try {
+    const result = transitionTask({
+      store,
+      taskId,
+      to: "running",
+      trigger: "dispatch",
+      actor,
+      now,
+      newId,
+      // The snapshot the selection was made against. If the row moved
+      // underneath us — another coordinator claimed it, or it was blocked —
+      // the transition is refused rather than applied to a changed subject.
+      expected: { status: "ready", revision: task.revision },
+      evidenceRefs: params.evidenceRefs ?? [`dispatch:${taskId}@${task.revision}`],
+      guards: {
+        authorization_current: () => params.authorizationCurrent(task),
+        dispatch_allowed: () => params.dispatchAllowed(task),
+      },
+    });
+    return { taskId, ok: true, task: result.subject, reason: null };
+  } catch (error) {
+    if (error instanceof TransitionRejected) {
+      return { taskId, ok: false, task: null, reason: error.message };
+    }
+    throw error;
+  }
 }
