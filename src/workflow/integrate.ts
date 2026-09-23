@@ -225,10 +225,29 @@ export function enqueueIntegration(options: EnqueueIntegrationOptions): Integrat
 // Base-revision check
 // ---------------------------------------------------------------------------
 
-/** Verdict on whether an item's recorded base still matches the integration branch. */
+/**
+ * What the base check concluded.
+ *
+ * - `current` — the integration branch is exactly where the work was based.
+ *   The evidence #45 recorded still describes the tree that is being merged.
+ * - `behind` — the recorded base is an **ancestor** of the integration head:
+ *   the branch moved on underneath this task. The issue's rule for that case
+ *   is "rebase/merge", so the merge proceeds — but the evidence no longer
+ *   covers the merged result, so it is invalidated and the task goes back to
+ *   `verifying` (#50). Merged, never *accepted*, on trust.
+ * - `unmergeable` — anything else: the branch rewound, diverged, names an
+ *   object this repository does not have, or git could not answer. Nothing is
+ *   merged; the item settles `stale_base` and the work is re-verified.
+ */
+export type BaseVerdict = "current" | "behind" | "unmergeable";
+
+/** Verdict on how an item's recorded base relates to the integration branch. */
 export interface BaseRevisionCheck {
-  /** `true` only when the base is unchanged and the evidence therefore still applies. */
-  readonly current: boolean;
+  readonly verdict: BaseVerdict;
+  /** `true` when a merge may be attempted at all (`current` or `behind`). */
+  readonly mayMerge: boolean;
+  /** `true` when the task's evidence must be re-taken after this integration. */
+  readonly requiresReverification: boolean;
   /** Where the integration branch is now; `null` when the branch does not exist yet. */
   readonly integrationHead: string | null;
   /** Ancestry relation from `src/git/`; `indeterminate` when git could not answer. */
@@ -237,17 +256,17 @@ export interface BaseRevisionCheck {
 }
 
 /**
- * Has the integration base moved since this work was verified?
+ * How does the item's recorded base relate to the integration branch now?
  *
- * The comparison is ancestry from `src/git/revision.ts`, not a string
- * compare, and `indeterminate` — what a git failure produces — counts as
- * movement. The rule is one-directional on purpose: any relation other than
- * `"same"` means the evidence recorded at `verifiedRevision` was produced
- * against a tree that is no longer the base, so #50 already calls it stale
- * and the work must be **re-verified, not merged on trust**.
+ * The comparison is ancestry from `src/git/revision.ts`, never a string
+ * compare, and `indeterminate` — what a git failure produces — is treated as
+ * movement, never as freshness. Only a base that is an ancestor of the head
+ * (`advanced`) is mergeable-while-behind; a rewound, diverged or unanswerable
+ * relation refuses the merge outright, because in those cases the tree the
+ * work was verified against is not a prefix of the tree it would land on.
  *
- * A branch that does not exist yet is not drift: the first integration into
- * a fresh phase branch starts from the recorded base by construction.
+ * A branch that does not exist yet is not drift: the first integration into a
+ * fresh phase branch starts from the recorded base by construction.
  */
 export function checkBaseRevision(options: {
   readonly repoCwd: string;
@@ -259,7 +278,9 @@ export function checkBaseRevision(options: {
   const head = resolveRef(options.repoCwd, options.integrationBranch, runner);
   if (head === null) {
     return {
-      current: true,
+      verdict: "current",
+      mayMerge: true,
+      requiresReverification: false,
       integrationHead: null,
       relation: "same",
       detail: `integration branch ${options.integrationBranch} does not exist yet; the recorded base is still the base`,
@@ -267,10 +288,31 @@ export function checkBaseRevision(options: {
   }
   const relation = baseRelation(options.repoCwd, options.item.baseRevision, head, runner);
   if (!isDrift(relation)) {
-    return { current: true, integrationHead: head, relation, detail: `base ${options.item.baseRevision} is current` };
+    return {
+      verdict: "current",
+      mayMerge: true,
+      requiresReverification: false,
+      integrationHead: head,
+      relation,
+      detail: `base ${options.item.baseRevision} is current`,
+    };
+  }
+  if (relation === "advanced") {
+    return {
+      verdict: "behind",
+      mayMerge: true,
+      requiresReverification: true,
+      integrationHead: head,
+      relation,
+      detail:
+        `integration base advanced to ${head}: ${options.item.verifiedRevision} was verified against ` +
+        `${options.item.baseRevision}, so the merged result must be re-verified`,
+    };
   }
   return {
-    current: false,
+    verdict: "unmergeable",
+    mayMerge: false,
+    requiresReverification: true,
     integrationHead: head,
     relation,
     detail:
@@ -286,7 +328,14 @@ export function checkBaseRevision(options: {
 /** How one integration ended. */
 export type IntegrationOutcome =
   | { readonly kind: "empty" }
-  | { readonly kind: "integrated"; readonly item: IntegrationItemRow; readonly head: string; readonly merge: MergeOutcome }
+  | {
+      readonly kind: "integrated";
+      readonly item: IntegrationItemRow;
+      readonly head: string;
+      readonly merge: MergeOutcome;
+      /** `true` when the base had moved, so the merged result must be re-verified. */
+      readonly reverificationRequired: boolean;
+    }
   | { readonly kind: "stale_base"; readonly item: IntegrationItemRow; readonly check: BaseRevisionCheck }
   | {
       readonly kind: "conflict";
@@ -399,7 +448,7 @@ export function integrateNext(options: IntegrateNextOptions): IntegrationOutcome
     integrationBranch: branch,
     ...(options.runner === undefined ? {} : { runner: options.runner }),
   });
-  if (!check.current) {
+  if (!check.mayMerge) {
     const settled = store.integrations.settle(item.itemId, "stale_base", check.detail) ?? item;
     requireReverification({ ...options, item, check });
     return { kind: "stale_base", item: settled, check };
@@ -423,7 +472,17 @@ export function integrateNext(options: IntegrateNextOptions): IntegrationOutcome
     return openConflict({ ...options, item, merge, branch });
   }
   const settled = store.integrations.settle(item.itemId, "integrated", `${merge.kind} at ${merge.head}`) ?? item;
-  return { kind: "integrated", item: settled, head: merge.head, merge };
+  // A base that had moved on was merged, not trusted: the evidence #45
+  // recorded was taken against the old base, so it no longer covers the
+  // merged result and the task returns to `verifying` (#50).
+  if (check.requiresReverification) requireReverification({ ...options, item, check });
+  return {
+    kind: "integrated",
+    item: settled,
+    head: merge.head,
+    merge,
+    reverificationRequired: check.requiresReverification,
+  };
 }
 
 /**
