@@ -273,3 +273,285 @@ export function checkBaseRevision(options: {
       `against base ${options.item.baseRevision}, but ${options.integrationBranch} is now at ${head}`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Integrating one item
+// ---------------------------------------------------------------------------
+
+/** How one integration ended. */
+export type IntegrationOutcome =
+  | { readonly kind: "empty" }
+  | { readonly kind: "integrated"; readonly item: IntegrationItemRow; readonly head: string; readonly merge: MergeOutcome }
+  | { readonly kind: "stale_base"; readonly item: IntegrationItemRow; readonly check: BaseRevisionCheck }
+  | {
+      readonly kind: "conflict";
+      readonly item: IntegrationItemRow;
+      readonly conflict: IntegrationConflictRow;
+      readonly resolution: ConflictResolution;
+    }
+  | { readonly kind: "failed"; readonly item: IntegrationItemRow; readonly detail: string };
+
+/**
+ * The bounded resolution task a conflict produces, or the refusal to make
+ * one. Never a merge: resolving a conflict is work, and work is verified.
+ */
+export type ConflictResolution =
+  | {
+      readonly kind: "task";
+      readonly taskId: TaskId;
+      /** Exactly the conflicted paths; the resolver may write nothing else. */
+      readonly paths: readonly string[];
+      /** Always `true`: a resolution is re-verified before the item retries. */
+      readonly requiresReverification: true;
+    }
+  | { readonly kind: "blocked"; readonly reason: string; readonly notification: ConflictNotification };
+
+/** Payload handed to the notification sink when a conflict blocks the phase. */
+export interface ConflictNotification {
+  readonly event: "integration_conflict";
+  readonly workflowId: WorkflowId;
+  readonly phaseId: PhaseId;
+  readonly taskId: TaskId;
+  readonly itemId: string;
+  readonly conflictId: string;
+  readonly branch: string;
+  readonly paths: readonly string[];
+  readonly summary: string;
+}
+
+/**
+ * Creates the bounded resolution task for a set of conflicted paths.
+ *
+ * Supplied by the caller because task creation belongs to the planner and
+ * the worker layer, not here. Returning `null` means no resolver is
+ * available, which blocks the phase — the deterministic fallback, and the
+ * behaviour with no Jev key and no implementer role configured.
+ */
+export type ResolutionTaskFactory = (input: {
+  readonly item: IntegrationItemRow;
+  readonly paths: readonly string[];
+  readonly integrationBranch: string;
+}) => TaskId | null;
+
+/** Where a notification is delivered. Never throws into the integrator. */
+export type ConflictNotifier = (notification: ConflictNotification) => void;
+
+export interface IntegrateNextOptions {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  readonly phaseId: PhaseId;
+  /** The integration worktree: a linked worktree on the integration branch. */
+  readonly integrationWorktree: string;
+  /** The lease proving this process owns integration. Checked, not assumed. */
+  readonly lease: IntegrationLease;
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  /** Creates the bounded conflict-resolution task; `null` ⇒ block the phase. */
+  readonly resolutionTask?: ResolutionTaskFactory;
+  readonly notify?: ConflictNotifier;
+  readonly runner?: GitEnvRunner;
+}
+
+/** Raised when a caller tries to integrate without owning the lease. */
+export class NotIntegrationOwnerError extends Error {
+  readonly code = "KORWF_NOT_INTEGRATION_OWNER";
+  constructor() {
+    super("refusing to integrate: this process does not hold the integration lease (PLAN §3.E, one integration owner)");
+    this.name = "NotIntegrationOwnerError";
+  }
+}
+
+/**
+ * Integrate the head of the phase's queue, or return `empty`.
+ *
+ * The order of events is the issue's requirement in code:
+ *
+ *  1. refuse unless this process holds the integration lease;
+ *  2. claim the FIFO head atomically (`claimNext`), so a second integrator
+ *     in another process cannot take the same item;
+ *  3. check the base revision — a moved base settles the item `stale_base`
+ *     and sends the task back to `verifying` through #50, without merging;
+ *  4. merge, which fast-forwards when it can;
+ *  5. on conflict, record it, create the bounded resolution task restricted
+ *     to the conflicted paths, and — when none can be created — block the
+ *     phase with a notification.
+ *
+ * The merge itself happens in the *integration* worktree. The user's branch
+ * is never an argument to this function.
+ */
+export function integrateNext(options: IntegrateNextOptions): IntegrationOutcome {
+  const { store, workflowId, phaseId } = options;
+  if (!options.lease.isOwned()) throw new NotIntegrationOwnerError();
+
+  const branch = integrationBranch(workflowId, phaseId);
+  const item = store.write(() => store.integrations.claimNext(phaseId, options.now()));
+  if (item === undefined) return { kind: "empty" };
+
+  const check = checkBaseRevision({
+    repoCwd: options.integrationWorktree,
+    item,
+    integrationBranch: branch,
+    ...(options.runner === undefined ? {} : { runner: options.runner }),
+  });
+  if (!check.current) {
+    const settled = store.integrations.settle(item.itemId, "stale_base", check.detail) ?? item;
+    requireReverification({ ...options, item, check });
+    return { kind: "stale_base", item: settled, check };
+  }
+
+  let merge: MergeOutcome;
+  try {
+    merge = mergeBranch({
+      worktreePath: options.integrationWorktree,
+      source: item.branch,
+      message: `korwf: integrate ${item.taskId}@${item.taskRevision} into ${branch}`,
+      ...(options.runner === undefined ? {} : { runner: options.runner }),
+    });
+  } catch (error) {
+    const detail = error instanceof MergeError ? `${error.code}: ${error.message}` : (error as Error).message;
+    const settled = store.integrations.settle(item.itemId, "failed", detail) ?? item;
+    return { kind: "failed", item: settled, detail };
+  }
+
+  if (merge.kind === "conflict") {
+    return openConflict({ ...options, item, merge, branch });
+  }
+  const settled = store.integrations.settle(item.itemId, "integrated", `${merge.kind} at ${merge.head}`) ?? item;
+  return { kind: "integrated", item: settled, head: merge.head, merge };
+}
+
+/**
+ * A stale base sends the task back to verification, through #50's
+ * `invalidateStaleEvidence` — the module that already owns "which evidence
+ * stopped being fresh, and does the task return to `verifying`".
+ *
+ * The change set is `unknown`: the integrator knows the base moved but not
+ * which paths moved with it, and #50 defines `unknown` as invalidating
+ * everything. Guessing a narrower set here would be the one way to merge
+ * stale work on trust.
+ *
+ * Returns the ids of nothing and throws nothing: a task that is no longer in
+ * a state with an invalidation edge (already `blocked`, `cancelled`) simply
+ * keeps its state, and the item is still recorded `stale_base`.
+ */
+function requireReverification(options: {
+  readonly store: Store;
+  readonly item: IntegrationItemRow;
+  readonly check: BaseRevisionCheck;
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+}): void {
+  const { store, item, check } = options;
+  const changes: WorktreeChangeSet = {
+    kind: "unknown",
+    reason: `integration base moved (${check.relation}) before ${item.taskId} was merged`,
+  };
+  try {
+    invalidateStaleEvidence({
+      store,
+      taskId: item.taskId as TaskId,
+      oldRevision: item.verifiedRevision as GitSha,
+      newRevision: (check.integrationHead ?? item.baseRevision) as GitSha,
+      changes,
+      actor: options.actor,
+      now: options.now,
+      newId: options.newId,
+    });
+  } catch {
+    // A task with no valid `task-stale-evidence` edge right now (terminal,
+    // blocked, already re-verifying) keeps its state. The item stays
+    // `stale_base`, so the work is still not merged — which is the guarantee
+    // this function exists to provide.
+  }
+}
+
+/**
+ * Turn a conflicted merge into the conflict workflow.
+ *
+ * `mergeBranch` has already aborted the merge, so the integration worktree
+ * is clean when this runs: the conflict is recorded as data, not left in the
+ * tree. A resolution task is created for exactly the conflicted paths; when
+ * the caller supplies no factory, or the factory declines, the phase is
+ * blocked with `integration_conflict` and the notification carries the paths
+ * so a human can see what to resolve.
+ */
+function openConflict(options: IntegrateNextOptions & {
+  readonly item: IntegrationItemRow;
+  readonly merge: Extract<MergeOutcome, { kind: "conflict" }>;
+  readonly branch: string;
+}): IntegrationOutcome {
+  const { store, item, merge } = options;
+  const conflictId = options.newId();
+  const paths = merge.paths;
+  const conflict = store.write(() =>
+    store.integrations.recordConflict({
+      conflictId,
+      createdAt: options.now(),
+      workflowId: options.workflowId,
+      itemId: item.itemId,
+      taskId: item.taskId,
+      paths,
+      resolutionTaskId: null,
+      status: "open",
+      resolvedAt: null,
+      detail: merge.detail,
+    }),
+  );
+  store.integrations.settle(
+    item.itemId,
+    "conflicted",
+    `merge conflict on ${paths.length} path(s): ${paths.join(", ")}`,
+  );
+
+  const resolutionTaskId =
+    options.resolutionTask === undefined
+      ? null
+      : options.resolutionTask({ item, paths, integrationBranch: options.branch });
+
+  if (resolutionTaskId !== null) {
+    const withTask = store.integrations.attachResolutionTask(conflictId, resolutionTaskId) ?? conflict;
+    return {
+      kind: "conflict",
+      item: store.integrations.get(item.itemId) ?? item,
+      conflict: withTask,
+      resolution: { kind: "task", taskId: resolutionTaskId, paths, requiresReverification: true },
+    };
+  }
+
+  const notification: ConflictNotification = {
+    event: "integration_conflict",
+    workflowId: options.workflowId,
+    phaseId: options.phaseId,
+    taskId: item.taskId as TaskId,
+    itemId: item.itemId,
+    conflictId,
+    branch: options.branch,
+    paths,
+    summary: `Integration of ${item.taskId} into ${options.branch} conflicts on ${paths.length} path(s); no resolver is available.`,
+  };
+  const unresolved = store.integrations.settleConflict(
+    conflictId,
+    "unresolved",
+    options.now(),
+    notification.summary,
+  ) ?? conflict;
+  raisePhaseBlocker({
+    store,
+    phaseId: options.phaseId,
+    kind: INTEGRATION_CONFLICT_BLOCKER,
+    detail: notification.summary,
+    actor: options.actor,
+    now: options.now,
+    newId: options.newId,
+    evidenceRefs: [`integration_conflict:${conflictId}`, ...paths.map((p) => `path:${p}`)],
+  });
+  options.notify?.(notification);
+  return {
+    kind: "conflict",
+    item: store.integrations.get(item.itemId) ?? item,
+    conflict: unresolved,
+    resolution: { kind: "blocked", reason: notification.summary, notification },
+  };
+}
