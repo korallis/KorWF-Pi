@@ -11,13 +11,14 @@
  * transport (`MockJevTransport`) and the provider call itself are faked —
  * there is no key and no network in this suite.
  */
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { openStore, type Store } from "../../../src/storage/db.ts";
 import {
-  RECORDS_SCHEMA_VERSION,
   type Attempt,
   type AttemptId,
   type CheckDefinition,
+  type GitSha,
   type IsoTimestamp,
   type PhaseId,
   type TaskId,
@@ -72,6 +73,58 @@ export const M_WEAK = candidateFor("M-weak");
 export const ALLOW_ALL: ModelAllowlist = { providers: [], models: [], pins: {} };
 export const STATIC_ORDER: readonly ModelRef[] = [M_PRIMARY.ref, M_SUB.ref, M_WEAK.ref];
 
+/** Repo-relative path of each task's tiny, self-checking module. */
+function moduleRelPath(taskId: TaskId): string {
+  return `src/${taskId}.js`;
+}
+
+export function checkRelPath(taskId: TaskId): string {
+  return `test/${taskId}.test.js`;
+}
+
+/** `CheckDefinition` for one task's test file: `node <file>` and nothing else (no repo-toolchain dependency). */
+export function checkFor(taskId: TaskId): CheckDefinition {
+  return {
+    id: `chk-${taskId}`,
+    kind: "command",
+    command: `node ${checkRelPath(taskId)}`,
+    cwd: ".",
+    expectedExitCode: 0,
+    coversCriteria: [`ac-${taskId}`],
+    required: true,
+  };
+}
+
+export const T1_CRITERION = { id: "ac-t1", text: "GET /orders/:id/summary returns the order summary" };
+export const T2_CRITERION = { id: "ac-t2", text: "GET /users/:id/orders returns the user's orders" };
+
+function moduleSource(taskId: TaskId): string {
+  return `"use strict";\nfunction handle() { return { ok: true, task: ${JSON.stringify(taskId)} }; }\nmodule.exports = { handle };\n`;
+}
+
+function testSource(taskId: TaskId): string {
+  return (
+    `"use strict";\n` +
+    `const assert = require("node:assert");\n` +
+    `const { handle } = require("../${moduleRelPath(taskId)}");\n` +
+    `assert.deepStrictEqual(handle(), { ok: true, task: ${JSON.stringify(taskId)} });\n` +
+    `console.log("1 passing");\n`
+  );
+}
+
+/** Write and commit one task's module + its real, passing test. Returns the new HEAD. */
+export function commitTaskPatch(fixture: Pick<Stage5Fixture, "repo">, taskId: TaskId): GitSha {
+  const modulePath = join(fixture.repo.path, moduleRelPath(taskId));
+  const testPath = join(fixture.repo.path, checkRelPath(taskId));
+  mkdirSync(dirname(modulePath), { recursive: true });
+  mkdirSync(dirname(testPath), { recursive: true });
+  writeFileSync(modulePath, moduleSource(taskId));
+  writeFileSync(testPath, testSource(taskId));
+  fixture.repo.git("add", moduleRelPath(taskId), checkRelPath(taskId));
+  fixture.repo.git("commit", "-q", "-m", `implement ${taskId}`);
+  return fixture.repo.head() as GitSha;
+}
+
 export interface Stage5Fixture {
   readonly repo: TestRepo;
   readonly store: Store;
@@ -102,16 +155,6 @@ export function createStage5Fixture(startMs = Date.parse("2026-01-01T00:00:00.00
   );
   store.phases.insert(makePhase({ id: PH, workflowId: WF, gateStatus: "running" }));
 
-  const check: CheckDefinition = {
-    id: "chk1",
-    kind: "command",
-    command: "true",
-    cwd: ".",
-    expectedExitCode: 0,
-    coversCriteria: ["ac-1"],
-    required: true,
-  };
-
   store.tasks.insert(
     makeTask({
       id: T1,
@@ -121,7 +164,8 @@ export function createStage5Fixture(startMs = Date.parse("2026-01-01T00:00:00.00
       goal: "Add GET /orders/:id/summary",
       status: "ready",
       dependencies: [],
-      checks: [check],
+      acceptanceCriteria: [{ id: T1_CRITERION.id, text: T1_CRITERION.text }],
+      checks: [checkFor(T1)],
       riskClass: "low",
     }),
   );
@@ -134,7 +178,8 @@ export function createStage5Fixture(startMs = Date.parse("2026-01-01T00:00:00.00
       goal: "Add GET /users/:id/orders",
       status: "proposed",
       dependencies: [T1],
-      checks: [check],
+      acceptanceCriteria: [{ id: T2_CRITERION.id, text: T2_CRITERION.text }],
+      checks: [checkFor(T2)],
       riskClass: "low",
     }),
   );
