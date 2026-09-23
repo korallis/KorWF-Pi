@@ -247,3 +247,58 @@ export function pathsIntersect(a: string, b: string): PathOverlapRule | null {
 function hasGlobSyntax(pattern: string): boolean {
   return /[*?[\]]/.test(pattern);
 }
+
+// ---------------------------------------------------------------------------
+// Ownership overlap between two tasks
+// ---------------------------------------------------------------------------
+
+const EMPTY_INTERSECTION: OwnershipIntersection = Object.freeze({
+  paths: Object.freeze([]) as readonly OverlappingPaths[],
+  components: Object.freeze([]) as readonly string[],
+});
+
+/**
+ * Every declared path pattern pair that can name a common file, plus every
+ * component both tasks claim. A pure set computation over the two
+ * `Ownership` records — no store, no clock, no signal.
+ */
+export function ownershipIntersection(a: Ownership, b: Ownership): OwnershipIntersection {
+  const paths: OverlappingPaths[] = [];
+  for (const pa of a.paths) {
+    for (const pb of b.paths) {
+      const rule = pathsIntersect(pa, pb);
+      if (rule !== null) paths.push({ a: pa, b: pb, rule });
+    }
+  }
+  const aComponents = new Set(a.components.map((c) => c.trim()).filter((c) => c.length > 0));
+  const components = [...new Set(b.components.map((c) => c.trim()))].filter((c) => aComponents.has(c));
+  if (paths.length === 0 && components.length === 0) return EMPTY_INTERSECTION;
+  return { paths, components };
+}
+
+/** `true` when the intersection names anything at all. */
+export function hasOwnershipOverlap(overlap: OwnershipIntersection): boolean {
+  return overlap.paths.length > 0 || overlap.components.length > 0;
+}
+
+/**
+ * Declared ownership conflict between two tasks, decided in code.
+ *
+ * This is deliberately *not* parameterised by anything: there is no options
+ * bag, no signal, no escape hatch. A caller cannot ask it to be lenient,
+ * which is what makes "overlapping globs → serial regardless of Jev" a
+ * property of the module rather than a convention callers must follow.
+ */
+export function ownershipConflict(a: Task, b: Task): OwnershipIntersection {
+  if (a.id === b.id) return EMPTY_INTERSECTION;
+  return ownershipIntersection(a.ownership, b.ownership);
+}
+
+/** Human-readable naming of what two tasks both claim. */
+export function describeOverlap(overlap: OwnershipIntersection): string {
+  const parts = [
+    ...overlap.paths.map((p) => (p.a === p.b ? p.a : `${p.a} ∩ ${p.b}`)),
+    ...overlap.components.map((c) => `component ${c}`),
+  ];
+  return parts.join(", ");
+}
