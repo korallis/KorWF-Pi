@@ -35,7 +35,7 @@ import {
   type IntegrationLease,
 } from "../../../src/workflow/integrate.ts";
 import { activeBlockers } from "../../../src/workflow/blockers.ts";
-import { makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
+import { makeEvidence, makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 
 const AT = "2026-01-01T00:00:00.000Z";
@@ -429,5 +429,261 @@ describe("AC2: conflicting edits produce a resolution task; unresolved blocks th
     expect(accepted.ok).toBe(true);
     expect(store.integrations.conflict(conflictId)?.status).toBe("resolved");
     expect(store.integrations.pending(PH).map((i) => i.taskId)).toEqual(["tk-b"]);
+  });
+});
+
+describe("AC3: the user's branch HEAD is unchanged until explicit approval", () => {
+  it("integrating a whole queue moves only the integration branch, never `main`", () => {
+    const store = freshStore();
+    const repo = makeRepo("korwf-integrate-userbranch-");
+    const userHeadBefore = repo.head();
+    const base = repo.head() as GitSha;
+    onIntegrationBranch(repo);
+    repo.git("branch", "work-a", base);
+    const sha = repo.commitOn("work-a", "a.txt", "a\n", "task a");
+    const task = insertTask(store, "tk-a");
+    enqueueIntegration({
+      store, task, branch: "work-a", baseRevision: base,
+      verifiedRevision: sha as GitSha, now: now as never, newId,
+    });
+    const lease = leaseFor(store);
+    const result = runIntegrationQueue({
+      store, workflowId: WF, phaseId: PH, integrationWorktree: repo.path, lease,
+      actor, now: now as never, newId,
+    });
+
+    expect(result.integrated).toHaveLength(1);
+    expect(repo.git("rev-parse", "main")).toBe(userHeadBefore);
+    expect(repo.git("rev-parse", integrationBranch(WF, PH))).not.toBe(userHeadBefore);
+  });
+
+  it("promotion is only ever an approval request of the high-risk merge_to_user_branch class", () => {
+    const store = freshStore();
+    const repo = makeRepo("korwf-integrate-promote-");
+    const userHeadBefore = repo.head();
+    const base = repo.head() as GitSha;
+    onIntegrationBranch(repo);
+    repo.git("branch", "work-a", base);
+    const sha = repo.commitOn("work-a", "a.txt", "a\n", "task a");
+    const task = insertTask(store, "tk-a");
+    enqueueIntegration({
+      store, task, branch: "work-a", baseRevision: base,
+      verifiedRevision: sha as GitSha, now: now as never, newId,
+    });
+    const lease = leaseFor(store);
+    runIntegrationQueue({
+      store, workflowId: WF, phaseId: PH, integrationWorktree: repo.path, lease,
+      actor, now: now as never, newId,
+    });
+
+    const proposal = proposeUserBranchMerge({
+      store, workflowId: WF, phaseId: PH, userBranch: "main",
+      phaseGatePassed: true, now: AT as never, newId,
+    });
+    expect(proposal.ok).toBe(true);
+    if (!proposal.ok) return;
+    // `stop` in every mode: high-risk, so a human decides, not the engine.
+    expect(proposal.request.outcome).toBe("stop");
+    expect(proposal.request.request?.classId).toBe(MERGE_TO_USER_BRANCH_CLASS);
+    expect(proposal.request.request?.tier).toBe("high_risk");
+    // The request exists; the branch has still not moved.
+    expect(repo.git("rev-parse", "main")).toBe(userHeadBefore);
+    expect(store.approvals.findBy("workflowId", WF)).toHaveLength(0);
+  });
+
+  it("promotion is not even proposed before the phase gate passes or while items are pending", () => {
+    const store = freshStore();
+    const beforeGate = proposeUserBranchMerge({
+      store, workflowId: WF, phaseId: PH, userBranch: "main",
+      phaseGatePassed: false, now: AT as never, newId,
+    });
+    expect(beforeGate.ok === false && beforeGate.refusal).toBe("phase_gate_not_passed");
+
+    const task = insertTask(store, "tk-a");
+    enqueueIntegration({
+      store, task, branch: "work-a", baseRevision: "a".repeat(40) as GitSha,
+      verifiedRevision: "b".repeat(40) as GitSha, now: now as never, newId,
+    });
+    const pending = proposeUserBranchMerge({
+      store, workflowId: WF, phaseId: PH, userBranch: "main",
+      phaseGatePassed: true, now: AT as never, newId,
+    });
+    expect(pending.ok === false && pending.refusal).toBe("queue_not_drained");
+    expect(store.approvalRequests.pendingForWorkflow(WF)).toHaveLength(0);
+  });
+
+  it("the integration branch is namespaced to the workflow and recognised as workflow-owned", () => {
+    expect(integrationBranch(WF, PH)).toBe(`korwf/${WF}/${PH}`);
+    expect(isWorkflowOwnedRef(integrationBranch(WF, PH), WF)).toBe(true);
+    expect(isWorkflowOwnedRef("main", WF)).toBe(false);
+    expect(isWorkflowOwnedRef("korwf/other-workflow/ph-1", WF)).toBe(false);
+  });
+});
+
+describe("base-revision validation: stale evidence is re-verified, not merged on trust", () => {
+  it("an unchanged base is `current` and needs no re-verification", () => {
+    const repo = makeRepo("korwf-integrate-base-current-");
+    const base = repo.head() as GitSha;
+    onIntegrationBranch(repo);
+    const check = checkBaseRevision({
+      repoCwd: repo.path,
+      item: { baseRevision: base, verifiedRevision: base },
+      integrationBranch: integrationBranch(WF, PH),
+    });
+    expect(check.verdict).toBe("current");
+    expect(check.mayMerge).toBe(true);
+    expect(check.requiresReverification).toBe(false);
+  });
+
+  it("a base that the branch has advanced past is `behind`: merged, then re-verified", () => {
+    const repo = makeRepo("korwf-integrate-base-behind-");
+    const base = repo.head() as GitSha;
+    const branch = onIntegrationBranch(repo);
+    repo.commitOn(branch, "other.txt", "moved on\n", "another task integrated first");
+    const check = checkBaseRevision({
+      repoCwd: repo.path,
+      item: { baseRevision: base, verifiedRevision: base },
+      integrationBranch: branch,
+    });
+    expect(check.verdict).toBe("behind");
+    expect(check.mayMerge).toBe(true);
+    expect(check.requiresReverification).toBe(true);
+  });
+
+  it("a base git cannot relate is `unmergeable` and the item settles stale_base without merging", () => {
+    const store = freshStore();
+    const repo = makeRepo("korwf-integrate-base-unknown-");
+    const branch = onIntegrationBranch(repo);
+    const headBefore = repo.head();
+    const real = repo.head() as GitSha;
+    repo.git("branch", "work-a", real);
+    const sha = repo.commitOn("work-a", "a.txt", "a\n", "task a");
+    const task = insertTask(store, "tk-a");
+    enqueueIntegration({
+      store,
+      task,
+      branch: "work-a",
+      // A revision this repository has never heard of: `unknown_revision`.
+      baseRevision: "0".repeat(40) as GitSha,
+      verifiedRevision: sha as GitSha,
+      now: now as never,
+      newId,
+    });
+    const lease = leaseFor(store);
+    const outcome = integrateNext({
+      store, workflowId: WF, phaseId: PH, integrationWorktree: repo.path, lease,
+      actor, now: now as never, newId,
+    });
+
+    expect(outcome.kind).toBe("stale_base");
+    expect(outcome.kind === "stale_base" && outcome.check.verdict).toBe("unmergeable");
+    expect(store.integrations.get(outcome.kind === "stale_base" ? outcome.item.itemId : "")?.status).toBe(
+      "stale_base",
+    );
+    // Nothing was merged: the integration branch has not moved.
+    expect(repo.git("rev-parse", branch)).toBe(headBefore);
+  });
+
+  it("a stale base sends the task back to `verifying` through #50 rather than merging it", () => {
+    const store = freshStore();
+    const repo = makeRepo("korwf-integrate-reverify-");
+    const branch = onIntegrationBranch(repo);
+    const headBefore = repo.head();
+    const real = repo.head() as GitSha;
+    repo.git("branch", "work-a", real);
+    const sha = repo.commitOn("work-a", "a.txt", "a\n", "task a");
+
+    // A task sitting in `review` with a completion candidate is exactly the
+    // state #50's `task-stale-evidence` edge fires from.
+    const task = makeTask({
+      id: "tk-a" as TaskId,
+      workflowId: WF,
+      phaseId: PH,
+      status: "review",
+      ownership: { paths: ["src/a.ts"], components: ["a"] },
+    });
+    store.tasks.insert(task);
+    store.evidence.insert(
+      makeEvidence({
+        id: "ev-1" as never,
+        workflowId: WF,
+        taskId: task.id,
+        taskRevision: task.revision,
+        checkId: task.checks[0]?.id ?? "chk-1",
+        revision: sha as GitSha,
+        attemptId: null,
+      }),
+    );
+    enqueueIntegration({
+      store,
+      task,
+      branch: "work-a",
+      baseRevision: "0".repeat(40) as GitSha,
+      verifiedRevision: sha as GitSha,
+      now: now as never,
+      newId,
+    });
+    const lease = leaseFor(store);
+    const outcome = integrateNext({
+      store, workflowId: WF, phaseId: PH, integrationWorktree: repo.path, lease,
+      actor, now: now as never, newId,
+    });
+
+    expect(outcome.kind).toBe("stale_base");
+    expect(store.tasks.require(task.id).status).toBe("verifying");
+    expect(repo.git("rev-parse", branch)).toBe(headBefore);
+  });
+
+  it("a dirty integration worktree refuses the merge rather than merging over the changes", () => {
+    const store = freshStore();
+    const repo = makeRepo("korwf-integrate-dirty-");
+    const branch = onIntegrationBranch(repo);
+    const headBefore = repo.head();
+    const base = repo.head() as GitSha;
+    repo.git("branch", "work-a", base);
+    const sha = repo.commitOn("work-a", "a.txt", "a\n", "task a");
+    const task = insertTask(store, "tk-a");
+    enqueueIntegration({
+      store, task, branch: "work-a", baseRevision: base,
+      verifiedRevision: sha as GitSha, now: now as never, newId,
+    });
+    writeFileSync(join(repo.path, "uncommitted.txt"), "work in progress\n");
+
+    const lease = leaseFor(store);
+    const outcome = integrateNext({
+      store, workflowId: WF, phaseId: PH, integrationWorktree: repo.path, lease,
+      actor, now: now as never, newId,
+    });
+    expect(outcome.kind).toBe("failed");
+    expect(outcome.kind === "failed" && outcome.detail).toContain("dirty_tree");
+    expect(repo.git("rev-parse", branch)).toBe(headBefore);
+    // The uncommitted file is still there, untouched.
+    expect(repo.git("status", "--porcelain")).toContain("uncommitted.txt");
+  });
+
+  it("a git failure reads as movement, never as freshness", () => {
+    const throwing = {
+      run(): string {
+        throw new Error("git unavailable");
+      },
+    };
+    const repo = makeRepo("korwf-integrate-base-gitfail-");
+    const check = checkBaseRevision({
+      repoCwd: repo.path,
+      item: { baseRevision: "a".repeat(40) as GitSha, verifiedRevision: "b".repeat(40) as GitSha },
+      integrationBranch: integrationBranch(WF, PH),
+      runner: throwing,
+    });
+    // With no resolvable head the branch reads as "not created yet", which is
+    // the only case where a missing ref is safe; with a head present and git
+    // failing the relation is `indeterminate`, i.e. unmergeable.
+    const withHead = checkBaseRevision({
+      repoCwd: repo.path,
+      item: { baseRevision: "a".repeat(40) as GitSha, verifiedRevision: "b".repeat(40) as GitSha },
+      integrationBranch: "HEAD",
+    });
+    expect(check.integrationHead).toBeNull();
+    expect(withHead.verdict).toBe("unmergeable");
+    expect(withHead.mayMerge).toBe(false);
   });
 });
