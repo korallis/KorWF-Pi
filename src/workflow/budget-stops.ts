@@ -315,3 +315,64 @@ function phaseOfBreach(store: Store, breach: BudgetBreach): PhaseId | null {
   if (breach.taskId === null) return null;
   return store.tasks.get(breach.taskId as Task["id"])?.phaseId ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Remaining budget per scope (issue #81 Scope: "Status shows remaining
+// budget per scope")
+// ---------------------------------------------------------------------------
+
+/** One cap's headroom, flattened for display. `limit: null` = uncapped. */
+export interface RemainingCap {
+  readonly cap: keyof Budget;
+  readonly limit: number | null;
+  readonly used: number;
+  readonly remaining: number | null;
+  readonly exhausted: boolean;
+}
+
+/** Remaining budget in one scope, as `/korwf status` shows it. */
+export interface RemainingBudget {
+  readonly scope: BudgetScopeKind;
+  readonly id: string;
+  readonly caps: readonly RemainingCap[];
+  /** `true` when a cumulative cap in this scope has no headroom left. */
+  readonly exhausted: boolean;
+  /** Requests in this scope whose cost is unpriced — never shown as `$0`. */
+  readonly unknownCostRequests: number;
+}
+
+/**
+ * Remaining budget for every scope a task-level charge would touch, read
+ * from the ledger's own `status()` so the numbers on screen are the numbers
+ * the cap check uses. Nothing is recomputed here.
+ *
+ * `exhausted` marks a *cumulative* cap at or past its limit. Concurrency is
+ * reported alongside the rest but never marks a scope exhausted: it frees up
+ * when a worker settles.
+ */
+export function remainingBudget(ledger: Ledger, scope: ChargeScope): readonly RemainingBudget[] {
+  return ledger.status(scope).scopes.map((s) => {
+    const caps: RemainingCap[] = (
+      [
+        ["maxSpendUsd", s.spendUsd],
+        ["maxTokens", s.tokens],
+        ["maxRequests", s.requests],
+        ["maxConcurrency", s.concurrency],
+        ["maxElapsedMs", s.elapsedMs],
+      ] as const
+    ).map(([cap, status]) => ({
+      cap,
+      limit: status.limit,
+      used: status.used,
+      remaining: status.remaining,
+      exhausted: status.remaining !== null && status.remaining <= 0,
+    }));
+    return {
+      scope: s.scope,
+      id: s.id,
+      caps,
+      exhausted: caps.some((c) => c.exhausted && isCumulativeCap(c.cap)),
+      unknownCostRequests: s.unknownCostRequests,
+    };
+  });
+}
