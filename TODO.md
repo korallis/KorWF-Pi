@@ -87,7 +87,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Cap detection (429, quota, budget) → ModelAvailability with estimated reset (#62).
 - [x] Route identity: opaque `routeId` per (provider, model); availability, health and outcomes keyed per route, cards per model; rename rule in ADR 0011 (#125).
 - [x] Fallback: Jev ranks substitutes for the task profile; "none adequate" → pause. (#63)
-- [ ] Mid-task handoff packet with intact worktree; restart alternative per task-kind policy.
+- [x] Mid-task handoff packet with intact worktree; restart alternative per task-kind policy.
 - [x] Recovery to primary at next task boundary; no per-task re-probe.
 - [x] Anti-oscillation dwell; all-capped → phase pause and auto-resume.
 - [x] Expensive-substitute policy (prefer-wait threshold, budget check).
