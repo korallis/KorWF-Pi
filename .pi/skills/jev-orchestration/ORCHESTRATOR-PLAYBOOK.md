@@ -181,6 +181,28 @@ What keeps quality up while running several at once:
 A fleet does not lower the bar: every PR still passes the same evidence gate, the same
 independent re-run of its verification commands, and the same merge review.
 
+### 2.4c Never hand control back mid-run — block on the fleet
+
+**The failure to avoid:** dispatch → one `sleep` → report to Lee → wait to be prodded. Every
+wait becomes a stop, and the fleet idles between turns. Lee has had to say "stop pausing"
+more than once, and he was right each time.
+
+After dispatching, **block until the work is done**:
+
+```bash
+A=.pi/skills/korwf-worker-delegation/scripts
+$A/await-agents.sh issue-66 issue-72 --timeout-min 60 --nudge-file /tmp/nudge.md
+```
+
+It polls every 60s until each agent reaches `done`/`idle`/`blocked` or vanishes, prints a
+per-agent verdict with commit counts and PR numbers, and — crucially — **nudges once** any
+agent that settles with **zero commits**, because that is almost always a turn ended at the
+output-token ceiling rather than finished work. `blocked` stops the wait immediately: it
+means the agent is asking something, which needs a decision, not a timer.
+
+Then review, merge, `sweep.sh`, dispatch the next batch, and block again. Report to Lee
+when a **milestone** closes or a decision genuinely needs him — not between issues.
+
 ### 2.5 Supervise — this is the part batch mode cannot do
 
 ```bash
