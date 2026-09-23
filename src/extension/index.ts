@@ -29,6 +29,8 @@ import { phasesMessage, parsePhasesArgs } from "./commands/phases.ts";
 import { approvalsMessage, parseApprovalsArgs } from "./commands/approvals.ts";
 import { runExport, parseExportArgs } from "./commands/export.ts";
 import { openStore, resolveStorageRoot } from "../storage/index.ts";
+import { resolveDatabasePath } from "../storage/paths.ts";
+import { existsSync } from "node:fs";
 import { readLiveRepoState } from "../git/revision.ts";
 import { registerSessionHooks } from "./session-hooks.ts";
 import { registerCatalogRefresh } from "./catalog-refresh.ts";
@@ -188,11 +190,15 @@ export default function korwfExtension(pi: ExtensionAPI): void {
             const models = ctx.modelRegistry.getAvailable();
             const now = new Date().toISOString();
             const result = loadForProject(ctx.cwd);
-            if (!result.ok) {
+            // No config, or a project that has never run `/korwf plan` (no
+            // store file yet): route/cap section only — opening a read-only
+            // SQLite handle on a path that does not exist throws, so this
+            // checks existence first rather than opening and catching.
+            const storageRoot = result.ok ? resolveStorageRoot(ctx.cwd, result.config.storage.path ?? undefined) : null;
+            if (!result.ok || storageRoot === null || !existsSync(resolveDatabasePath(storageRoot))) {
               ui.notify(statusReportMessage({ models, availability, now }), "info");
               return;
             }
-            const storageRoot = resolveStorageRoot(ctx.cwd, result.config.storage.path ?? undefined);
             const { store } = openStore({ storageRoot, writable: false });
             try {
               const resolved = resolveBoardWorkflow(store);
