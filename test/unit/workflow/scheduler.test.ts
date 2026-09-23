@@ -19,6 +19,8 @@ import {
   type DispatchOutcome,
 } from "../../../src/workflow/scheduler.ts";
 import { transitionTask } from "../../../src/workflow/state.ts";
+import { Ledger } from "../../../src/telemetry/ledger.ts";
+import { budgetsWith, estimatedUsage } from "../../helpers/ledger.ts";
 import { makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 
@@ -436,6 +438,57 @@ describe("AC2: concurrency never exceeds the cap", () => {
     });
 
     expect(store.tasks.require("a" as TaskId).status).toBe("ready");
+  });
+});
+
+describe("AC2: the real #30 ledger reservation, not an in-process counter, holds the cap", () => {
+  it("maxConcurrency=2 in config caps live dispatches even with limit=null", async () => {
+    const store = freshStore();
+    for (let i = 0; i < 6; i += 1) insertTask(store, `g${i}`);
+    const ledger = new Ledger(store, {
+      budgets: budgetsWith({ workflow: { maxConcurrency: 2 } }),
+      now: () => AT,
+      newId,
+    });
+
+    let live = 0;
+    let peak = 0;
+    let refusals = 0;
+
+    // `limit: null` deliberately removes the in-process ceiling, so the only
+    // thing standing between six ready tasks and six workers is the ledger's
+    // atomic reservation.
+    const result = await runScheduler({
+      ...baseParams(store),
+      limit: null,
+      coupling: independent,
+      reserve: (task: Task) => {
+        try {
+          const reservation = ledger.reserve({
+            scope: { workflowId: WF, phaseId: PH, taskId: task.id },
+            estimate: estimatedUsage(0.01),
+          });
+          return { release: () => ledger.release(reservation, "worker settled") };
+        } catch {
+          refusals += 1;
+          return null;
+        }
+      },
+      dispatch: async (task: Task) => {
+        live += 1;
+        peak = Math.max(peak, live);
+        await new Promise((r) => setTimeout(r, 2));
+        live -= 1;
+        markDone(store, task.id);
+        return okOutcome(task);
+      },
+    });
+
+    expect(peak).toBeLessThanOrEqual(2);
+    // Every task still ran; the ones over the cap were refused and retried on
+    // a later pass rather than dropped.
+    expect(refusals).toBeGreaterThan(0);
+    expect([...result.dispatched].sort()).toEqual(["g0", "g1", "g2", "g3", "g4", "g5"]);
   });
 });
 
