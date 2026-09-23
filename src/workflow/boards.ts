@@ -24,12 +24,28 @@ export interface TaskBoardRow {
   /** Most recent attempt's `usedModel`, or `null` if the task never ran. */
   readonly lastModel: string | null;
   /**
+   * Requested/used model and fallback reason of the most recent attempt
+   * (issue #66; PLAN §3.D "Every switch is recorded on the Attempt ... and
+   * surfaced in status"). `null` when the task never ran. Read straight off
+   * the Attempt row — never recomputed or inferred — so a switch this board
+   * reports is exactly what the store recorded.
+   */
+  readonly lastModelSwitch: TaskModelSwitch | null;
+  /**
    * Per-check state (pass/fail/flaky/missing/unavailable/timeout) plus
    * uncovered acceptance criteria (issue #51; PLAN §3.F). `null` when no
    * current revision was supplied to `buildTaskBoard` — every check then
    * reports `missing`, which is the honest answer for "we don't know".
    */
   readonly checkSummary: TaskCheckSummary;
+}
+
+/** Requested/used model and fallback reason of one Attempt, exactly as recorded (#66). */
+export interface TaskModelSwitch {
+  readonly requestedModel: string;
+  readonly usedModel: string;
+  /** `null` means the store recorded no fallback — `usedModel === requestedModel`. */
+  readonly fallbackReason: string | null;
 }
 
 export interface TaskBoardFilter {
@@ -94,11 +110,29 @@ function unmetDependencyIds(store: TaskBoardReadStore, dependencies: readonly Ta
   });
 }
 
-function lastAttemptModel(store: TaskBoardReadStore, taskId: TaskId): string | null {
+function lastAttempt(store: TaskBoardReadStore, taskId: TaskId) {
   const attempts = store.attempts.forTask(taskId);
-  if (attempts.length === 0) return null;
-  const last = [...attempts].sort((a, b) => a.timestamps.startedAt.localeCompare(b.timestamps.startedAt)).at(-1);
-  return last?.usedModel ?? null;
+  if (attempts.length === 0) return undefined;
+  return [...attempts].sort((a, b) => a.timestamps.startedAt.localeCompare(b.timestamps.startedAt)).at(-1);
+}
+
+function lastAttemptModel(store: TaskBoardReadStore, taskId: TaskId): string | null {
+  return lastAttempt(store, taskId)?.usedModel ?? null;
+}
+
+/**
+ * Requested/used/reason off the most recent attempt (#66), read verbatim
+ * from the Attempt row `recordFallbackSwitch` (`src/models/cap-pause.ts`)
+ * and `selectModel` (`src/models/select.ts`) wrote — never recomputed.
+ */
+function lastModelSwitchFor(store: TaskBoardReadStore, taskId: TaskId): TaskModelSwitch | null {
+  const last = lastAttempt(store, taskId);
+  if (last === undefined) return null;
+  return {
+    requestedModel: last.requestedModel,
+    usedModel: last.usedModel,
+    fallbackReason: last.fallbackReason,
+  };
 }
 
 function evidenceCountForTask(store: TaskBoardReadStore, taskId: TaskId): number {
@@ -137,6 +171,7 @@ export function buildTaskBoard(
       unmetDependencies: unmetDependencyIds(store, task.dependencies),
       evidenceCount: evidenceCountForTask(store, task.id),
       lastModel: lastAttemptModel(store, task.id),
+      lastModelSwitch: lastModelSwitchFor(store, task.id),
       checkSummary: taskCheckSummary(task, taskEvidence, currentSha),
     });
   }

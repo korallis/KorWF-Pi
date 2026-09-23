@@ -13,7 +13,8 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { versionMessage } from "./commands/version.ts";
-import { modelsMessage, statusMessage } from "./commands/models.ts";
+import { modelsMessage } from "./commands/models.ts";
+import { statusReportMessage } from "./commands/status.ts";
 import { parsePinArgs, parseUnpinArgs, pinModel, unpinModel } from "./commands/models-pin.ts";
 import { configMessage, disclosureMessage, loadForProject } from "./commands/config.ts";
 import { createFileDisclosureStore, ensureDisclosureAccepted } from "./disclosure.ts";
@@ -28,6 +29,8 @@ import { phasesMessage, parsePhasesArgs } from "./commands/phases.ts";
 import { approvalsMessage, parseApprovalsArgs } from "./commands/approvals.ts";
 import { runExport, parseExportArgs } from "./commands/export.ts";
 import { openStore, resolveStorageRoot } from "../storage/index.ts";
+import { resolveDatabasePath } from "../storage/paths.ts";
+import { existsSync } from "node:fs";
 import { readLiveRepoState } from "../git/revision.ts";
 import { registerSessionHooks } from "./session-hooks.ts";
 import { registerCatalogRefresh } from "./catalog-refresh.ts";
@@ -38,6 +41,9 @@ import { pauseMessage, parseWorkerCommandArgs } from "./commands/pause.ts";
 import { resumeMessage } from "./commands/resume.ts";
 import { cancelMessage } from "./commands/cancel.ts";
 import { WorkerRegistry } from "../workers/lifecycle.ts";
+import { buildTaskBoard } from "../workflow/boards.ts";
+import { openLedger } from "../telemetry/ledger.ts";
+import { resolveBoardWorkflow } from "./commands/workflow-select.ts";
 
 /**
  * Recursion guard 2 (#68, ADR 0004): read the depth marker once, at load.
@@ -182,7 +188,31 @@ export default function korwfExtension(pi: ExtensionAPI): void {
           }
           case "status": {
             const models = ctx.modelRegistry.getAvailable();
-            ui.notify(statusMessage({ models, availability, now: new Date().toISOString() }), "info");
+            const now = new Date().toISOString();
+            const result = loadForProject(ctx.cwd);
+            // No config, or a project that has never run `/korwf plan` (no
+            // store file yet): route/cap section only — opening a read-only
+            // SQLite handle on a path that does not exist throws, so this
+            // checks existence first rather than opening and catching.
+            const storageRoot = result.ok ? resolveStorageRoot(ctx.cwd, result.config.storage.path ?? undefined) : null;
+            if (!result.ok || storageRoot === null || !existsSync(resolveDatabasePath(storageRoot))) {
+              ui.notify(statusReportMessage({ models, availability, now }), "info");
+              return;
+            }
+            const { store } = openStore({ storageRoot, writable: false });
+            try {
+              const resolved = resolveBoardWorkflow(store);
+              const taskRows = resolved.ok ? buildTaskBoard(store, resolved.workflowId) : undefined;
+              const ledgerStatus = resolved.ok
+                ? openLedger(store, { budgets: result.config.budgets }).status({ workflowId: resolved.workflowId })
+                : null;
+              ui.notify(
+                statusReportMessage({ models, availability, now, ...(taskRows !== undefined ? { taskRows } : {}), ledgerStatus }),
+                "info",
+              );
+            } finally {
+              store.close();
+            }
             return;
           }
           case "config": {
