@@ -383,6 +383,25 @@ describe("AC2: concurrency never exceeds the cap", () => {
     expect(plan.held.map((h) => h.reason)).toEqual(["concurrency_cap"]);
   });
 
+  it("an in-process counter is not the authority: the reservation hook is asked per dispatch", async () => {
+    const store = freshStore();
+    for (let i = 0; i < 3; i += 1) insertTask(store, `r${i}`);
+    const asked: string[] = [];
+
+    await runScheduler({
+      ...baseParams(store),
+      limit: null,
+      coupling: independent,
+      reserve: (task: Task) => {
+        asked.push(task.id);
+        return { release: () => {} };
+      },
+      dispatch: async (task: Task) => okOutcome(task),
+    });
+
+    expect([...asked].sort()).toEqual(["r0", "r1", "r2"]);
+  });
+
   it("a refused budget reservation holds the task instead of dispatching it", async () => {
     const store = freshStore();
     insertTask(store, "a");
@@ -402,5 +421,94 @@ describe("AC2: concurrency never exceeds the cap", () => {
 
     expect(result.dispatched).toHaveLength(1);
     expect(result.held.some((h) => h.reason === "budget_refused")).toBe(true);
+  });
+
+  it("a refused reservation leaves the task ready, not stranded in running", async () => {
+    const store = freshStore();
+    insertTask(store, "a");
+
+    await runScheduler({
+      ...baseParams(store),
+      limit: null,
+      coupling: independent,
+      reserve: () => null,
+      dispatch: async (task: Task) => okOutcome(task),
+    });
+
+    expect(store.tasks.require("a" as TaskId).status).toBe("ready");
+  });
+});
+
+describe("PLAN §3.E: ownership conflicts in code, serial when coupling is uncertain", () => {
+  it("two tasks claiming the same path never run at the same time", () => {
+    const store = freshStore();
+    const shared = { paths: ["src/shared.ts"], components: ["ui"] };
+    store.tasks.insert(makeTask({ id: "o1" as TaskId, workflowId: WF, phaseId: PH, status: "ready", ownership: shared }));
+    store.tasks.insert(makeTask({ id: "o2" as TaskId, workflowId: WF, phaseId: PH, status: "ready", ownership: shared }));
+
+    const plan = planPass({ store, phaseIds: [PH], inFlight: [], limit: null, coupling: independent });
+    expect(plan.dispatch).toEqual(["o1"]);
+    expect(plan.held).toEqual([
+      expect.objectContaining({ taskId: "o2", reason: "ownership_conflict" }),
+    ]);
+  });
+
+  it("an 'independent' coupling verdict cannot override a declared ownership overlap", () => {
+    const a = makeTask({ id: "a" as TaskId, ownership: { paths: ["src/x.ts"], components: [] } });
+    const b = makeTask({ id: "b" as TaskId, ownership: { paths: ["src/x.ts"], components: [] } });
+    expect(conflictsOnOwnership(a, b)).toBe(true);
+
+    const store = freshStore();
+    store.tasks.insert({ ...a, workflowId: WF, phaseId: PH, status: "ready" });
+    store.tasks.insert({ ...b, workflowId: WF, phaseId: PH, status: "ready" });
+    const plan = planPass({ store, phaseIds: [PH], inFlight: [], limit: null, coupling: independent });
+    expect(plan.dispatch).toHaveLength(1);
+  });
+
+  it("uncertain coupling (the no-Jev default) serialises disjoint tasks", () => {
+    const store = freshStore();
+    insertTask(store, "u1");
+    insertTask(store, "u2");
+
+    const plan = planPass({ store, phaseIds: [PH], inFlight: [], limit: null, coupling: UNCERTAIN_COUPLING });
+    expect(plan.dispatch).toEqual(["u1"]);
+    expect(plan.held.map((h) => h.reason)).toEqual(["coupling_uncertain"]);
+  });
+
+  it("omitting the coupling signal entirely is the same conservative default", () => {
+    const store = freshStore();
+    insertTask(store, "v1");
+    insertTask(store, "v2");
+
+    const plan = planPass({ store, phaseIds: [PH], inFlight: [], limit: null });
+    expect(plan.dispatch).toEqual(["v1"]);
+    expect(plan.held.map((h) => h.reason)).toEqual(["coupling_uncertain"]);
+  });
+
+  it("a 'coupled' verdict on disjoint ownership also serialises", () => {
+    const store = freshStore();
+    insertTask(store, "c1");
+    insertTask(store, "c2");
+
+    const plan = planPass({ store, phaseIds: [PH], inFlight: [], limit: null, coupling: () => "coupled" });
+    expect(plan.dispatch).toEqual(["c1"]);
+    expect(plan.held.map((h) => h.reason)).toEqual(["coupled"]);
+  });
+
+  it("a task conflicting with something already in flight is held, not dispatched", () => {
+    const store = freshStore();
+    const shared = { paths: ["src/shared.ts"], components: [] };
+    store.tasks.insert(makeTask({ id: "f1" as TaskId, workflowId: WF, phaseId: PH, status: "running", ownership: shared }));
+    store.tasks.insert(makeTask({ id: "f2" as TaskId, workflowId: WF, phaseId: PH, status: "ready", ownership: shared }));
+
+    const plan = planPass({
+      store,
+      phaseIds: [PH],
+      inFlight: ["f1" as TaskId],
+      limit: null,
+      coupling: independent,
+    });
+    expect(plan.dispatch).toEqual([]);
+    expect(plan.held.map((h) => h.reason)).toEqual(["ownership_conflict"]);
   });
 });
