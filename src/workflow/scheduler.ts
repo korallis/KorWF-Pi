@@ -57,8 +57,89 @@ export interface DispatchPlan {
   readonly limit: number | null;
 }
 
-export interface SchedulerHooks {
-  readonly store: Store;
-  readonly workflowId: WorkflowId;
-  readonly phaseIds: readonly PhaseId[];
+// ---------------------------------------------------------------------------
+// Declared ownership overlap (PLAN §3.E, "detected in code")
+// ---------------------------------------------------------------------------
+
+/** The declared paths and components two tasks both claim. */
+export interface OwnershipOverlap {
+  readonly paths: readonly string[];
+  readonly components: readonly string[];
+}
+
+/**
+ * Declared ownership overlap between two tasks: exactly the paths and
+ * components both `Task.ownership` lists name. No normalisation beyond
+ * exact string equality — `plan-schema.ts` already warns about the same
+ * overlap at plan time using the same comparison, and inventing a
+ * path-prefix rule here would make the two disagree.
+ */
+export function ownershipOverlap(a: Task, b: Task): OwnershipOverlap {
+  const paths = new Set(a.ownership.paths);
+  const components = new Set(a.ownership.components);
+  return {
+    paths: b.ownership.paths.filter((p) => paths.has(p)),
+    components: b.ownership.components.filter((c) => components.has(c)),
+  };
+}
+
+/** `true` when the two tasks declare any path or component in common. */
+export function conflictsOnOwnership(a: Task, b: Task): boolean {
+  const overlap = ownershipOverlap(a, b);
+  return overlap.paths.length > 0 || overlap.components.length > 0;
+}
+
+/**
+ * Semantic-coupling signal, supplied by the caller (Jev, issue #78).
+ *
+ * Returning `"unknown"` — or having no signal at all, which is what happens
+ * with no Jev key — means the pair is treated as coupled and therefore
+ * serialised: PLAN §3.E's "default to serial when coupling is uncertain".
+ * The deterministic fallback is the conservative one, so the product works
+ * unchanged with Jev disabled.
+ */
+export type CouplingSignal = (a: Task, b: Task) => CouplingVerdict;
+
+/** The no-Jev default: every pair is uncertain, so every pair serialises. */
+export const UNCERTAIN_COUPLING: CouplingSignal = () => "unknown";
+
+/**
+ * May `candidate` run at the same time as `other`? Declared ownership
+ * overlap is decided in code and is not overridable by any signal — a
+ * coupling verdict of `"independent"` cannot unblock two tasks that both
+ * claim `src/foo.ts`. Only when there is no declared overlap does the
+ * semantic signal get a say, and there `unknown` means no.
+ */
+export function mayRunConcurrently(
+  candidate: Task,
+  other: Task,
+  coupling: CouplingSignal,
+): { readonly ok: boolean; readonly reason: HoldReason | null; readonly detail: string } {
+  const overlap = ownershipOverlap(candidate, other);
+  if (overlap.paths.length > 0 || overlap.components.length > 0) {
+    const what = [...overlap.paths, ...overlap.components].join(", ");
+    return {
+      ok: false,
+      reason: "ownership_conflict",
+      detail: `task ${candidate.id} and ${other.id} both declare ownership of ${what}`,
+    };
+  }
+  const verdict = coupling(candidate, other);
+  if (verdict === "coupled") {
+    return {
+      ok: false,
+      reason: "coupled",
+      detail: `task ${candidate.id} is semantically coupled to ${other.id}; running serially`,
+    };
+  }
+  if (verdict === "unknown") {
+    return {
+      ok: false,
+      reason: "coupling_uncertain",
+      detail:
+        `coupling between ${candidate.id} and ${other.id} is uncertain; ` +
+        `defaulting to serial (PLAN §3.E)`,
+    };
+  }
+  return { ok: true, reason: null, detail: "" };
 }
