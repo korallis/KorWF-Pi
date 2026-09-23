@@ -174,3 +174,76 @@ export function segmentsIntersect(a: string, b: string): boolean {
   };
   return go(0, 0);
 }
+
+/**
+ * Declared ownership of a path is ownership of everything under it: a task
+ * that claims `src/workflow` claims `src/workflow/coupling.ts` too. A
+ * pattern that does not already end in a wildcard therefore stands for both
+ * itself and its subtree. (`src/x.ts` also gains `src/x.ts/**`, which is
+ * vacuous for a file and costs nothing.)
+ */
+export function expandOwnershipPattern(pattern: string): readonly string[] {
+  const p = normaliseOwnershipPath(pattern);
+  if (p.length === 0) return [];
+  if (p.endsWith("*")) return [p];
+  return [p, `${p}/**`];
+}
+
+/** `/` separators, no `./`, no doubled or trailing slash, no leading `/`. */
+export function normaliseOwnershipPath(pattern: string): string {
+  if (typeof pattern !== "string") return "";
+  let out = pattern.trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  while (out.startsWith("./")) out = out.slice(2);
+  while (out.startsWith("/")) out = out.slice(1);
+  while (out.length > 1 && out.endsWith("/")) out = out.slice(0, -1);
+  return out;
+}
+
+/** Segment-wise intersection with `**` matching zero or more segments. */
+function segmentListsIntersect(a: readonly string[], b: readonly string[]): boolean {
+  const seen = new Set<number>();
+  const go = (i: number, j: number): boolean => {
+    const key = i * (b.length + 1) + j;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    if (i === a.length && j === b.length) return true;
+    if (i === a.length) return b.slice(j).every((s) => s === "**");
+    if (j === b.length) return a.slice(i).every((s) => s === "**");
+    const x = a[i] as string;
+    const y = b[j] as string;
+    if (x === "**") return go(i + 1, j) || go(i, j + 1);
+    if (y === "**") return go(i, j + 1) || go(i + 1, j);
+    return segmentsIntersect(x, y) && go(i + 1, j + 1);
+  };
+  return go(0, 0);
+}
+
+/**
+ * Could the two declared ownership patterns ever name the same file?
+ *
+ * This is the deterministic half of PLAN §3.E. It answers a question about
+ * *patterns*, not about files on disk, so it is stable, cheap, and correct
+ * before any worker has written anything. It errs towards "yes": an
+ * unsupported or malformed pattern is compared literally rather than
+ * discarded, because a pattern that failed to parse and was dropped would
+ * fail open into an uncontrolled concurrent write.
+ */
+export function pathsIntersect(a: string, b: string): PathOverlapRule | null {
+  const na = normaliseOwnershipPath(a);
+  const nb = normaliseOwnershipPath(b);
+  if (na.length === 0 || nb.length === 0) return null;
+  if (na === nb) return "identical";
+  const plainPrefix =
+    (!hasGlobSyntax(na) && !hasGlobSyntax(nb)) && (nb.startsWith(`${na}/`) || na.startsWith(`${nb}/`));
+  if (plainPrefix) return "containment";
+  for (const pa of expandOwnershipPattern(na)) {
+    for (const pb of expandOwnershipPattern(nb)) {
+      if (segmentListsIntersect(pa.split("/"), pb.split("/"))) return "glob_intersection";
+    }
+  }
+  return null;
+}
+
+function hasGlobSyntax(pattern: string): boolean {
+  return /[*?[\]]/.test(pattern);
+}
