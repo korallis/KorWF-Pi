@@ -39,8 +39,5 @@ export * from "./tool-gate.ts";
 export * from "./progress.ts";
 export * from "./limits.ts";
 export * from "./lifecycle.ts";
-<<<<<<< HEAD
 export * from "./handoff.ts";
-=======
 export * from "./reconcile.ts";
->>>>>>> e6a33ca (feat(workers): fail interrupted task with bounded recovery options (#72))
