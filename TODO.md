@@ -107,7 +107,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Dependency-aware scheduling; ready-task selection; duplicate-dispatch prevention. (#75)
 - [x] Worktrees for writing workers; ownership overlap checks; semantic-coupling signal; serial default when uncertain.
 - [x] Coordinator lockfile; stale-owner recovery.
-- [ ] Single-owner integration queue; base-revision validation; merge-conflict workflow.
+- [x] Single-owner integration queue; base-revision validation; merge-conflict workflow.
 - [ ] Integrated verification; phase gate (PLAN §2.5); phase report.
 - [ ] Unattended approval policy: auto / queue-and-continue / stop; notifications.
 - [x] Per-phase and per-workflow budget hard stops; resumable state on any stop.
