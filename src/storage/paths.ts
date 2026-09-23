@@ -43,6 +43,18 @@ export function resolveLockfilePath(storageRoot: string): string {
   return join(storageRoot, "korwf.lock");
 }
 
+/**
+ * Path to the *coordinator* lockfile under the storage root (issue #77).
+ *
+ * Deliberately a different file from `resolveLockfilePath`: the store lock
+ * (#23) protects the database, the coordinator lock protects the right to
+ * schedule. A read-only session may hold neither, a writer holds the store
+ * lock without scheduling, and only a `/korwf run` takes this one.
+ */
+export function resolveCoordinatorLockPath(storageRoot: string): string {
+  return join(storageRoot, "korwf-coordinator.lock");
+}
+
 /** Path to the artifact directory under the storage root. */
 export function resolveArtifactDir(storageRoot: string): string {
   return join(storageRoot, "artifacts");
