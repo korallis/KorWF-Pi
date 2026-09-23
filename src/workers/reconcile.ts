@@ -144,6 +144,65 @@ export function markCancellationRequested(
   return writeAttemptRuntime(storageRoot, { ...marker, cancellationRequestedAt: at });
 }
 
+// ---------------------------------------------------------------------------
+// Classification (issue #72 Scope: "detection"; #52 taxonomy)
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide what happened to one attempt from the evidence, and nothing more.
+ *
+ * Three distinguishable endings, in the order the evidence can support them:
+ *
+ *  - **still_running** — the pid is alive. Nothing is written; the caller
+ *    re-attaches. A live worker is never closed by reconciliation.
+ *  - **process_killed** — a cancellation was requested before the process
+ *    vanished, so the kill is ours and the attempt is `cancelled`.
+ *  - **worker_died** — the coordinator saw the worker exit but never settled
+ *    the row. The harness failed; `#52` calls that `harness`.
+ *  - **machine_crashed** — no exit was observed and no cancellation was
+ *    asked for: the coordinator itself went down with the worker. Nothing
+ *    about the work can be asserted, so the category is `unknown`.
+ */
+export function classifyInterruption(evidence: AttemptLivenessEvidence): InterruptionVerdict {
+  if (evidence.pidAlive && evidence.pid !== null) {
+    return {
+      cause: "still_running",
+      outcome: null,
+      failureCategory: null,
+      reason: `Worker pid ${evidence.pid} is still alive; the attempt was not interrupted.`,
+    };
+  }
+  if (evidence.cancellationRequested) {
+    return {
+      cause: "process_killed",
+      outcome: "cancelled",
+      failureCategory: "harness",
+      reason:
+        "A cancellation was requested for this attempt before its process vanished, so the " +
+        "process was killed by us rather than lost.",
+    };
+  }
+  if (evidence.exitRecorded) {
+    return {
+      cause: "worker_died",
+      outcome: "interrupted",
+      failureCategory: "harness",
+      reason:
+        "The worker process exited and the coordinator observed it, but the attempt was never " +
+        "settled: the harness failed, not the work.",
+    };
+  }
+  return {
+    cause: "machine_crashed",
+    outcome: "interrupted",
+    failureCategory: "unknown",
+    reason:
+      "No worker exit was observed and no cancellation was requested" +
+      (evidence.lockPresent ? "" : ", and the coordinator lockfile did not survive") +
+      ": the coordinator stopped without recording anything, so what the attempt did is unknown.",
+  };
+}
+
 /** Record an observed worker exit. An attempt with this set did not crash unseen. */
 export function markExitObserved(
   storageRoot: string,
