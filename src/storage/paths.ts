@@ -26,11 +26,16 @@ export const DEFAULT_STORAGE_DIR_NAME = ".korwf";
  *   path relative to `projectRoot`. When omitted, resolves to
  *   `<projectRoot>/.korwf`.
  */
-export function resolveStorageRoot(projectRoot: string, override?: string): string {
+export function resolveStorageRoot(
+  projectRoot: string,
+  override?: string,
+): string {
   if (override === undefined || override === "") {
     return join(projectRoot, DEFAULT_STORAGE_DIR_NAME);
   }
-  return isAbsolute(override) ? resolve(override) : resolve(projectRoot, override);
+  return isAbsolute(override)
+    ? resolve(override)
+    : resolve(projectRoot, override);
 }
 
 /** Path to the SQLite database file under the storage root. */
@@ -41,6 +46,18 @@ export function resolveDatabasePath(storageRoot: string): string {
 /** Path to the coordinator lockfile under the storage root. */
 export function resolveLockfilePath(storageRoot: string): string {
   return join(storageRoot, "korwf.lock");
+}
+
+/**
+ * Path to the *coordinator* lockfile under the storage root (issue #77).
+ *
+ * Deliberately a different file from `resolveLockfilePath`: the store lock
+ * (#23) protects the database, the coordinator lock protects the right to
+ * schedule. A read-only session may hold neither, a writer holds the store
+ * lock without scheduling, and only a `/korwf run` takes this one.
+ */
+export function resolveCoordinatorLockPath(storageRoot: string): string {
+  return join(storageRoot, "korwf-coordinator.lock");
 }
 
 /** Path to the artifact directory under the storage root. */

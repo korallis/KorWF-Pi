@@ -46,6 +46,25 @@ Rules the implementation (#23) must follow:
    A second instance waits `storage.lockTimeoutMs` (default 5000) then fails with a
    clear message naming the holder's pid. A lockfile whose pid is dead is stale and may
    be taken over after the reconciliation step below runs.
+
+   **1a. The coordinator lock is a second, separate file** (#77):
+   `<store>/korwf-coordinator.lock`, taken only by `/korwf run`
+   (`src/workflow/coordinator.ts`). The store lock protects the *database*; this one
+   protects the right to **schedule**, so two `/korwf run` invocations in one repository
+   cannot both dispatch. It carries the same `{ pid, startedAt, hostHash,
+   packageVersion }` plus a `sessionId` and a `heartbeatAt` the holder refreshes every
+   `DEFAULT_HEARTBEAT_INTERVAL_MS`; the staleness window is a multiple of that interval.
+   A second `/korwf run` is refused immediately (not after a timeout) with
+   "coordinator active in session X since T".
+
+   **Staleness never breaks a lock on its own.** `classifyHolder` reports the heartbeat
+   age *and* the pid probe, and eviction is `!pidAlive` alone: a live owner whose
+   heartbeat has gone stale keeps the lock and is reported as
+   `alive_heartbeat_stale`, because a paused or busy coordinator is still the owner. A
+   dead owner's lock is taken over, the takeover is audited
+   (`actor = korwf:coordinator-lock`, `recordId = coordinator-lock:<new pid>`,
+   `beforeHash` = the displaced owner), and rule 7 reconciliation runs before the new
+   coordinator dispatches anything.
 2. **Workers never open the database.** The worker command line and environment
    (ADR 0004) carry no store path; `storage/` is not in any role's tool surface. A worker
    with `bash` could still find the file — that is threat-model R13, and the reason for
