@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "../storage/db.ts";
-import type { Attempt, AttemptOutcome, IsoTimestamp, TaskId, WorkflowId } from "../storage/records.ts";
+import type { Attempt, AttemptOutcome, IsoTimestamp } from "../storage/records.ts";
 import type { ReconciliationReport } from "../storage/reconcile.ts";
 import type { GitRunner as GitStatusRunner } from "../git/status.ts";
 import { attemptWorktreePath } from "./worktree.ts";
@@ -289,6 +289,140 @@ export interface CrashReconciliationReport {
   readonly stillRunning: readonly string[];
   /** Worktrees preserved with uncommitted work in them. */
   readonly preservedDirtyWorktrees: readonly string[];
+}
+
+/**
+ * Reconcile every attempt left `running` by a dead session (AC1).
+ *
+ * Runs after the lock is taken and before any command is accepted (ADR 0006).
+ * Order, and why:
+ *
+ *  1. Evidence is read per attempt and classified (`classifyInterruption`).
+ *  2. `store.reconcile` — #23's single reconciliation path — is given that
+ *     as its probe. It closes the rows and releases open budget
+ *     reservations through #30's ledger. Nothing here writes an attempt row.
+ *  3. Each closed attempt's worktree is *inspected* and reported. It is
+ *     never removed, reset or cleaned: what is uncommitted there is the
+ *     user's work as far as we can tell (#54, #70), and discarding it would
+ *     need a granted `destructive_git` approval, which startup does not have.
+ *  4. Completed-action receipts (#42) for the attempt's task are listed, so
+ *     whatever resumes the task can see what must not be replayed.
+ */
+export function reconcileCrashedAttempts(
+  options: ReconcileCrashedAttemptsOptions,
+): CrashReconciliationReport {
+  const now = options.now ?? (() => new Date().toISOString() as IsoTimestamp);
+  const verdicts = new Map<string, { attempt: Attempt; verdict: InterruptionVerdict }>();
+  const probe = crashProbe({
+    storageRoot: options.storageRoot,
+    ...(options.isAlive === undefined ? {} : { isAlive: options.isAlive }),
+    ...(options.lockPresent === undefined ? {} : { lockPresent: options.lockPresent }),
+    onVerdict: (attempt, verdict) => verdicts.set(attempt.id, { attempt, verdict }),
+  });
+
+  const storeReport = options.store.reconcile({ probe, now });
+
+  const interrupted: InterruptedAttemptReport[] = [];
+  const stillRunning: string[] = [];
+  const dirty: string[] = [];
+
+  for (const row of storeReport.attempts) {
+    const found = verdicts.get(row.attemptId);
+    if (found === undefined) continue;
+    const { attempt, verdict } = found;
+    if (verdict.cause === "still_running" || row.disposition === "reattached") {
+      stillRunning.push(row.attemptId);
+      continue;
+    }
+    const worktree = inspectPreservedWorktree(attempt, options);
+    if (worktree.dirty && worktree.path !== null) dirty.push(worktree.path);
+    const completedActionIds = options.store.actions
+      .forSubject("task", attempt.taskId)
+      .map((action) => action.actionId);
+    interrupted.push(
+      describeInterruption({
+        attempt,
+        verdict,
+        outcome: row.outcome ?? "interrupted",
+        worktree,
+        completedActionIds,
+      }),
+    );
+  }
+
+  return {
+    store: storeReport,
+    interrupted,
+    stillRunning,
+    preservedDirtyWorktrees: dirty,
+  };
+}
+
+/** What reconciliation saw in a preserved worktree. Read-only, always. */
+export interface PreservedWorktree {
+  readonly path: string | null;
+  readonly exists: boolean;
+  readonly dirty: boolean;
+  readonly changedPaths: readonly string[];
+}
+
+/**
+ * Look at an abandoned attempt's worktree without touching it.
+ *
+ * Only `git status --porcelain` is run, through `src/git/` (ADR 0002). No
+ * checkout, reset, clean, stash or worktree removal happens here or anywhere
+ * on this path — the uncommitted contents are reported and left alone.
+ */
+export function inspectPreservedWorktree(
+  attempt: Attempt,
+  options: Pick<ReconcileCrashedAttemptsOptions, "storageRoot" | "projectRoot" | "gitRunner">,
+): PreservedWorktree {
+  const marker = readAttemptRuntime(options.storageRoot, attempt.id);
+  const path = marker?.worktreePath ?? attemptWorktreePath(options.projectRoot, attempt.id);
+  if (!existsSync(path)) return { path, exists: false, dirty: false, changedPaths: [] };
+  const live =
+    options.gitRunner === undefined ? readLiveRepoState(path) : readLiveRepoState(path, options.gitRunner);
+  if (live.kind === "no_repo") return { path, exists: true, dirty: false, changedPaths: [] };
+  return {
+    path,
+    exists: true,
+    dirty: live.dirty,
+    changedPaths: live.changes.map((change) => change.path),
+  };
+}
+
+/** Render one interrupted attempt for the report and the status line. */
+export function describeInterruption(input: {
+  readonly attempt: Attempt;
+  readonly verdict: InterruptionVerdict;
+  readonly outcome: AttemptOutcome;
+  readonly worktree: PreservedWorktree;
+  readonly completedActionIds: readonly string[];
+}): InterruptedAttemptReport {
+  const { attempt, verdict, worktree } = input;
+  const where =
+    worktree.path === null
+      ? "no worktree recorded"
+      : worktree.exists
+        ? `worktree preserved at ${worktree.path}` +
+          (worktree.dirty ? ` with ${worktree.changedPaths.length} uncommitted path(s)` : " (clean)")
+        : `worktree ${worktree.path} is gone`;
+  const replay =
+    input.completedActionIds.length === 0
+      ? ""
+      : `; ${input.completedActionIds.length} completed action receipt(s) will refuse a replay`;
+  return {
+    attemptId: attempt.id,
+    taskId: attempt.taskId,
+    cause: verdict.cause,
+    outcome: input.outcome,
+    failureCategory: verdict.failureCategory ?? "unknown",
+    reason: verdict.reason,
+    worktreePath: worktree.path,
+    worktreeDirty: worktree.dirty,
+    completedActionIds: input.completedActionIds,
+    line: `attempt ${attempt.id} (task ${attempt.taskId}) ${input.outcome} — ${verdict.cause}: ${verdict.reason} ${where}${replay}`,
+  };
 }
 
 /** Record an observed worker exit. An attempt with this set did not crash unseen. */
