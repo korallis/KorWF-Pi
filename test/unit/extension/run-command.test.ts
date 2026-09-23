@@ -214,3 +214,30 @@ describe("AC2: estimate over cap refused unless approved", () => {
     expect(store.phases.require(PH).gateStatus).toBe("running");
   });
 });
+
+describe("the run id is printed, so the user can refer to the run afterwards", () => {
+  it("a started run prints its id in the message and returns it", async () => {
+    const store = freshStore("ready");
+    const outcome = await runCommand({
+      store,
+      workflowId: WF,
+      target: "all",
+      now: () => AT,
+      newId,
+      confirm: () => true,
+    });
+    expect(outcome.ok).toBe(true);
+    expect(outcome.runId).toBeTruthy();
+    expect(outcome.message).toContain(`Run id: ${outcome.runId}`);
+    expect(store.runs.get(outcome.runId as string)?.runId).toBe(outcome.runId);
+    expect(store.phases.require(PH).runId).toBe(outcome.runId);
+  });
+
+  it("a refused/declined run never reports a run id", async () => {
+    const declined = await runCommand({ store: freshStore("ready"), workflowId: WF, target: "all", now: () => AT, newId, confirm: () => false });
+    expect(declined.runId).toBeNull();
+
+    const unapproved = await runCommand({ store: freshStore("planning"), workflowId: WF, target: "all", now: () => AT, newId, confirm: () => true });
+    expect(unapproved.runId).toBeNull();
+  });
+});
