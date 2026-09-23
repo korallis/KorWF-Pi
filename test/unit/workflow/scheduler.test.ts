@@ -439,6 +439,63 @@ describe("AC2: concurrency never exceeds the cap", () => {
   });
 });
 
+describe("AC1: the ready set is recomputed, never carried over between passes", () => {
+  it("a dependent whose dependency became blocked mid-run is not dispatched", async () => {
+    const store = freshStore();
+    insertTask(store, "p");
+    insertTask(store, "q", { dependencies: ["p"] });
+
+    const dispatched: TaskId[] = [];
+    await runScheduler({
+      ...baseParams(store),
+      limit: 4,
+      coupling: independent,
+      dispatch: async (task: Task) => {
+        dispatched.push(task.id);
+        // `p` fails rather than completing, so `q` never becomes ready.
+        transitionTask({
+          store,
+          taskId: task.id,
+          to: "failed",
+          trigger: "non_cap_failure",
+          actor,
+          now,
+          newId,
+          evidenceRefs: ["ev:failure"],
+          guards: { failure_observed: () => true },
+        });
+        return { taskId: task.id, ok: false };
+      },
+    });
+
+    expect(dispatched).toEqual(["p"]);
+    expect(store.tasks.require("q" as TaskId).status).toBe("ready");
+  });
+
+  it("two schedulers over the same store never dispatch the same task twice", async () => {
+    const store = freshStore();
+    for (let i = 0; i < 8; i += 1) insertTask(store, `w${i}`);
+
+    const seen: TaskId[] = [];
+    const dispatch = async (task: Task): Promise<DispatchOutcome> => {
+      seen.push(task.id);
+      await new Promise((r) => setTimeout(r, 1));
+      markDone(store, task.id);
+      return okOutcome(task);
+    };
+
+    const [a, b] = await Promise.all([
+      runScheduler({ ...baseParams(store), limit: 3, coupling: independent, dispatch }),
+      runScheduler({ ...baseParams(store), limit: 3, coupling: independent, dispatch }),
+    ]);
+
+    expect(new Set(seen).size).toBe(seen.length);
+    expect([...seen].sort()).toEqual(["w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7"]);
+    const combined = [...a.dispatched, ...b.dispatched];
+    expect(new Set(combined).size).toBe(combined.length);
+  });
+});
+
 describe("AC3: cancel mid-run cancels attempts and leaves a resumable run", () => {
   it("stops dispatching, cancels the running tasks, and leaves the rest ready", async () => {
     const store = freshStore();
