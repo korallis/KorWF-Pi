@@ -346,6 +346,11 @@ export interface ResumeAfterCapRaisedParams {
   /** A ledger built over the **new** config caps. Read fresh; never mutated here. */
   readonly ledger: Ledger;
   readonly governor: BudgetGovernor;
+  /**
+   * Must be a **user** actor: `state.ts` allows only `user` to trigger
+   * `phase-resume`, and raising a cap is the user's act. The engine can stop
+   * itself on a cap but may not grant itself more budget and carry on.
+   */
   readonly actor: TransitionActor;
   readonly now: () => IsoTimestamp;
   readonly newId: () => string;
