@@ -60,7 +60,7 @@ fixed). Consequences of applying the test rather than a proxy:
 |---|---|---|
 | **configurable** | any decision per mode, subject to V4 (no `auto` for a mutation class in `shadow`/`advisory`, which are non-mutating by definition) | The user pre-approves what they are comfortable with per mode. |
 | **never auto** (`scope_change`, `replan`) | `queue` or `stop` only, schema `enum` + V11 | PLAN §3.C: replan without silent scope expansion. Reversible, so not pinned to `stop`. |
-| **high-risk** (PLAN §7) | `stop` only, schema `const` + V10 | Destructive cleanup, deployment, credential access, publishing, force-push/rewriting shared history, changes to permission/allowlist/spending policy, pushes to refs the workflow does not own. Explicit approval regardless of mode. |
+| **high-risk** (PLAN §7) | `stop` only, schema `const` + V10 | Destructive cleanup, deployment, credential access, publishing, force-push/rewriting shared history, changes to permission/allowlist/spending policy, pushes to refs the workflow does not own, and merging an integration branch into the user's branch (#78). Explicit approval regardless of mode. |
 
 ## 4. Default disposition table
 
@@ -95,6 +95,7 @@ Bold rows are fixed. This table is generated from `APPROVAL_CLASS_TABLE`; the te
 | `destructive_cleanup` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Delete or overwrite anything not recoverable from git: untracked/ignored files, directories outside the worktree, other worktrees, stores. | Irreversible. |
 | `destructive_git` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Rewrite or discard history that is shared or not owned by this workflow: force-push, branch -D of a non-task branch, reset --hard past pushed commits, reflog expiry, tag deletion. | Irreversible for other people; PLAN §7 'force-pushing or rewriting shared history'. |
 | `remote_push` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Push to a ref the workflow does not own (main/default branch, shared branches, another workflow's branch) or to a remote other than the configured one. | Consumers receive it; may be irreversible downstream. The agent's own task branch is push_own_branch. |
+| `merge_to_user_branch` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Merge a phase's `korwf/<workflow>/<phase>` integration branch into the user's own branch (issue #78, PLAN §3.E). | It is the moment the agent's work enters the tree the user works in, and it can land on top of uncommitted work. PLAN §3.E: never concurrent uncontrolled integration into the user's tree. |
 | `deployment` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Any action that changes a running or shared environment: deploy, migrate a shared database, change infrastructure. | Consumer impact; often irreversible. |
 | `publishing` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Publish or release: create/push tags, publish to a registry, create a release, anything consumers receive. | Consumers receive it; registries do not un-publish. |
 | `credential_access` | **high-risk** | high | **stop** | **stop** | **stop** | **stop** | Read, write, print or transmit a secret, key, token or credential store, or a privacy deny path. | Credential. |
@@ -156,6 +157,7 @@ Class-specific fields:
 | `destructive_cleanup` | `paths` |
 | `destructive_git` | `command`, `refs` |
 | `remote_push` | `branch`, `remote`, `sha` |
+| `merge_to_user_branch` | `integrationBranch`, `userBranch`, `sha`, `taskIds` |
 | `deployment` | `target`, `command` |
 | `publishing` | `artifact`, `target` |
 | `credential_access` | `paths`, `secretKind` |

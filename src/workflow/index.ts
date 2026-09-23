@@ -30,6 +30,14 @@
  *   the user's main tree (#76).
  * - `checkpoint.ts` — working-tree checkpoints, the dirty-tree guard, and rollback as an
  *   approval-gated PROPOSAL that never discards uncommitted user work (#54).
+ * - `integrate.ts` — the single-owner integration queue: a durable FIFO, the
+ *   integration lease (#77's lock mechanism on its own file) that makes two
+ *   simultaneous finishers merge sequentially, the base-revision check that
+ *   sends work whose base moved back through #50 instead of merging it on
+ *   trust, the merge-conflict workflow (bounded resolution task restricted to
+ *   the conflicted paths, re-verified; unresolved ⇒ phase blocked and
+ *   notified), and `proposeUserBranchMerge`, which only ever *asks* for the
+ *   high-risk `merge_to_user_branch` approval (#78).
  * - `budget-stops.ts` — the scheduler's reaction to a #30 ledger cap refusal: a latch so no
  *   task starts after a cumulative cap is reached, a pause through #74's `stopRun` into the
  *   same resumable shape #72 produces, resume after the user raises the cap, and remaining
@@ -58,6 +66,7 @@ export * from "./coordinator.ts";
 export * from "./boards.ts";
 export * from "./budget-stops.ts";
 export * from "./greenfield.ts";
+export * from "./integrate.ts";
 export * from "./invalidation.ts";
 export * from "./intake.ts";
 export * from "./intake-rules.ts";

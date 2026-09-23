@@ -20,6 +20,7 @@ export * from "./checkpoints.ts";
 export * from "./db.ts";
 export * from "./decision-cache.ts";
 export * from "./errors.ts";
+export * from "./integration-queue.ts";
 export * from "./lock.ts";
 export * from "./migrations.ts";
 export * from "./paths.ts";

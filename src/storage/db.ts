@@ -28,6 +28,7 @@ import { RecoveryLogStore } from "./recovery-log.ts";
 import { CheckpointStore, RollbackProposalStore } from "./checkpoints.ts";
 import { ApprovalRequestStore } from "./approval-requests.ts";
 import { RunLogStore } from "./run-log.ts";
+import { IntegrationQueueStore } from "./integration-queue.ts";
 import { reconcileAbandonedAttempts, type ReconcileOptions, type ReconciliationReport } from "./reconcile.ts";
 import type { AuditEntry, AuditEntryId, IsoTimestamp, RecordTable, WorkflowId } from "./records.ts";
 import { RECORDS_SCHEMA_VERSION } from "./records.ts";
@@ -130,6 +131,8 @@ export class Store {
   readonly rollbackProposals: RollbackProposalStore;
   /** `/korwf run` invocation identity (#74), see run-log.ts. */
   readonly runs: RunLogStore;
+  /** Single-owner integration queue and its conflicts (#78), see integration-queue.ts. */
+  readonly integrations: IntegrationQueueStore;
 
   readonly #db: Database;
   readonly #lock: LockHandle | null;
@@ -186,6 +189,7 @@ export class Store {
     this.checkpoints = new CheckpointStore(this.#db);
     this.rollbackProposals = new RollbackProposalStore(this.#db);
     this.runs = new RunLogStore(this.#db);
+    this.integrations = new IntegrationQueueStore(this.#db);
   }
 
   #context(audit: AuditSink | null): RepoContext {

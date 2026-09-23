@@ -142,6 +142,8 @@ export type HighRiskApprovalClass =
   | "destructive_cleanup"
   | "destructive_git"
   | "remote_push"
+  /** Merge an integration branch into the branch the user works on (#78, PLAN §3.E). */
+  | "merge_to_user_branch"
   | "deployment"
   | "publishing"
   | "credential_access"

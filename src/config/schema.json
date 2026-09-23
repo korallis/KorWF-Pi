@@ -573,6 +573,15 @@
                 "bounded_autonomous": "stop"
               }
             },
+            "merge_to_user_branch": {
+              "$ref": "#/$defs/HighRiskPolicy",
+              "default": {
+                "shadow": "stop",
+                "advisory": "stop",
+                "supervised": "stop",
+                "bounded_autonomous": "stop"
+              }
+            },
             "deployment": {
               "$ref": "#/$defs/HighRiskPolicy",
               "default": {
