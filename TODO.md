@@ -105,7 +105,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 
 - [x] `run <phase-id | all>`; cost estimate before start. (#74)
 - [x] Dependency-aware scheduling; ready-task selection; duplicate-dispatch prevention. (#75)
-- [ ] Worktrees for writing workers; ownership overlap checks; semantic-coupling signal; serial default when uncertain.
+- [x] Worktrees for writing workers; ownership overlap checks; semantic-coupling signal; serial default when uncertain.
 - [x] Coordinator lockfile; stale-owner recovery.
 - [ ] Single-owner integration queue; base-revision validation; merge-conflict workflow.
 - [ ] Integrated verification; phase gate (PLAN §2.5); phase report.

@@ -322,7 +322,7 @@ function repoWithWorktree(): { main: TestRepo; worktree: string } {
 describe("a writing worker never works in the user's main tree", () => {
   it("refuses a writing role in the main tree, naming the worktree remedy", () => {
     const { main } = repoWithWorktree();
-    const verdict = checkRoleWorkerTree({ role: "coder", workerCwd: main.path, projectRoot: main.path });
+    const verdict = checkRoleWorkerTree({ role: "implementer", workerCwd: main.path, projectRoot: main.path });
     expect(verdict.ok).toBe(false);
     expect(verdict.code).toBe("is_main_tree");
     expect(verdict.detail).toContain("worktree");
@@ -330,7 +330,7 @@ describe("a writing worker never works in the user's main tree", () => {
 
   it("admits a writing role in a linked worktree of the same repository", () => {
     const { main, worktree } = repoWithWorktree();
-    const verdict = checkRoleWorkerTree({ role: "coder", workerCwd: worktree, projectRoot: main.path });
+    const verdict = checkRoleWorkerTree({ role: "implementer", workerCwd: worktree, projectRoot: main.path });
     expect(verdict.ok).toBe(true);
     expect(verdict.code).toBeNull();
   });
@@ -339,7 +339,7 @@ describe("a writing worker never works in the user's main tree", () => {
     const { worktree } = repoWithWorktree();
     const other = makeTestRepo("korwf-coupling-other-");
     cleanups.push(other.cleanup);
-    const verdict = checkRoleWorkerTree({ role: "coder", workerCwd: worktree, projectRoot: other.path });
+    const verdict = checkRoleWorkerTree({ role: "implementer", workerCwd: worktree, projectRoot: other.path });
     expect(verdict.ok).toBe(false);
     expect(verdict.code).toBe("different_repository");
   });
@@ -348,7 +348,7 @@ describe("a writing worker never works in the user's main tree", () => {
     const dir = makeTempDir("korwf-coupling-nonrepo-");
     cleanups.push(dir.cleanup);
     const { main } = repoWithWorktree();
-    const verdict = checkRoleWorkerTree({ role: "coder", workerCwd: dir.path, projectRoot: main.path });
+    const verdict = checkRoleWorkerTree({ role: "implementer", workerCwd: dir.path, projectRoot: main.path });
     expect(verdict.ok).toBe(false);
     expect(verdict.code).toBe("not_a_repository");
   });
@@ -362,7 +362,7 @@ describe("a writing worker never works in the user's main tree", () => {
 
   it("every writing role is refused in the main tree, from the role table, not a list here", () => {
     const { main } = repoWithWorktree();
-    for (const role of ["planner", "coder", "verifier", "integrator"] as const) {
+    for (const role of ["planner", "implementer", "verifier", "integrator"] as const) {
       expect(checkRoleWorkerTree({ role, workerCwd: main.path, projectRoot: main.path }).code).toBe("is_main_tree");
     }
   });
