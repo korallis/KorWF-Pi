@@ -131,6 +131,19 @@ export interface StartRunResult {
   readonly reason: string | null;
 }
 
+export interface StartRunOutcome {
+  /**
+   * Identity of this `/korwf run` invocation (issue #74; PLAN §2.1 "print
+   * the run id"). Minted once, before any phase is touched, and persisted
+   * (`store.runs`) so it survives a restart — #72's crash reconciliation
+   * and this module's own `stopRun` can both name the run they resume.
+   */
+  readonly runId: RunId;
+  readonly results: readonly StartRunResult[];
+}
+
+
+
 /**
  * `phase_start_valid` (PLAN §2.1, docs/state-machine.md §4): at least one
  * schedulable task, or every task already done and gating needs retry.
@@ -153,9 +166,16 @@ function phaseStartValid(store: Store, phaseId: PhaseId): boolean {
  * shown for. One phase's refusal does not block the others — each result is
  * reported so a caller can see exactly which phases actually started.
  */
-export function startRun(params: StartRunParams): readonly StartRunResult[] {
+export function startRun(params: StartRunParams): StartRunOutcome {
   const { store, phaseIds, actor, now, newId, authorizationCurrent } = params;
-  return phaseIds.map((phaseId) => {
+
+  // Minted and persisted BEFORE any phase is touched: the id the user sees
+  // must name the run even if every phase below refuses (issue #74's own
+  // absolute rule, applied here as well as to the estimate).
+  const runId = newId() as RunId;
+  store.runs.insert({ runId, createdAt: now(), workflowId: params.workflowId, phaseIds });
+
+  const results = phaseIds.map((phaseId) => {
     const guards = {
       phase_start_valid: () => phaseStartValid(store, phaseId),
       authorization_current: () => authorizationCurrent(phaseId),
@@ -169,10 +189,14 @@ export function startRun(params: StartRunParams): readonly StartRunResult[] {
         actor,
         now,
         newId,
-        evidenceRefs: [`run:${phaseId}`],
+        evidenceRefs: [`run:${phaseId}`, `runId:${runId}`],
         guards,
       });
-      return { phaseId, ok: true, phase: result.subject, reason: null };
+      // Tag the phase with the run that started it (issue #74 Scope "phases
+      // started by that run carry it"), so status can group by run instead
+      // of guessing from timing.
+      const tagged = store.phases.update(result.subject.id, { runId });
+      return { phaseId, ok: true, phase: tagged, reason: null };
     } catch (error) {
       if (error instanceof TransitionRejected) {
         return { phaseId, ok: false, phase: null, reason: error.message };
@@ -180,6 +204,7 @@ export function startRun(params: StartRunParams): readonly StartRunResult[] {
       throw error;
     }
   });
+  return { runId, results };
 }
 
 export interface StopRunParams {
