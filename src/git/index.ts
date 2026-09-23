@@ -66,3 +66,15 @@ export type {
   WorktreeErrorCode,
   WorktreeListEntry,
 } from "./worktree.ts";
+// `merge.ts` (issue #78): integration-branch merges and conflict detection.
+export {
+  baseRelation,
+  canFastForward,
+  conflictedPaths,
+  isDirty,
+  mergeBranch,
+  resolveRef,
+  MergeError,
+  MERGE_ERROR_CODES,
+} from "./merge.ts";
+export type { MergeBranchOptions, MergeErrorCode, MergeOutcome } from "./merge.ts";
