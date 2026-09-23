@@ -27,6 +27,7 @@ import type { Store } from "../storage/db.ts";
 import type { IsoTimestamp } from "../storage/records.ts";
 import type { TransitionActor } from "../storage/transition-log.ts";
 import { readySet, topoOrder } from "./graph.ts";
+import { couplingSignalFrom, pathsIntersect, type CouplingCache } from "./coupling.ts";
 import { hasExecutableCheck, TransitionRejected, transitionTask } from "./state.ts";
 
 /** Why a ready task was not dispatched on this pass. */
@@ -72,15 +73,20 @@ export interface OwnershipOverlap {
 /**
  * Declared ownership overlap between two tasks: exactly the paths and
  * components both `Task.ownership` lists name. No normalisation beyond
- * exact string equality — `plan-schema.ts` already warns about the same
- * overlap at plan time using the same comparison, and inventing a
- * path-prefix rule here would make the two disagree.
+ * pattern intersection.
+ *
+ * Path comparison is delegated to `coupling.ts` (#76), which decides whether
+ * two declared *patterns* could ever match a common file: identical strings,
+ * subtree containment (`src/workflow` vs `src/workflow/graph.ts`) and glob
+ * intersection all count. Exact string equality, which is what this function
+ * used before #76, matched only the first of those. `plan-schema.ts` still
+ * warns on the exact-equality case at plan time; this is a strict superset,
+ * so the two cannot disagree about a pair the planner warned on.
  */
 export function ownershipOverlap(a: Task, b: Task): OwnershipOverlap {
-  const paths = new Set(a.ownership.paths);
   const components = new Set(a.ownership.components);
   return {
-    paths: b.ownership.paths.filter((p) => paths.has(p)),
+    paths: b.ownership.paths.filter((pb) => a.ownership.paths.some((pa) => pathsIntersect(pa, pb) !== null)),
     components: b.ownership.components.filter((c) => components.has(c)),
   };
 }
@@ -104,6 +110,20 @@ export type CouplingSignal = (a: Task, b: Task) => CouplingVerdict;
 
 /** The no-Jev default: every pair is uncertain, so every pair serialises. */
 export const UNCERTAIN_COUPLING: CouplingSignal = () => "unknown";
+
+/**
+ * The signal one pass uses: the #76 cache when one was supplied, otherwise
+ * the caller's raw signal, otherwise the uncertain default. When both a
+ * cache and a signal are given, `couplingSignalFrom` prefers the cached
+ * verdict and falls back to the signal on a miss.
+ */
+function resolveCouplingSignal(params: PlanPassParams): CouplingSignal {
+  if (params.couplingCache === undefined) return params.coupling ?? UNCERTAIN_COUPLING;
+  return couplingSignalFrom({
+    cache: params.couplingCache,
+    ...(params.coupling === undefined ? {} : { signal: params.coupling }),
+  });
+}
 
 /**
  * May `candidate` run at the same time as `other`? Declared ownership
@@ -160,6 +180,14 @@ export interface PlanPassParams {
   readonly limit: number | null;
   /** Semantic-coupling signal; omitted means "uncertain", i.e. serial. */
   readonly coupling?: CouplingSignal;
+  /**
+   * Memoised `tasks.coupling@1` verdicts (#76). Consulted before `coupling`
+   * and, like it, only for pairs whose declared ownership is already
+   * disjoint. A pair the cache has never seen reads as `"unknown"` and
+   * therefore serialises, so passing a cold cache is exactly as safe as
+   * passing none.
+   */
+  readonly couplingCache?: CouplingCache;
 }
 
 /**
@@ -184,7 +212,7 @@ export interface PlanPassParams {
  */
 export function planPass(params: PlanPassParams): DispatchPlan {
   const { store, phaseIds, limit } = params;
-  const coupling = params.coupling ?? UNCERTAIN_COUPLING;
+  const coupling = resolveCouplingSignal(params);
   const inFlight = [...new Set(params.inFlight)];
 
   const tasks = phaseIds.flatMap((phaseId) => store.tasks.forPhase(phaseId));
