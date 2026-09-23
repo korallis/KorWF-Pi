@@ -185,6 +185,7 @@ Columns are modes: shadow / advisory / supervised / bounded_autonomous.
 | `destructive_cleanup` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
 | `destructive_git` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
 | `remote_push` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
+| `merge_to_user_branch` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
 | `deployment` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
 | `publishing` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |
 | `credential_access` | **stop** | **stop** | **stop** | **stop** | **high-risk, fixed (V10)** |

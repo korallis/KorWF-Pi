@@ -74,6 +74,7 @@ export const HIGH_RISK_CLASSES = [
   "destructive_cleanup",
   "destructive_git",
   "remote_push",
+  "merge_to_user_branch",
   "deployment",
   "publishing",
   "credential_access",
@@ -214,6 +215,10 @@ export const APPROVAL_CLASS_TABLE = [
   { id: "remote_push", tier: "high_risk", risk: "high",
     act: "Push to a ref the workflow does not own (main/default branch, shared branches, another workflow's branch) or to a remote other than the configured one.",
     why: "Consumers receive it; may be irreversible downstream. The agent's own task branch is push_own_branch.", defaults: STOP_ALL, payload: ["branch", "remote", "sha"] },
+  { id: "merge_to_user_branch", tier: "high_risk", risk: "high",
+    act: "Merge a phase's `korwf/<workflow>/<phase>` integration branch into the user's own branch (issue #78, PLAN \u00a73.E).",
+    why: "It is the moment the agent's work enters the tree the user works in, and it can land on top of uncommitted work. PLAN \u00a73.E: never concurrent uncontrolled integration into the user's tree.",
+    defaults: STOP_ALL, payload: ["integrationBranch", "userBranch", "sha", "taskIds"] },
   { id: "deployment", tier: "high_risk", risk: "high",
     act: "Any action that changes a running or shared environment: deploy, migrate a shared database, change infrastructure.",
     why: "Consumer impact; often irreversible.", defaults: STOP_ALL, payload: ["target", "command"] },
@@ -352,8 +357,10 @@ export interface ActFacts {
   readonly isMigration?: boolean;
   readonly targetIsEphemeral?: boolean;
   readonly isInstallOfDeclared?: boolean;
-  readonly gitOp?: "commit" | "push" | "force_push" | "rewrite" | "delete_ref" | "tag";
+  readonly gitOp?: "commit" | "push" | "force_push" | "rewrite" | "delete_ref" | "tag" | "merge";
   readonly refOwnedByWorkflow?: boolean;
+  /** `true` when a merge targets the branch the user works on rather than an integration branch (#78). */
+  readonly targetIsUserBranch?: boolean;
   readonly remoteIsConfigured?: boolean;
   readonly hostAllowlisted?: boolean;
   readonly costDeltaUsd?: number;
@@ -377,6 +384,7 @@ export function classifyAct(f: ActFacts): ApprovalClassId {
   if (f.isPublish === true || f.gitOp === "tag") return "publishing";
   if (f.isDeploy === true || (f.isMigration === true && f.targetIsEphemeral !== true)) return "deployment";
   if (f.gitOp === "force_push" || f.gitOp === "rewrite" || f.gitOp === "delete_ref") return "destructive_git";
+  if (f.gitOp === "merge" && f.targetIsUserBranch === true) return "merge_to_user_branch";
   if (f.gitOp === "push" && (f.refOwnedByWorkflow !== true || f.remoteIsConfigured !== true)) return "remote_push";
   if (f.kind === "delete" && (f.gitTracked !== true || f.insideWorktree !== true)) return "destructive_cleanup";
   if ((f.kind === "write" || f.kind === "delete") && f.insideWorktree !== true) return "destructive_cleanup";
@@ -391,7 +399,12 @@ export function classifyAct(f: ActFacts): ApprovalClassId {
     if (f.taskOp === "complete_task") return "complete_task";
     return "spawn_worker";
   }
-  if (f.kind === "git") return f.gitOp === "push" ? "push_own_branch" : "local_commit";
+  if (f.kind === "git") {
+    if (f.gitOp === "push") return "push_own_branch";
+    // A merge into an integration branch this workflow owns is an ordinary
+    // local commit; a merge into the user's branch was caught above.
+    return "local_commit";
+  }
   if (f.kind === "exec") {
     if (f.isRegisteredCheck === true) return "run_checks";
     if (f.isMigration === true) return "run_migration";

@@ -51,8 +51,13 @@ import { StoreLockedError } from "../storage/errors.ts";
 /** Blocker kind raised when a conflict cannot be resolved (AC2). */
 export const INTEGRATION_CONFLICT_BLOCKER = "integration_conflict";
 
-/** Approval class a promotion to the user's branch is classified as. */
-export const MERGE_TO_USER_BRANCH_CLASS = "remote_push" as const;
+/**
+ * Approval class a promotion to the user's branch is classified as: the
+ * high-risk `merge_to_user_branch` added to #15's table by this issue. It is
+ * `stop` in every mode and schema-pinned there, so nothing in this module can
+ * make the promotion automatic.
+ */
+export const MERGE_TO_USER_BRANCH_CLASS = "merge_to_user_branch" as const;
 
 /**
  * The integration branch for a phase: `korwf/<workflow>/<phase>` (issue #78
@@ -719,4 +724,95 @@ export function resolveConflict(options: ResolveConflictOptions): ResolveConflic
     });
     return { ok: true as const, conflict: settled, requeued };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Promotion to the user's branch — a request, never an act
+// ---------------------------------------------------------------------------
+
+/** Why a promotion may not even be proposed yet. */
+export type PromotionRefusal = "phase_gate_not_passed" | "queue_not_drained" | "open_conflicts";
+
+export type ProposeUserBranchMergeResult =
+  | { readonly ok: false; readonly refusal: PromotionRefusal; readonly detail: string }
+  | {
+      readonly ok: true;
+      /** The approval request. Merging waits for a human to grant it. */
+      readonly request: RequestApprovalResult;
+      readonly integrationBranch: string;
+      readonly userBranch: string;
+    };
+
+export interface ProposeUserBranchMergeOptions {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  readonly phaseId: PhaseId;
+  /** The branch the user works on. Read for the request payload; never written. */
+  readonly userBranch: string;
+  /**
+   * Did the phase gate pass? Supplied by the caller from #46's phase gate
+   * receipt — this module does not form its own opinion about gates.
+   */
+  readonly phaseGatePassed: boolean;
+  readonly now: IsoTimestamp;
+  readonly newId: () => string;
+}
+
+/**
+ * Ask for permission to merge the phase's integration branch into the user's
+ * branch. **This function never merges anything.**
+ *
+ * There is no counterpart in this module that performs the merge: the only
+ * output is an `ApprovalRequest` row of the high-risk
+ * `merge_to_user_branch` class, which `approvals.ts` pins to `stop` in every
+ * mode. The user's branch HEAD is therefore unchanged by everything in this
+ * file (AC3), and a caller that wants to promote has to go through a granted
+ * approval record and `src/git/`.
+ *
+ * It refuses to even ask while the phase gate has not passed, while items
+ * are still queued, or while a conflict is open — asking a human to approve
+ * a merge of work that is not finished is how an approval gets reused later
+ * for something it did not describe.
+ */
+export function proposeUserBranchMerge(options: ProposeUserBranchMergeOptions): ProposeUserBranchMergeResult {
+  const { store } = options;
+  const branch = integrationBranch(options.workflowId, options.phaseId);
+  if (!options.phaseGatePassed) {
+    return {
+      ok: false,
+      refusal: "phase_gate_not_passed",
+      detail: `phase ${options.phaseId} has not passed its gate; the user's branch is not touched until it does`,
+    };
+  }
+  const items = store.integrations.forPhase(options.phaseId);
+  const undrained = items.filter((i) => i.status === "queued" || i.status === "integrating");
+  if (undrained.length > 0) {
+    return {
+      ok: false,
+      refusal: "queue_not_drained",
+      detail: `${undrained.length} integration item(s) still pending for phase ${options.phaseId}`,
+    };
+  }
+  const open = store.integrations.openConflictsForWorkflow(options.workflowId).filter((c) =>
+    items.some((i) => i.itemId === c.itemId),
+  );
+  if (open.length > 0) {
+    return {
+      ok: false,
+      refusal: "open_conflicts",
+      detail: `${open.length} unresolved merge conflict(s) in phase ${options.phaseId}`,
+    };
+  }
+  const taskIds = [...new Set(items.filter((i) => i.status === "integrated").map((i) => i.taskId))];
+  const request = requestApproval({
+    store,
+    workflowId: options.workflowId,
+    classId: MERGE_TO_USER_BRANCH_CLASS,
+    scope: { kind: "phase", phaseId: options.phaseId },
+    permittedAction: `merge_to_user_branch:${branch}->${options.userBranch}`,
+    summary: `Merge ${branch} (${taskIds.length} task(s)) into ${options.userBranch}.`,
+    now: options.now,
+    newId: options.newId,
+  });
+  return { ok: true, request, integrationBranch: branch, userBranch: options.userBranch };
 }
