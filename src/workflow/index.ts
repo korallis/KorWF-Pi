@@ -25,6 +25,9 @@
  * - `scheduler.ts` — the dependency-aware dispatch loop: ready-task selection over
  *   `graph.ts`, a transactional claim that makes a duplicate dispatch lose, the
  *   concurrency cap, ownership/coupling serialisation, and a cancel drain (#75).
+ * - `coupling.ts` — glob-intersection ownership overlap, the revision-keyed coupling
+ *   cache behind `canRunConcurrently`, and the rule that a writing worker never runs in
+ *   the user's main tree (#76).
  * - `checkpoint.ts` — working-tree checkpoints, the dirty-tree guard, and rollback as an
  *   approval-gated PROPOSAL that never discards uncommitted user work (#54).
  *
@@ -40,6 +43,7 @@ export * from "./approvals.ts";
 export * from "./attempt-budget.ts";
 export * from "./attempt-controller.ts";
 export * from "./checkpoint.ts";
+export * from "./coupling.ts";
 export * from "./evaluate-plan.ts";
 export * from "./failure.ts";
 export * from "./failure-classify.ts";
