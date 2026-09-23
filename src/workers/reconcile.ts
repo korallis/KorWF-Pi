@@ -16,10 +16,14 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Attempt, AttemptOutcome, IsoTimestamp } from "../storage/records.ts";
+import type { Store } from "../storage/db.ts";
+import type { Attempt, AttemptOutcome, IsoTimestamp, TaskId, WorkflowId } from "../storage/records.ts";
+import type { ReconciliationReport } from "../storage/reconcile.ts";
+import type { GitRunner as GitStatusRunner } from "../git/status.ts";
+import { attemptWorktreePath } from "./worktree.ts";
 import type { WorkerLiveness, WorkerProbe } from "../storage/reconcile.ts";
 import { isProcessAlive } from "../storage/lock.ts";
-import { readLiveRepoState, type GitRunner } from "../git/index.ts";
+import { readLiveRepoState } from "../git/index.ts";
 
 /** Subdirectory of the storage root holding one marker per live attempt. */
 export const RUNTIME_DIR_NAME = "runtime";
@@ -227,6 +231,64 @@ export function classifyInterruption(evidence: AttemptLivenessEvidence): Interru
       (evidence.lockPresent ? "" : ", and the coordinator lockfile did not survive") +
       ": the coordinator stopped without recording anything, so what the attempt did is unknown.",
   };
+}
+
+// ---------------------------------------------------------------------------
+// The probe handed to `src/storage/reconcile.ts`
+// ---------------------------------------------------------------------------
+
+/** Options shared by the probe and the reporting wrapper. */
+export interface CrashProbeOptions extends EvidenceOptions {
+  /** Called for every attempt the probe judged, in probe order. */
+  readonly onVerdict?: (attempt: Attempt, verdict: InterruptionVerdict) => void;
+}
+
+/**
+ * Build the `WorkerProbe` that #23's `reconcileAbandonedAttempts` already
+ * takes. This is the whole integration: there is no second scan of the
+ * `attempt` table here, and no write — the store closes the rows.
+ */
+export function crashProbe(options: CrashProbeOptions): WorkerProbe {
+  return (attempt: Attempt): WorkerLiveness => {
+    const verdict = classifyInterruption(evidenceFor(attempt.id, options));
+    options.onVerdict?.(attempt, verdict);
+    if (verdict.cause === "still_running") {
+      return { kind: "alive", detail: verdict.reason };
+    }
+    return {
+      kind: "gone",
+      detail: `${verdict.cause}: ${verdict.reason}`,
+      ...(verdict.outcome === null ? {} : { outcome: verdict.outcome }),
+    };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Startup entry point
+// ---------------------------------------------------------------------------
+
+export interface ReconcileCrashedAttemptsOptions {
+  readonly store: Store;
+  readonly storageRoot: string;
+  /** The user's repository root; attempt worktrees hang below it. */
+  readonly projectRoot: string;
+  /** Pi session performing the reconciliation, for the receipt listing. */
+  readonly sessionId?: string;
+  readonly isAlive?: (pid: number) => boolean;
+  readonly lockPresent?: boolean;
+  readonly now?: () => IsoTimestamp;
+  readonly gitRunner?: GitStatusRunner;
+}
+
+/** What one startup reconciliation found and did. */
+export interface CrashReconciliationReport {
+  /** The store's own report; the only place attempt rows were written. */
+  readonly store: ReconciliationReport;
+  readonly interrupted: readonly InterruptedAttemptReport[];
+  /** Attempts whose worker was still alive and was left running. */
+  readonly stillRunning: readonly string[];
+  /** Worktrees preserved with uncommitted work in them. */
+  readonly preservedDirtyWorktrees: readonly string[];
 }
 
 /** Record an observed worker exit. An attempt with this set did not crash unseen. */
