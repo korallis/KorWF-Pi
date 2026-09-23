@@ -95,7 +95,10 @@ export function isProcessAlive(pid: number): boolean {
 
 /** Hash the host so the lockfile never carries a machine name. */
 export function hashHost(hostname: string): string {
-  return createHash("sha256").update(`korwf-lock:${hostname}`).digest("hex").slice(0, 16);
+  return createHash("sha256")
+    .update(`korwf-lock:${hostname}`)
+    .digest("hex")
+    .slice(0, 16);
 }
 
 /** Read and validate a lockfile. Throws `LockfileCorruptError` if unusable. */
@@ -130,8 +133,13 @@ function parseLockfile(path: string, raw: string): LockfileContents {
     pid: record["pid"],
     startedAt: record["startedAt"],
     hostHash: typeof record["hostHash"] === "string" ? record["hostHash"] : "",
-    packageVersion: typeof record["packageVersion"] === "string" ? record["packageVersion"] : "",
-    ...(typeof record["sessionId"] === "string" ? { sessionId: record["sessionId"] } : {}),
+    packageVersion:
+      typeof record["packageVersion"] === "string"
+        ? record["packageVersion"]
+        : "",
+    ...(typeof record["sessionId"] === "string"
+      ? { sessionId: record["sessionId"] }
+      : {}),
     ...(typeof record["heartbeatAt"] === "string"
       ? { heartbeatAt: record["heartbeatAt"] }
       : {}),
@@ -168,7 +176,10 @@ function sleepSync(ms: number): void {
  * Takes over a lockfile whose pid is dead, reporting `kind: "took_over_stale"`
  * so the caller can write the audit row ADR 0006 rule 1 requires.
  */
-export function acquireLock(path: string, options: AcquireLockOptions = {}): LockHandle {
+export function acquireLock(
+  path: string,
+  options: AcquireLockOptions = {},
+): LockHandle {
   const alive = options.isProcessAlive ?? isProcessAlive;
   const sleep = options.sleep ?? sleepSync;
   const timeoutMs = options.timeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
@@ -180,7 +191,9 @@ export function acquireLock(path: string, options: AcquireLockOptions = {}): Loc
     startedAt,
     hostHash: hashHost(hostnameOrEmpty()),
     packageVersion: options.packageVersion ?? "",
-    ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+    ...(options.sessionId === undefined
+      ? {}
+      : { sessionId: options.sessionId }),
     ...(options.heartbeat === true ? { heartbeatAt: startedAt } : {}),
   };
 
@@ -189,7 +202,12 @@ export function acquireLock(path: string, options: AcquireLockOptions = {}): Loc
   let previousHolder: LockfileContents | null = null;
   for (;;) {
     if (writeExclusive(path, contents)) {
-      return makeHandle(path, contents, tookOver ? "took_over_stale" : "created", previousHolder);
+      return makeHandle(
+        path,
+        contents,
+        tookOver ? "took_over_stale" : "created",
+        previousHolder,
+      );
     }
     const holder = readHolderOrTreatAsStale(path);
     if (holder === null || !alive(holder.pid)) {
@@ -199,7 +217,8 @@ export function acquireLock(path: string, options: AcquireLockOptions = {}): Loc
       rmSync(path, { force: true });
       continue;
     }
-    if (waited >= timeoutMs) throw new StoreLockedError(path, holder.pid, waited);
+    if (waited >= timeoutMs)
+      throw new StoreLockedError(path, holder.pid, waited);
     const step = Math.min(pollIntervalMs, timeoutMs - waited);
     sleep(step);
     waited += step;
@@ -252,11 +271,20 @@ export function classifyHolder(
   const alive = (options.isProcessAlive ?? isProcessAlive)(contents.pid);
   const nowMs = options.nowMs ?? Date.now();
   const staleAfterMs = options.staleAfterMs ?? DEFAULT_HEARTBEAT_STALE_MS;
-  const beat = contents.heartbeatAt === undefined ? null : Date.parse(contents.heartbeatAt);
-  const heartbeatAgeMs = beat === null || Number.isNaN(beat) ? null : nowMs - beat;
-  const heartbeatStale = heartbeatAgeMs !== null && heartbeatAgeMs > staleAfterMs;
+  const beat =
+    contents.heartbeatAt === undefined
+      ? null
+      : Date.parse(contents.heartbeatAt);
+  const heartbeatAgeMs =
+    beat === null || Number.isNaN(beat) ? null : nowMs - beat;
+  const heartbeatStale =
+    heartbeatAgeMs !== null && heartbeatAgeMs > staleAfterMs;
   return {
-    liveness: alive ? (heartbeatStale ? "alive_heartbeat_stale" : "alive") : "dead",
+    liveness: alive
+      ? heartbeatStale
+        ? "alive_heartbeat_stale"
+        : "alive"
+      : "dead",
     pidAlive: alive,
     heartbeatAgeMs,
     heartbeatStale,
@@ -289,7 +317,8 @@ export function writeHeartbeat(
   } catch {
     return null;
   }
-  if (current.pid !== contents.pid || current.startedAt !== contents.startedAt) return null;
+  if (current.pid !== contents.pid || current.startedAt !== contents.startedAt)
+    return null;
   const next: LockfileContents = { ...current, heartbeatAt: at };
   writeFileSync(path, JSON.stringify(next, null, 2));
   return next;
@@ -331,7 +360,11 @@ function makeHandle(
       // process must not have its lock deleted by our shutdown.
       try {
         const current = readLockfile(path);
-        if (current.pid !== contents.pid || current.startedAt !== contents.startedAt) return;
+        if (
+          current.pid !== contents.pid ||
+          current.startedAt !== contents.startedAt
+        )
+          return;
       } catch {
         return;
       }

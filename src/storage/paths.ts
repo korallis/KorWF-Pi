@@ -26,11 +26,16 @@ export const DEFAULT_STORAGE_DIR_NAME = ".korwf";
  *   path relative to `projectRoot`. When omitted, resolves to
  *   `<projectRoot>/.korwf`.
  */
-export function resolveStorageRoot(projectRoot: string, override?: string): string {
+export function resolveStorageRoot(
+  projectRoot: string,
+  override?: string,
+): string {
   if (override === undefined || override === "") {
     return join(projectRoot, DEFAULT_STORAGE_DIR_NAME);
   }
-  return isAbsolute(override) ? resolve(override) : resolve(projectRoot, override);
+  return isAbsolute(override)
+    ? resolve(override)
+    : resolve(projectRoot, override);
 }
 
 /** Path to the SQLite database file under the storage root. */
