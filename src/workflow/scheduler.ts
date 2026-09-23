@@ -22,14 +22,12 @@
  * in flight. N workers therefore run concurrently from one coordinator; the
  * loop never awaits one dispatch before starting the next.
  */
-import type { Phase, PhaseId, Task, TaskId, WorkflowId } from "../storage/records.ts";
+import type { PhaseId, Task, TaskId, WorkflowId } from "../storage/records.ts";
 import type { Store } from "../storage/db.ts";
 import type { IsoTimestamp } from "../storage/records.ts";
 import type { TransitionActor } from "../storage/transition-log.ts";
 import { readySet, topoOrder } from "./graph.ts";
 import { hasExecutableCheck, TransitionRejected, transitionTask } from "./state.ts";
-
-export type { Phase, Task };
 
 /** Why a ready task was not dispatched on this pass. */
 export type HoldReason =
