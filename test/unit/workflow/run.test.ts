@@ -12,6 +12,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { openStore, type Store } from "../../../src/storage/db.ts";
 import type { PhaseId, TaskId, WorkflowId } from "../../../src/storage/records.ts";
 import { estimateRun, startRun, stopRun } from "../../../src/workflow/run.ts";
+import { transitionPhase } from "../../../src/workflow/state.ts";
 import { makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 
@@ -31,12 +32,16 @@ afterEach(() => {
 });
 
 function freshStore(): Store {
-  const dir = makeTempDir("korwf-run-");
+  const { store } = freshStoreAt(makeTempDir("korwf-run-"));
+  return store;
+}
+
+function freshStoreAt(dir: TempDir): { readonly store: Store; readonly dir: TempDir } {
   const { store } = openStore({ storageRoot: dir.path, now: () => AT, newId: () => `a-${(counter += 1)}` });
   open.push({ dir, store });
   store.workflows.insert(makeWorkflow({ id: WF, planRevision: 1, status: "running" }));
   store.phases.insert(makePhase({ id: PH, workflowId: WF, gateStatus: "pending" }));
-  return store;
+  return { store, dir };
 }
 
 const actor = { kind: "user", identity: "owner" } as const;
@@ -92,7 +97,7 @@ describe("startRun: the transition shown BEFORE work begins", () => {
     const store = freshStore();
     store.tasks.insert(makeTask({ id: "t1" as TaskId, workflowId: WF, phaseId: PH, status: "ready" }));
 
-    const results = startRun({
+    const outcome = startRun({
       store,
       workflowId: WF,
       phaseIds: [PH],
@@ -102,15 +107,15 @@ describe("startRun: the transition shown BEFORE work begins", () => {
       authorizationCurrent: () => true,
     });
 
-    expect(results).toHaveLength(1);
-    expect(results[0]?.ok).toBe(true);
+    expect(outcome.results).toHaveLength(1);
+    expect(outcome.results[0]?.ok).toBe(true);
     expect(store.phases.require(PH).gateStatus).toBe("running");
   });
 
   it("refuses a phase with nothing schedulable, with a reason", () => {
     const store = freshStore();
     // No tasks at all: phase_start_valid is false.
-    const results = startRun({
+    const outcome = startRun({
       store,
       workflowId: WF,
       phaseIds: [PH],
@@ -119,9 +124,60 @@ describe("startRun: the transition shown BEFORE work begins", () => {
       newId,
       authorizationCurrent: () => true,
     });
-    expect(results[0]?.ok).toBe(false);
-    expect(results[0]?.reason).toBeTruthy();
+    expect(outcome.results[0]?.ok).toBe(false);
+    expect(outcome.results[0]?.reason).toBeTruthy();
     expect(store.phases.require(PH).gateStatus).toBe("pending");
+  });
+});
+
+describe("issue #74 follow-up: a run id is minted, persisted, and carried on what it starts", () => {
+  it("mints a runId before any phase is touched, and persists it so it survives a restart", () => {
+    const dir = makeTempDir("korwf-run-restart-");
+    open.push({ dir, store: undefined as unknown as Store });
+    open.pop();
+    const { store } = freshStoreAt(dir);
+    store.tasks.insert(makeTask({ id: "t1" as TaskId, workflowId: WF, phaseId: PH, status: "ready" }));
+
+    const outcome = startRun({
+      store,
+      workflowId: WF,
+      phaseIds: [PH],
+      actor,
+      now,
+      newId,
+      authorizationCurrent: () => true,
+    });
+
+    expect(outcome.runId).toBeTruthy();
+    const persisted = store.runs.get(outcome.runId);
+    expect(persisted).toBeDefined();
+    expect(persisted?.workflowId).toBe(WF);
+    expect(persisted?.phaseIds).toEqual([PH]);
+
+    // Survives a restart: close this session's handle and open a fresh,
+    // independent `Store` over the same on-disk root, as a real restart
+    // would. The run row (and the phase's runId tag) must still read back.
+    store.close();
+    const reopened = openStore({ storageRoot: dir.path, writable: false, reconcile: false });
+    expect(reopened.store.runs.get(outcome.runId)?.runId).toBe(outcome.runId);
+    expect(reopened.store.phases.require(PH).runId).toBe(outcome.runId);
+    reopened.store.close();
+  });
+
+  it("the run row is even minted for a phase that refuses to start", () => {
+    const store = freshStore();
+    // No tasks: phase_start_valid fails, but the run id still exists and is
+    // still findable — a refused start is not "no run happened".
+    const outcome = startRun({ store, workflowId: WF, phaseIds: [PH], actor, now, newId, authorizationCurrent: () => true });
+    expect(outcome.results[0]?.ok).toBe(false);
+    expect(store.runs.get(outcome.runId)).toBeDefined();
+  });
+
+  it("tags the phase it starts with the run id", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ id: "t1" as TaskId, workflowId: WF, phaseId: PH, status: "ready" }));
+    const outcome = startRun({ store, workflowId: WF, phaseIds: [PH], actor, now, newId, authorizationCurrent: () => true });
+    expect(store.phases.require(PH).runId).toBe(outcome.runId);
   });
 });
 
@@ -165,5 +221,45 @@ describe("stopRun: a deliberate stop leaves resumable state", () => {
     const results = stopRun({ store, workflowId: WF, actor, now, newId, reason: "stop before anything started" });
     expect(results[0]?.ok).toBe(true);
     expect(store.phases.require(PH).gateStatus).toBe("paused_approval");
+  });
+
+  it("the run id is stable across a stop/resume cycle", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ id: "t1" as TaskId, workflowId: WF, phaseId: PH, status: "ready" }));
+    const outcome = startRun({ store, workflowId: WF, phaseIds: [PH], actor, now, newId, authorizationCurrent: () => true });
+    const runId = outcome.runId;
+
+    stopRun({ store, workflowId: WF, actor, now, newId, reason: "user requested stop" });
+    expect(store.phases.require(PH).gateStatus).toBe("paused_approval");
+    // The pause does not clear the run id: a paused phase still names the
+    // run a resume continues (#72's crash reconciliation and this issue's
+    // deliberate stop share this property).
+    expect(store.phases.require(PH).runId).toBe(runId);
+
+    // Resume: user_resume -> pending, then a fresh /korwf run against the
+    // same phase re-tags it with a *new* run id (a resume is a new
+    // invocation of run, not a continuation of the old one's identity) while
+    // the original run row is untouched history.
+    const resumed = transitionPhase({
+      store,
+      phaseId: PH,
+      to: "pending",
+      trigger: "user_resume",
+      actor,
+      now,
+      newId,
+      evidenceRefs: ["resume:test"],
+      guards: { manual_resume_valid: () => true, authorization_current: () => true },
+    });
+    expect(resumed.subject.gateStatus).toBe("pending");
+    expect(resumed.subject.runId).toBe(runId);
+
+    const rerun = startRun({ store, workflowId: WF, phaseIds: [PH], actor, now, newId, authorizationCurrent: () => true });
+    expect(rerun.runId).not.toBe(runId);
+    expect(store.phases.require(PH).runId).toBe(rerun.runId);
+
+    // Both runs remain readable — history is never overwritten.
+    expect(store.runs.get(runId)?.runId).toBe(runId);
+    expect(store.runs.get(rerun.runId)?.runId).toBe(rerun.runId);
   });
 });
