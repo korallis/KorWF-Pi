@@ -92,7 +92,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Anti-oscillation dwell; all-capped → phase pause and auto-resume.
 - [x] Expensive-substitute policy (prefer-wait threshold, budget check).
 - [x] Static fallback order when Jev unavailable. (#63)
-- [ ] Attempt records requested/used model and reason; `status` and `models` surface switches and caps.
+- [x] Attempt records requested/used model and reason; `status` and `models` surface switches and caps.
 - [ ] Opt-in main-session routing at safe boundaries only.
 - [x] Worker roles, contracts, launch with explicit model/profile/tools/cwd; resource inheritance control.
 - [x] Read-only roles enforced across all mutation routes; sandbox boundaries where supported.
