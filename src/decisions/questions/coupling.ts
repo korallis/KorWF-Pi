@@ -76,3 +76,90 @@ function viewState(view: CouplingTaskView): Readonly<Record<string, unknown>> {
  * into serial execution.
  */
 export const COUPLING_FALLBACK_VERDICT: CouplingVerdict = "unknown";
+
+function view(id: string, goal: string, paths: readonly string[]): CouplingTaskView {
+  return { id, goal, acceptanceCriteria: [], ownershipPaths: paths, ownershipComponents: [] };
+}
+
+/**
+ * `tasks.coupling@1` — Choice over `independent` / `coupled` / `unknown`.
+ *
+ * `unknown` is an explicit option rather than an abstention artefact (PLAN
+ * §6 "explicit none/unknown outcomes"): a model that cannot tell should say
+ * so, and saying so has the same effect as not answering — serial.
+ */
+export const tasksCouplingQuestion: QuestionDefinition<CouplingState, CouplingVerdict> = defineChoice<
+  CouplingState,
+  CouplingVerdict
+>({
+  id: "tasks.coupling",
+  version: "1",
+  prompt:
+    "Two tasks, `taskA` and `taskB`, are about to run at the same time in separate git worktrees by two " +
+    "different workers. Their declared file ownership has already been checked and does not overlap, so they " +
+    "will not edit the same files. Could completing them concurrently still produce changes that do not compose " +
+    "— for example because both change the same API contract, data schema, wire format, configuration key or " +
+    "shared invariant from different files, or because one task's correct result depends on a decision the " +
+    "other is making? Answer `coupled` if concurrent work is likely to conflict semantically, `independent` " +
+    "only if you are confident the two can proceed without coordination, and `unknown` whenever the goals or " +
+    "criteria do not give you enough to tell.",
+  options: {
+    independent: "The two tasks can be completed concurrently without coordinating; neither constrains the other",
+    coupled:
+      "Concurrent work is likely to conflict semantically — a shared contract, schema, format, key or invariant, " +
+      "or one task's outcome depends on the other's decision",
+    unknown: "Not enough information in the goals, criteria and ownership to judge",
+  },
+  // A concurrency decision is not a coin toss: a weakly-held `independent`
+  // is exactly the answer that should become `unknown`, and therefore serial.
+  minConfidence: 0.7,
+  revisionSensitive: false,
+  state: couplingState,
+  decide: (answer) => {
+    const value: CouplingVerdict =
+      answer.choice === "independent" || answer.choice === "coupled" ? answer.choice : "unknown";
+    return { value, rule: `coupling:${value}`, action: value };
+  },
+  fallback: () => ({ value: COUPLING_FALLBACK_VERDICT, rule: "fallback", action: COUPLING_FALLBACK_VERDICT }),
+  replay: (action) =>
+    action === "independent" || action === "coupled" || action === "unknown" ? action : null,
+  boundaries: [
+    {
+      name: "disabled Jev on two obviously separate tasks is still unknown",
+      state: {
+        a: view("t1", "add a logout button to the header", ["src/ui/header.tsx"]),
+        b: view("t2", "fix a typo in the README", ["README.md"]),
+      },
+      expectFallback: "unknown",
+      note: "The fallback never says independent; without Jev the pair serialises (PLAN §3.E).",
+    },
+    {
+      name: "two tasks changing the same response shape from different files",
+      state: {
+        a: view("t3", "add a `total` field to the /orders response", ["src/api/orders.ts"]),
+        b: view("t4", "consume the /orders response in the dashboard", ["src/ui/dashboard.tsx"]),
+      },
+      expectFallback: "unknown",
+      note: "Semantically coupled, but the fallback cannot know that — unknown serialises it anyway.",
+    },
+    {
+      name: "empty goals",
+      state: { a: view("t5", "", []), b: view("t6", "", []) },
+      expectFallback: "unknown",
+    },
+  ],
+});
+
+// ---------------------------------------------------------------------------
+// registry
+// ---------------------------------------------------------------------------
+
+/** Hash as reviewed; editing the prompt or options without a version bump fails registration. */
+export const COUPLING_QUESTION_HASHES: Readonly<Record<string, string>> = Object.freeze({
+  "tasks.coupling@1": tasksCouplingQuestion.contentHash,
+});
+
+export const couplingQuestionRegistry = new QuestionRegistry();
+couplingQuestionRegistry.register(tasksCouplingQuestion as QuestionDefinition<unknown, unknown>, {
+  pinnedHash: tasksCouplingQuestion.contentHash,
+});
