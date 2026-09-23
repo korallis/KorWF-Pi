@@ -402,3 +402,232 @@ export interface ClaimHooks {
   readonly authorizationCurrent: (task: Task) => boolean;
   readonly dispatchAllowed: (task: Task) => boolean;
 }
+
+interface InFlightEntry {
+  readonly taskId: TaskId;
+  readonly settled: Promise<DispatchOutcome>;
+}
+
+interface PassResult {
+  readonly started: number;
+  readonly holds: readonly HeldTask[];
+}
+
+/**
+ * Claim, reserve and launch every task the plan selected, in order, adding
+ * each to `inFlight`. Returns how many actually started plus the holds that
+ * only became visible at claim time (a lost race, a refused reservation).
+ *
+ * Nothing here awaits a worker: `dispatch` is started and its promise stored.
+ * That is the whole point of Pi's asynchronous `prompt` — acceptance is fast,
+ * events stream later, so one coordinator holds N of these open at once.
+ */
+function startPass(
+  plan: DispatchPlan,
+  params: RunSchedulerParams,
+  inFlight: Map<TaskId, InFlightEntry>,
+  dispatched: TaskId[],
+): PassResult {
+  const holds: HeldTask[] = [];
+  let started = 0;
+
+  for (const taskId of plan.dispatch) {
+    if (params.signal?.aborted === true) {
+      holds.push({ taskId, reason: "cancelled", detail: "cancellation requested; no new dispatch" });
+      continue;
+    }
+    const claim = claimTask({
+      store: params.store,
+      taskId,
+      actor: params.actor,
+      now: params.now,
+      newId: params.newId,
+      authorizationCurrent: params.authorizationCurrent,
+      dispatchAllowed: params.dispatchAllowed,
+    });
+    if (!claim.ok || claim.task === null) {
+      holds.push({ taskId, reason: "claim_lost", detail: claim.reason ?? "claim refused" });
+      continue;
+    }
+    const task = claim.task;
+
+    // The atomic reservation is taken *after* the claim, so a refusal cannot
+    // leave budget reserved for a task another coordinator is running.
+    const reservation = params.reserve(task);
+    if (reservation === null) {
+      holds.push({
+        taskId,
+        reason: "budget_refused",
+        detail: `budget reservation refused for task ${taskId}; not dispatched`,
+      });
+      continue;
+    }
+
+    const settled = startDispatch(params, task, reservation);
+    inFlight.set(taskId, { taskId, settled });
+    dispatched.push(taskId);
+    started += 1;
+  }
+  return { started, holds };
+}
+
+/**
+ * Start one worker and guarantee its reservation is released exactly once,
+ * whether the dispatch resolves, rejects, or the process asks it to stop. A
+ * reservation leaked on a rejected dispatch would permanently shrink the
+ * remaining concurrency for every later task.
+ */
+function startDispatch(
+  params: RunSchedulerParams,
+  task: Task,
+  reservation: DispatchReservation,
+): Promise<DispatchOutcome> {
+  let releaseD = false;
+  const release = (): void => {
+    if (releaseD) return;
+    releaseD = true;
+    reservation.release();
+  };
+  return Promise.resolve()
+    .then(() => params.dispatch(task))
+    .then(
+      (outcome) => {
+        release();
+        return outcome;
+      },
+      (error: unknown) => {
+        release();
+        return {
+          taskId: task.id,
+          ok: false,
+          detail: error instanceof Error ? error.message : String(error),
+        } satisfies DispatchOutcome;
+      },
+    );
+}
+
+/**
+ * Wait for everything still running to settle, asking each worker to stop
+ * first when the loop is draining because of a cancellation. Returns the
+ * outcomes and the ids that were in flight, so the caller can cancel their
+ * task rows.
+ */
+async function drainInFlight(
+  inFlight: Map<TaskId, InFlightEntry>,
+  params: RunSchedulerParams,
+  cancelling: boolean,
+): Promise<{ readonly outcomes: readonly DispatchOutcome[]; readonly taskIds: readonly TaskId[] }> {
+  const taskIds = [...inFlight.keys()];
+  if (cancelling && params.cancelWorker !== undefined) {
+    const cancelWorker = params.cancelWorker;
+    await Promise.all(taskIds.map(async (id) => cancelWorker(id)));
+  }
+  const outcomes = await Promise.all([...inFlight.values()].map((e) => e.settled));
+  inFlight.clear();
+  return { outcomes, taskIds };
+}
+
+/**
+ * Run the dependency-aware dispatch loop until no task can be dispatched and
+ * nothing is in flight, or until cancellation is requested.
+ *
+ * Each pass: re-read the tasks, recompute the ready set through `graph.ts`,
+ * claim each selected task transactionally, reserve budget, and start the
+ * worker **without awaiting it**. Only when the pass has nothing further to
+ * start does the loop await the *first* settlement (`Promise.race`) and go
+ * round again — so a completed task's dependents are admitted as soon as it
+ * finishes, while its siblings keep running.
+ *
+ * The ready set is recomputed from the store on every pass. Nothing is
+ * carried over between passes, which is what "never schedule from a stale
+ * ready-set" means operationally: a task whose dependency failed while this
+ * pass was running simply does not appear in the next one.
+ */
+export async function runScheduler(params: RunSchedulerParams): Promise<SchedulerResult> {
+  const { store, phaseIds, limit } = params;
+  const inFlight = new Map<TaskId, InFlightEntry>();
+  const dispatched: TaskId[] = [];
+  const outcomes: DispatchOutcome[] = [];
+  let held: readonly HeldTask[] = [];
+  let peakConcurrency = 0;
+  let cancelled = false;
+
+  const aborted = (): boolean => params.signal?.aborted === true;
+
+  while (true) {
+    if (aborted()) {
+      cancelled = true;
+      break;
+    }
+
+    const plan = planPass({
+      store,
+      phaseIds,
+      inFlight: [...inFlight.keys()],
+      limit,
+      coupling: params.coupling ?? UNCERTAIN_COUPLING,
+    });
+    held = plan.held;
+
+    const startedThisPass = startPass(plan, params, inFlight, dispatched);
+    if (startedThisPass.holds.length > 0) held = [...held, ...startedThisPass.holds];
+    peakConcurrency = Math.max(peakConcurrency, inFlight.size);
+
+    if (inFlight.size === 0) {
+      // Nothing running and nothing startable: either the phase is complete
+      // or everything left is blocked. Either way this loop is done; it is
+      // not the scheduler's job to invent a way forward.
+      if (startedThisPass.started === 0) break;
+      continue;
+    }
+    if (startedThisPass.started > 0) continue;
+
+    // Nothing more can start right now, so wait for the first worker to
+    // settle before recomputing. Awaiting the race (not each dispatch in
+    // turn) is what keeps the other N-1 workers running.
+    const settled = await Promise.race([...inFlight.values()].map((e) => e.settled));
+    inFlight.delete(settled.taskId);
+    outcomes.push(settled);
+  }
+
+  const drain = await drainInFlight(inFlight, params, cancelled);
+  outcomes.push(...drain.outcomes);
+
+  const cancelledTasks = cancelled ? cancelRemaining(params, drain.taskIds) : [];
+  return { dispatched, outcomes, held, peakConcurrency, cancelled, cancelledTasks };
+}
+
+/**
+ * Move every task that was in flight when cancellation arrived to
+ * `cancelled`, through `state.ts`'s `task-cancel` edge — the same single
+ * writer used everywhere else, so the transition is recorded and the
+ * worktree and artifacts are retained (`task-cancel` side effects).
+ *
+ * A task that already moved on (settled as `verifying`, say) is left alone
+ * rather than forced: the edge is refused and that refusal is the correct
+ * answer, not an error to swallow. State stays resumable either way, which
+ * is what lets `/korwf run` be re-invoked and pick up where this stopped.
+ */
+function cancelRemaining(params: RunSchedulerParams, taskIds: readonly TaskId[]): readonly TaskId[] {
+  const out: TaskId[] = [];
+  for (const taskId of taskIds) {
+    try {
+      transitionTask({
+        store: params.store,
+        taskId,
+        to: "cancelled",
+        trigger: "cancel",
+        actor: params.actor,
+        now: params.now,
+        newId: params.newId,
+        evidenceRefs: [`cancel:${taskId}`, "scheduler:cancellation_requested"],
+        guards: { cancellation_requested: () => true },
+      });
+      out.push(taskId);
+    } catch (error) {
+      if (error instanceof TransitionRejected) continue;
+      throw error;
+    }
+  }
+  return out;
+}
