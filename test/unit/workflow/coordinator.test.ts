@@ -118,6 +118,52 @@ describe("AC1: two concurrent run invocations — exactly one proceeds", () => {
     expect(refusals).toBe(4);
   });
 
+  it("a live owner whose heartbeat has gone stale is still never evicted", () => {
+    const root = tempRoot();
+    const clock = fakeClock();
+    const first = acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 7001,
+      sessionId: "session-stalled",
+      now: clock.now,
+      nowMs: clock.nowMs,
+      heartbeatIntervalMs: 1000,
+      heartbeatStaleMultiplier: 3,
+      isProcessAlive: () => true,
+    });
+    // Far beyond the staleness window, with no heartbeat written.
+    clock.advance(1000 * 3 * 100);
+
+    const seen = inspectCoordinator({
+      storageRoot: root,
+      nowMs: clock.nowMs,
+      heartbeatIntervalMs: 1000,
+      heartbeatStaleMultiplier: 3,
+      isProcessAlive: () => true,
+    });
+    expect(seen?.assessment.heartbeatStale).toBe(true);
+    expect(seen?.assessment.liveness).toBe("alive_heartbeat_stale");
+    expect(seen?.assessment.mayTakeOver).toBe(false);
+
+    let caught: CoordinatorActiveError | null = null;
+    try {
+      acquireCoordinatorLock({
+        storageRoot: root,
+        pid: 7002,
+        nowMs: clock.nowMs,
+        heartbeatIntervalMs: 1000,
+        heartbeatStaleMultiplier: 3,
+        isProcessAlive: () => true,
+      });
+    } catch (error) {
+      caught = error as CoordinatorActiveError;
+    }
+    expect(caught).toBeInstanceOf(CoordinatorActiveError);
+    expect(caught?.message).toContain("the process is still running, so it keeps the lock");
+    expect(first.isOwned()).toBe(true);
+    first.release();
+  });
+
   it("releases the lock so a later run can take it cleanly", () => {
     const root = tempRoot();
     const path = resolveCoordinatorLockPath(root);
@@ -128,5 +174,153 @@ describe("AC1: two concurrent run invocations — exactly one proceeds", () => {
     expect(second.acquisition).toBe("created");
     expect(second.previousOwner).toBeNull();
     second.release();
+  });
+});
+
+describe("AC2: killed coordinator — the next run takes over (fake clock)", () => {
+  it("takes over a dead owner's lock and reports the previous owner", () => {
+    const root = tempRoot();
+    const clock = fakeClock();
+    const live = new Set([8001]);
+    const dead = acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 8001,
+      sessionId: "session-killed",
+      now: clock.now,
+      nowMs: clock.nowMs,
+      isProcessAlive: (p) => live.has(p),
+    });
+    expect(dead.heartbeat()).toBe(true);
+
+    // SIGKILL: the process vanishes, the lockfile stays exactly as it was.
+    live.delete(8001);
+    clock.advance(60_000);
+
+    const next = acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 8002,
+      sessionId: "session-successor",
+      now: clock.now,
+      nowMs: clock.nowMs,
+      isProcessAlive: (p) => live.has(p) || p === 8002,
+    });
+    expect(next.acquisition).toBe("took_over_stale");
+    expect(next.previousOwner?.pid).toBe(8001);
+    expect(next.previousOwner?.sessionId).toBe("session-killed");
+    expect(next.contents.pid).toBe(8002);
+    next.release();
+  });
+
+  it("does not take over on the staleness window alone — the pid decides", () => {
+    const root = tempRoot();
+    const clock = fakeClock();
+    acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 8101,
+      sessionId: "session-busy",
+      now: clock.now,
+      nowMs: clock.nowMs,
+      heartbeatIntervalMs: 10,
+      heartbeatStaleMultiplier: 2,
+      isProcessAlive: () => true,
+    });
+    clock.advance(10_000_000);
+
+    // Identical clock, identical staleness window: the only difference between
+    // this attempt and the next is what the pid probe says.
+    const refusedWhileAlive = () =>
+      acquireCoordinatorLock({
+        storageRoot: root,
+        pid: 8102,
+        now: clock.now,
+        nowMs: clock.nowMs,
+        heartbeatIntervalMs: 10,
+        heartbeatStaleMultiplier: 2,
+        isProcessAlive: () => true,
+      });
+    expect(refusedWhileAlive).toThrow(CoordinatorActiveError);
+
+    const takenOverWhenDead = acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 8103,
+      now: clock.now,
+      nowMs: clock.nowMs,
+      heartbeatIntervalMs: 10,
+      heartbeatStaleMultiplier: 2,
+      isProcessAlive: (p) => p === 8103,
+    });
+    expect(takenOverWhenDead.acquisition).toBe("took_over_stale");
+    takenOverWhenDead.release();
+  });
+
+  it("classifyHolder reports a fresh heartbeat as alive and not stale", () => {
+    const root = tempRoot();
+    const clock = fakeClock();
+    const lease = acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 8201,
+      now: clock.now,
+      nowMs: clock.nowMs,
+      heartbeatIntervalMs: 1000,
+      heartbeatStaleMultiplier: 6,
+      isProcessAlive: () => true,
+    });
+    clock.advance(5000);
+    expect(lease.heartbeat()).toBe(true);
+    expect(lease.lastHeartbeatAt()).toBe(clock.now());
+
+    const holder = inspectCoordinator({ storageRoot: root, isProcessAlive: () => true })?.holder;
+    expect(holder).toBeDefined();
+    const assessment = classifyHolder(holder!, {
+      isProcessAlive: () => true,
+      nowMs: clock.nowMs(),
+      staleAfterMs: 6000,
+    });
+    expect(assessment.liveness).toBe("alive");
+    expect(assessment.heartbeatAgeMs).toBe(0);
+    expect(assessment.heartbeatStale).toBe(false);
+    lease.release();
+  });
+
+  it("a displaced lease stops heartbeating and never deletes the new owner's lock", () => {
+    const root = tempRoot();
+    const path = resolveCoordinatorLockPath(root);
+    const clock = fakeClock();
+    const live = new Set([8301]);
+    const displaced = acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 8301,
+      now: clock.now,
+      nowMs: clock.nowMs,
+      isProcessAlive: (p) => live.has(p),
+    });
+    live.delete(8301);
+    clock.advance(60_000);
+    const successor = acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 8302,
+      now: clock.now,
+      nowMs: clock.nowMs,
+      isProcessAlive: (p) => p === 8302,
+    });
+
+    // The zombie comes back: it must neither stamp its heartbeat on the new
+    // owner's lockfile nor delete it on shutdown.
+    expect(displaced.heartbeat()).toBe(false);
+    expect(displaced.isOwned()).toBe(false);
+    displaced.release();
+    expect(existsSync(path)).toBe(true);
+    expect(JSON.parse(readFileSync(path, "utf8")).pid).toBe(8302);
+    expect(successor.isOwned()).toBe(true);
+    successor.release();
+  });
+
+  it("uses a lockfile distinct from the #23 store lock", () => {
+    const root = tempRoot();
+    const lease = acquireCoordinatorLock({ storageRoot: root, pid: 8401 });
+    expect(resolveCoordinatorLockPath(root)).not.toBe(resolveLockfilePath(root));
+    expect(existsSync(resolveCoordinatorLockPath(root))).toBe(true);
+    expect(existsSync(resolveLockfilePath(root))).toBe(false);
+    lease.release();
   });
 });
