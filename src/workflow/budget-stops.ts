@@ -143,6 +143,17 @@ export class BudgetGovernor {
     return breach;
   }
 
+  /**
+   * Clear the latch because the *caps changed* (`resumeAfterCapRaised`).
+   * Deliberately not exposed as a general "try again": within one run a
+   * cumulative cap cannot un-breach itself, so the only honest reason to
+   * clear is a config change, and the caller proves that by re-checking the
+   * new caps against the ledger before calling this.
+   */
+  clearForRaisedCap(): void {
+    this.#stopped = null;
+  }
+
   /** Message for the user. Empty string when nothing has stopped the run. */
   stopReason(): string {
     if (this.#stopped === null) return "";
@@ -151,4 +162,74 @@ export class BudgetGovernor {
       "Spend already recorded is kept; raise the cap in config and re-run to resume."
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// The scheduler's `reserve` hook
+// ---------------------------------------------------------------------------
+
+export interface BudgetHookParams {
+  /** The #30 ledger. The only thing that grants or refuses budget. */
+  readonly ledger: Ledger;
+  readonly governor: BudgetGovernor;
+  readonly workflowId: WorkflowId;
+  /** Pre-dispatch estimate for the task. Unknown cost is honest and still consumes caps. */
+  readonly estimateFor: (task: Task) => Usage;
+  readonly now: () => IsoTimestamp;
+  /** Attribution carried onto the ledger rows (route/run id, #71/#125). */
+  readonly label?: (task: Task) => string;
+}
+
+/**
+ * The `reserve` hook `runScheduler` calls **once per dispatch** (#75: "an
+ * in-process counter is not the authority: the reservation hook is asked per
+ * dispatch").
+ *
+ * Behaviour, in order:
+ *  1. if the governor has already latched a cumulative breach, refuse
+ *     without touching the ledger — no task starts after the cap is reached,
+ *     and asking again would only append another refusal;
+ *  2. otherwise ask `Ledger.reserve`, which does the atomic check;
+ *  3. a `BudgetExceededError` is recorded as a breach and returned as `null`
+ *     (the scheduler's "held, not dispatched" signal). It is never rethrown:
+ *     a cap being reached is a stop, not a crash;
+ *  4. a granted reservation is wrapped so the scheduler's single
+ *     `release()` call releases it in the ledger exactly once.
+ *
+ * Release, not settle: the scheduler releases when a *dispatch* settles, and
+ * the worker's actual usage is settled by the worker layer (#71) against its
+ * own reservations. Releasing an estimate the run never spent is not a
+ * rollback of recorded spend — no settlement row is removed, and the
+ * append-only release row is itself part of the audit.
+ */
+export function budgetReservationHook(
+  params: BudgetHookParams,
+): (task: Task) => DispatchReservation | null {
+  const { ledger, governor, workflowId, estimateFor, now } = params;
+  return (task: Task): DispatchReservation | null => {
+    if (governor.shouldStop()) return null;
+    const scope: ChargeScope = { workflowId, phaseId: task.phaseId, taskId: task.id };
+    let reservation: Reservation;
+    try {
+      reservation = ledger.reserve({
+        scope,
+        estimate: estimateFor(task),
+        ...(params.label === undefined ? {} : { label: params.label(task) }),
+      });
+    } catch (error) {
+      if (error instanceof BudgetExceededError) {
+        governor.record(breachOf(error, now(), task.id));
+        return null;
+      }
+      throw error;
+    }
+    let released = false;
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        ledger.release(reservation, `dispatch settled for task ${task.id}`);
+      },
+    };
+  };
 }
