@@ -5,9 +5,11 @@
  * anything is spent. Any stop leaves resumable state.
  */
 import type { Store } from "../storage/db.ts";
-import type { PhaseId, Task, WorkflowId } from "../storage/records.ts";
+import type { IsoTimestamp, Phase, PhaseId, Task, WorkflowId } from "../storage/records.ts";
+import type { TransitionActor } from "../storage/transition-log.ts";
 import { TASK_TERMINAL_STATES } from "./transitions.ts";
 import { classifyCost, type PriceMetadata, type TokenCounts } from "../telemetry/ledger.ts";
+import { transitionPhase, TransitionRejected } from "./state.ts";
 
 export interface RunEstimatePhase {
   readonly phaseId: PhaseId;
@@ -70,10 +72,12 @@ export function estimateRun(params: EstimateRunParams): RunEstimate {
     let estimatedUsd = 0;
     let unknownTasks = 0;
     for (const task of tasks) {
+      const tokens = tokensForTask(task);
+      const price = priceForTask(task);
       const usage = classifyCost({
-        tokens: tokensForTask(task) ?? undefined,
-        price: priceForTask(task),
         basis: "estimated",
+        ...(tokens === null ? {} : { tokens }),
+        ...(price === null ? {} : { price }),
       });
       if (usage.costBasis === "unknown") {
         unknownTasks += 1;
@@ -104,10 +108,75 @@ export interface StartRunParams {
   readonly store: Store;
   readonly workflowId: WorkflowId;
   readonly phaseIds: readonly PhaseId[];
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  /**
+   * Approval re-check for `authorization_current` (PLAN §2.4 "scope
+   * approved"). The caller (the `/korwf run` command) has already resolved
+   * this against the live `Approval` table before showing the estimate;
+   * this hook lets that same verdict gate the transition rather than being
+   * re-derived here.
+   */
+  readonly authorizationCurrent: (phaseId: PhaseId) => boolean;
 }
 
-export function startRun(_params: StartRunParams): void {
-  throw new Error("todo");
+export interface StartRunResult {
+  readonly phaseId: PhaseId;
+  readonly ok: boolean;
+  readonly phase: Phase | null;
+  readonly reason: string | null;
+}
+
+/**
+ * `phase_start_valid` (PLAN §2.1, docs/state-machine.md §4): at least one
+ * schedulable task, or every task already done and gating needs retry.
+ * Computed structurally from the store — never trusted from a caller claim,
+ * matching `state.ts`'s "deterministic checks cannot be waived" rule.
+ */
+function phaseStartValid(store: Store, phaseId: PhaseId): boolean {
+  const tasks = store.tasks.forPhase(phaseId);
+  if (tasks.length === 0) return false;
+  const allDone = tasks.every((t) => t.status === "done");
+  if (allDone) return true;
+  return tasks.some((t) => t.status === "proposed" || t.status === "ready");
+}
+
+/**
+ * Start (or resume-into) each targeted phase: `phase-start` (`pending` →
+ * `running`), through `src/workflow/state.ts`, the only writer of
+ * `Phase.gateStatus`. Scheduling the ready tasks themselves is #75; this
+ * function only performs the phase-level transition the cost estimate was
+ * shown for. One phase's refusal does not block the others — each result is
+ * reported so a caller can see exactly which phases actually started.
+ */
+export function startRun(params: StartRunParams): readonly StartRunResult[] {
+  const { store, phaseIds, actor, now, newId, authorizationCurrent } = params;
+  return phaseIds.map((phaseId) => {
+    const guards = {
+      phase_start_valid: () => phaseStartValid(store, phaseId),
+      authorization_current: () => authorizationCurrent(phaseId),
+    } as const;
+    try {
+      const result = transitionPhase({
+        store,
+        phaseId,
+        to: "running",
+        trigger: "run",
+        actor,
+        now,
+        newId,
+        evidenceRefs: [`run:${phaseId}`],
+        guards,
+      });
+      return { phaseId, ok: true, phase: result.subject, reason: null };
+    } catch (error) {
+      if (error instanceof TransitionRejected) {
+        return { phaseId, ok: false, phase: null, reason: error.message };
+      }
+      throw error;
+    }
+  });
 }
 
 export interface StopRunParams {

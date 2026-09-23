@@ -36,7 +36,7 @@ import { registerSessionHooks } from "./session-hooks.ts";
 import { registerCatalogRefresh } from "./catalog-refresh.ts";
 import type { CatalogConfig } from "../models/catalog.ts";
 import { registerMainSessionRouting } from "./main-session-routing.ts";
-import { runAvailability, runRefusalMessage } from "./commands/run.ts";
+import { runAvailability, runRefusalMessage, runCommand, parseRunArgs } from "./commands/run.ts";
 import { pauseMessage, parseWorkerCommandArgs } from "./commands/pause.ts";
 import { resumeMessage } from "./commands/resume.ts";
 import { cancelMessage } from "./commands/cancel.ts";
@@ -161,11 +161,39 @@ export default function korwfExtension(pi: ExtensionAPI): void {
           }
           case "run": {
             // Reachable only when RUN_AVAILABILITY.available; the dispatcher
-            // rejects `run` otherwise. Scheduling itself lands in #69+.
-            ui.notify(
-              "`/korwf run` is not implemented yet; single-worker execution lands with the scheduler.",
-              "warning",
-            );
+            // rejects `run` otherwise. Task-level scheduling is #75.
+            const parsed = parseRunArgs(rest);
+            if (!parsed.ok || parsed.target === null) {
+              ui.notify(parsed.message ?? "Usage: /korwf run <phase-id | all>", "error");
+              return;
+            }
+            const result = loadForProject(ctx.cwd);
+            if (!result.ok) {
+              ui.notify(configMessage(result), "error");
+              return;
+            }
+            const storageRoot = resolveStorageRoot(ctx.cwd, result.config.storage.path ?? undefined);
+            const resolved = openStore({ storageRoot, writable: true });
+            const store = resolved.store;
+            try {
+              const workflow = resolveBoardWorkflow(store);
+              if (!workflow.ok) {
+                ui.notify(workflow.message, "error");
+                return;
+              }
+              const outcome = await runCommand({
+                store,
+                workflowId: workflow.workflowId,
+                target: parsed.target,
+                now: () => new Date().toISOString(),
+                newId: () => `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+                confirm: (title, body) => ctx.ui.confirm(title, body),
+                maxSpendUsd: result.config.budgets.workflow.maxSpendUsd,
+              });
+              ui.notify(outcome.message, outcome.ok ? "info" : "warning");
+            } finally {
+              store.close();
+            }
             return;
           }
           case "models": {
