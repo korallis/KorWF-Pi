@@ -12,7 +12,7 @@
  * No key, no network: only the Jev transport is mocked, per AGENTS.md.
  */
 import { spawn as spawnReal } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { DecisionRecorder } from "../../../src/decisions/record.ts";
@@ -149,7 +149,10 @@ describe.runIf(POSIX)("Single-worker end-to-end run (issue #73; PLAN §8 Stage 5
       const state = await handle.call({ type: "get_state" }, 15_000);
       // Isolation: the worker's cwd is the attempt worktree, not the repo's
       // main tree, and it received exactly the model contract dictated.
-      expect((state.data as { cwd: string }).cwd).toBe(worktree.path);
+      // Compare REALPATHS: macOS resolves the temp root through /private, so the
+      // worker reports /private/var/... while the fixture holds /var/.... A raw
+      // string compare passes on Linux and fails on macOS (same defect as #70).
+      expect(realpathSync((state.data as { cwd: string }).cwd)).toBe(realpathSync(worktree.path));
 
       const route = makeRoute(PROVIDER, "M-primary");
       let ledgerIdCounter = 0;
