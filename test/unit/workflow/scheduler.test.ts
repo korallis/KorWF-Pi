@@ -439,6 +439,155 @@ describe("AC2: concurrency never exceeds the cap", () => {
   });
 });
 
+describe("AC3: cancel mid-run cancels attempts and leaves a resumable run", () => {
+  it("stops dispatching, cancels the running tasks, and leaves the rest ready", async () => {
+    const store = freshStore();
+    for (let i = 0; i < 6; i += 1) insertTask(store, `c${i}`);
+
+    const signal = { aborted: false };
+    const gates: (() => void)[] = [];
+    const cancelledWorkers: TaskId[] = [];
+    let started = 0;
+
+    const promise = runScheduler({
+      ...baseParams(store),
+      limit: 2,
+      coupling: independent,
+      signal,
+      cancelWorker: (taskId: TaskId) => {
+        cancelledWorkers.push(taskId);
+      },
+      dispatch: async (task: Task) => {
+        started += 1;
+        const gate = deferred();
+        gates.push(gate.resolve);
+        await gate.promise;
+        return { taskId: task.id, ok: false, detail: "cancelled" };
+      },
+    });
+
+    // Two workers are live; cancel, then let them stop.
+    await new Promise((r) => setImmediate(r));
+    expect(started).toBe(2);
+    signal.aborted = true;
+    await new Promise((r) => setImmediate(r));
+    for (const gate of gates.splice(0)) gate();
+
+    const result = await promise;
+    expect(result.cancelled).toBe(true);
+    expect(started).toBe(2);
+    // Workers still live at the drain are asked to stop; ones that had
+    // already settled are not asked again. Both end up `cancelled`.
+    expect(cancelledWorkers.length).toBeGreaterThan(0);
+    for (const id of cancelledWorkers) expect(result.cancelledTasks).toContain(id);
+    expect([...result.cancelledTasks].sort()).toEqual(["c0", "c1"]);
+
+    // Every attempt that was running is now cancelled...
+    for (const taskId of result.cancelledTasks) {
+      expect(store.tasks.require(taskId).status).toBe("cancelled");
+    }
+    // ...and nothing else was touched, so the run is resumable.
+    const remaining = store.tasks
+      .forPhase(PH)
+      .filter((t) => !result.cancelledTasks.includes(t.id));
+    expect(remaining).toHaveLength(4);
+    expect(remaining.every((t) => t.status === "ready")).toBe(true);
+  });
+
+  it("re-invoking the scheduler after a cancel resumes the remaining tasks", async () => {
+    const store = freshStore();
+    for (let i = 0; i < 4; i += 1) insertTask(store, `k${i}`);
+
+    const signal = { aborted: false };
+    const gates: (() => void)[] = [];
+    const first = runScheduler({
+      ...baseParams(store),
+      limit: 1,
+      coupling: independent,
+      signal,
+      dispatch: async (task: Task) => {
+        const gate = deferred();
+        gates.push(gate.resolve);
+        await gate.promise;
+        return { taskId: task.id, ok: false };
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    signal.aborted = true;
+    await new Promise((r) => setImmediate(r));
+    for (const gate of gates.splice(0)) gate();
+    const firstResult = await first;
+    expect(firstResult.cancelled).toBe(true);
+    expect(firstResult.cancelledTasks).toHaveLength(1);
+
+    // Same store, fresh scheduler: exactly the tasks that never ran.
+    const second = await runScheduler({
+      ...baseParams(store),
+      limit: 2,
+      coupling: independent,
+      dispatch: async (task: Task) => {
+        markDone(store, task.id);
+        return okOutcome(task);
+      },
+    });
+
+    expect([...second.dispatched].sort()).toEqual(
+      ["k0", "k1", "k2", "k3"].filter((id) => !firstResult.cancelledTasks.includes(id as TaskId)),
+    );
+    expect(second.dispatched).toHaveLength(3);
+  });
+
+  it("a task that moved past running while cancelling is left alone, not forced", async () => {
+    const store = freshStore();
+    insertTask(store, "m1");
+
+    const signal = { aborted: false };
+    const gate = deferred();
+    const promise = runScheduler({
+      ...baseParams(store),
+      limit: 1,
+      coupling: independent,
+      signal,
+      dispatch: async (task: Task) => {
+        await gate.promise;
+        // The worker finished and the engine moved the task on before the
+        // drain reached it.
+        markDone(store, task.id);
+        return okOutcome(task);
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    signal.aborted = true;
+    gate.resolve();
+
+    const result = await promise;
+    expect(result.cancelled).toBe(true);
+    expect(result.cancelledTasks).toEqual([]);
+    expect(store.tasks.require("m1" as TaskId).status).toBe("done");
+  });
+
+  it("an already-aborted signal dispatches nothing at all", async () => {
+    const store = freshStore();
+    insertTask(store, "n1");
+    let dispatches = 0;
+
+    const result = await runScheduler({
+      ...baseParams(store),
+      limit: 4,
+      coupling: independent,
+      signal: { aborted: true },
+      dispatch: async (task: Task) => {
+        dispatches += 1;
+        return okOutcome(task);
+      },
+    });
+
+    expect(dispatches).toBe(0);
+    expect(result.dispatched).toEqual([]);
+    expect(store.tasks.require("n1" as TaskId).status).toBe("ready");
+  });
+});
+
 describe("PLAN §3.E: ownership conflicts in code, serial when coupling is uncertain", () => {
   it("two tasks claiming the same path never run at the same time", () => {
     const store = freshStore();

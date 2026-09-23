@@ -526,7 +526,7 @@ async function drainInFlight(
   params: RunSchedulerParams,
   cancelling: boolean,
 ): Promise<{ readonly outcomes: readonly DispatchOutcome[]; readonly taskIds: readonly TaskId[] }> {
-  const taskIds = [...inFlight.keys()];
+  const taskIds: readonly TaskId[] = [...inFlight.keys()];
   if (cancelling && params.cancelWorker !== undefined) {
     const cancelWorker = params.cancelWorker;
     await Promise.all(taskIds.map(async (id) => cancelWorker(id)));
@@ -602,20 +602,28 @@ export async function runScheduler(params: RunSchedulerParams): Promise<Schedule
   const drain = await drainInFlight(inFlight, params, cancelled);
   outcomes.push(...drain.outcomes);
 
-  const cancelledTasks = cancelled ? cancelRemaining(params, drain.taskIds) : [];
+  // Every task this scheduler dispatched is offered to the cancel edge, not
+  // just the ones still in flight at the instant of the drain: a worker that
+  // settled while cancellation was propagating left its task `running` with
+  // nobody to carry it further, and leaving that behind would be the
+  // "half-cancelled run" the acceptance criterion rules out. Tasks that
+  // legitimately moved on are refused by the edge and skipped.
+  const cancelledTasks = cancelled ? cancelRemaining(params, dispatched) : [];
   return { dispatched, outcomes, held, peakConcurrency, cancelled, cancelledTasks };
 }
 
 /**
- * Move every task that was in flight when cancellation arrived to
- * `cancelled`, through `state.ts`'s `task-cancel` edge — the same single
- * writer used everywhere else, so the transition is recorded and the
- * worktree and artifacts are retained (`task-cancel` side effects).
+ * Move the tasks this run dispatched to `cancelled`, through `state.ts`'s
+ * `task-cancel` edge — the same single writer used everywhere else, so the
+ * transition is recorded and the worktree and artifacts are retained
+ * (`task-cancel` side effects).
  *
- * A task that already moved on (settled as `verifying`, say) is left alone
- * rather than forced: the edge is refused and that refusal is the correct
- * answer, not an error to swallow. State stays resumable either way, which
- * is what lets `/korwf run` be re-invoked and pick up where this stopped.
+ * A task that reached a terminal state before the drain got to it (`done`,
+ * or already `cancelled`) is left alone rather than forced: `state.ts`
+ * refuses the edge and that refusal is the correct answer, not an error to
+ * swallow. Only the ids actually moved are returned. Everything this run
+ * never dispatched is untouched and still `ready`, which is what lets
+ * `/korwf run` be re-invoked and resume.
  */
 function cancelRemaining(params: RunSchedulerParams, taskIds: readonly TaskId[]): readonly TaskId[] {
   const out: TaskId[] = [];
