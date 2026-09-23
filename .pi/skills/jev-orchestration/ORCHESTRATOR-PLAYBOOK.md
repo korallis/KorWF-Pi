@@ -319,6 +319,21 @@ the branch that hit them, and say whose they were.
 | `Cannot read properties of undefined` | **ripgrep is not installed on CI**; `run()` swallowed ENOENT as "no matches" | distinguish *not installed* from *found nothing*; add a `git grep` fallback |
 | `expected false to be true` on `tool === "rg"` | the test asserted *which tool ran*, not the requirement | assert the invariant: whatever ran is named honestly |
 
+**Resolve every conflict block, and prove it.** A `re.sub` with the default count of 1
+left the *second* block in `src/workers/index.ts` intact during #72's rebase. The rebase
+reported success, `npm test` passed — vitest never parses a barrel it does not import from
+— and only `eslint`/`tsc` caught `Merge conflict marker encountered`, on CI, after a push.
+Use `resolve-rebase.py`, which resolves all blocks and then asserts no markers remain:
+
+```bash
+.pi/skills/korwf-worker-delegation/scripts/resolve-rebase.py   # all conflicted files
+git add -A && git -c core.editor=true rebase --continue
+grep -rn '<<<<<<<' src/ test/     # must be empty before you push
+```
+
+And **commit the fix before pushing**: the same markers reached CI once because the
+repair was still an uncommitted working-tree change when the branch was pushed.
+
 **The pattern:** a test that passes locally and fails on CI is usually asserting something
 about *your machine* — a wall clock, an installed binary, a scheduling race. Reproduce the
 CI condition before changing anything:
