@@ -17,9 +17,13 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "../storage/db.ts";
-import type { Attempt, AttemptOutcome, IsoTimestamp } from "../storage/records.ts";
+import type { Attempt, AttemptOutcome, IsoTimestamp, TaskId, WorkflowId } from "../storage/records.ts";
 import type { ReconciliationReport } from "../storage/reconcile.ts";
 import type { GitRunner as GitStatusRunner } from "../git/status.ts";
+import type { FailureCategory, FailureClassification } from "../workflow/failure.ts";
+import type { RecoveryConfig } from "../config/types.ts";
+import { recoverFromFailure, type RecordedRecovery } from "../workflow/recovery.ts";
+import { isLegalTaskEdge, transitionTask } from "../workflow/state.ts";
 import { attemptWorktreePath } from "./worktree.ts";
 import type { WorkerLiveness, WorkerProbe } from "../storage/reconcile.ts";
 import { isProcessAlive } from "../storage/lock.ts";
@@ -423,6 +427,110 @@ export function describeInterruption(input: {
     completedActionIds: input.completedActionIds,
     line: `attempt ${attempt.id} (task ${attempt.taskId}) ${input.outcome} — ${verdict.cause}: ${verdict.reason} ${where}${replay}`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Task disposition and recovery options (issue #72 Scope)
+// ---------------------------------------------------------------------------
+
+/**
+ * The #52 classification of an interruption, built from the verdict alone.
+ *
+ * `harness` for a crash we can attribute (the worker died, or we killed it),
+ * `unknown` when the coordinator went down with it — and an `unknown` here
+ * carries evidence requests rather than a guess, because nothing observed
+ * says whether the work itself was sound.
+ */
+export function interruptionClassification(verdict: InterruptionVerdict): FailureClassification {
+  const category: FailureCategory = verdict.failureCategory ?? "unknown";
+  return Object.freeze({
+    category,
+    confidence: 1,
+    rule: `rule:crash-${verdict.cause}`,
+    source: "rule" as const,
+    reason: verdict.reason,
+    needsEvidence: category === "unknown",
+    evidenceRequests: Object.freeze(
+      category === "unknown"
+        ? [
+            "state of the preserved attempt worktree (git status, diff against its base revision)",
+            "completed-action receipts for the task, to see which effects already happened",
+          ]
+        : [],
+    ),
+  });
+}
+
+/** Options for moving an interrupted attempt's task out of `running`. */
+export interface FailInterruptedTaskOptions {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  readonly taskId: TaskId;
+  readonly report: InterruptedAttemptReport;
+  readonly verdict: InterruptionVerdict;
+  readonly config: RecoveryConfig;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  /** Attempts already spent on this task, for the bounded ladder (#53). */
+  readonly attemptsUsed: number;
+}
+
+/** Where an interrupted task ended up, and what it may do next. */
+export interface InterruptedTaskDisposition {
+  readonly taskId: TaskId;
+  readonly status: string;
+  readonly recovery: RecordedRecovery;
+}
+
+/**
+ * Move the crashed attempt's task to `failed` and record its bounded
+ * recovery options (#53).
+ *
+ * `failed` is not terminal in this state machine: the task can be made
+ * `ready` again, which is what "resume via handoff or restart" means — the
+ * preserved worktree is still there to resume into. The transition goes
+ * through `transitionTask`, so it is audited like any other, and the
+ * `failure_observed` guard is satisfied by an actual observation: a worker
+ * process that is gone with its attempt row still open.
+ *
+ * A task that is not `running`/`verifying`/`review` is left alone: the
+ * `task-failed` edge does not start anywhere else, and forcing it would be
+ * inventing a transition rather than reconciling one.
+ */
+export function failInterruptedTask(options: FailInterruptedTaskOptions): InterruptedTaskDisposition | null {
+  const task = options.store.tasks.get(options.taskId);
+  if (task === undefined) return null;
+  if (!isLegalTaskEdge(task.status, "failed")) return null;
+
+  const result = transitionTask({
+    store: options.store,
+    taskId: options.taskId,
+    to: "failed",
+    trigger: "non_cap_failure",
+    actor: { kind: "engine", identity: "korwf:reconciler" },
+    guards: { failure_observed: () => true },
+    evidenceRefs: [
+      `attempt:${options.report.attemptId}:${options.report.outcome}`,
+      `crash:${options.verdict.cause}`,
+      ...(options.report.worktreePath === null ? [] : [`worktree:preserved:${options.report.attemptId}`]),
+    ],
+    now: options.now,
+    newId: options.newId,
+  });
+
+  const recovery = recoverFromFailure({
+    store: options.store,
+    workflowId: options.workflowId,
+    subjectKind: "task",
+    subjectId: options.taskId,
+    classification: interruptionClassification(options.verdict),
+    attemptsUsed: options.attemptsUsed,
+    config: options.config,
+    now: options.now,
+    newId: options.newId,
+  });
+
+  return { taskId: options.taskId, status: result.subject.status, recovery };
 }
 
 /** Record an observed worker exit. An attempt with this set did not crash unseen. */

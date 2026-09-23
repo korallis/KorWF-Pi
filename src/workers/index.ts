@@ -17,6 +17,9 @@
  * - `handoff.ts` — mid-task cap response: intact-worktree handoff (default)
  *   or restart to the last checkpoint, per `models.fallback.midTaskPolicy`
  *   task-kind policy (#64).
+ * - `reconcile.ts` — crash-interrupted attempt reconciliation on startup:
+ *   the runtime marker, the crash classifier and the probe handed to #23's
+ *   `reconcileAbandonedAttempts` (#72).
  *
  * **Re-export style: `export *`, deliberately.** Listing every symbol explicitly makes this
  * barrel a guaranteed merge conflict: four consecutive PRs each appended an export block to
@@ -36,4 +39,8 @@ export * from "./tool-gate.ts";
 export * from "./progress.ts";
 export * from "./limits.ts";
 export * from "./lifecycle.ts";
+<<<<<<< HEAD
 export * from "./handoff.ts";
+=======
+export * from "./reconcile.ts";
+>>>>>>> e6a33ca (feat(workers): fail interrupted task with bounded recovery options (#72))
