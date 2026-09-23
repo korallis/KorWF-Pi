@@ -11,6 +11,9 @@ import { TASK_TERMINAL_STATES } from "./transitions.ts";
 import { classifyCost, type PriceMetadata, type TokenCounts } from "../telemetry/ledger.ts";
 import { transitionPhase, TransitionRejected } from "./state.ts";
 
+/** Identifies one `/korwf run` invocation, printed to the user and carried on everything it starts. */
+export type RunId = string & { readonly __brand: "RunId" };
+
 export interface RunEstimatePhase {
   readonly phaseId: PhaseId;
   readonly tasks: number;
