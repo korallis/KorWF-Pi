@@ -108,3 +108,109 @@ describe("AC1: unapproved phase refused with reason", () => {
     expect(store.phases.require(PH).gateStatus).toBe("pending");
   });
 });
+
+describe("the estimate is shown BEFORE work begins", () => {
+  it("confirm receives the estimate text, and nothing starts until it answers", async () => {
+    const store = freshStore("ready");
+    let confirmBody = "";
+    let phaseStatusWhenAsked: string | null = null;
+    await runCommand({
+      store,
+      workflowId: WF,
+      target: "all",
+      now: () => AT,
+      newId,
+      confirm: (_title, body) => {
+        confirmBody = body;
+        phaseStatusWhenAsked = store.phases.require(PH).gateStatus;
+        return true;
+      },
+    });
+    expect(confirmBody).toMatch(/Cost estimate/);
+    expect(phaseStatusWhenAsked).toBe("pending");
+    expect(store.phases.require(PH).gateStatus).toBe("running");
+  });
+
+  it("declining starts nothing (a decline that spent something is worthless as a decline)", async () => {
+    const store = freshStore("ready");
+    const outcome = await runCommand({
+      store,
+      workflowId: WF,
+      target: "all",
+      now: () => AT,
+      newId,
+      confirm: () => false,
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.message).toMatch(/Declined/);
+    expect(store.phases.require(PH).gateStatus).toBe("pending");
+  });
+
+  it("a confirm that throws is treated as a decline, not a hang or a grant", async () => {
+    const store = freshStore("ready");
+    const outcome = await runCommand({
+      store,
+      workflowId: WF,
+      target: "all",
+      now: () => AT,
+      newId,
+      confirm: () => {
+        throw new Error("dialog closed");
+      },
+    });
+    expect(outcome.ok).toBe(false);
+    expect(store.phases.require(PH).gateStatus).toBe("pending");
+  });
+});
+
+describe("AC2: estimate over cap refused unless approved", () => {
+  it("refuses when the estimate exceeds the workflow's budget cap", async () => {
+    const store = freshStore("ready");
+    let confirmCalled = false;
+    const outcome = await runCommand({
+      store,
+      workflowId: WF,
+      target: "all",
+      now: () => AT,
+      newId,
+      confirm: () => {
+        confirmCalled = true;
+        return true;
+      },
+      maxSpendUsd: 1,
+      tokensForTask: () => ({ inputTokens: 1_000_000, outputTokens: 1_000_000 }),
+      priceForTask: () => ({ inputPerToken: 0.00001, outputPerToken: 0.00001 }),
+    });
+    expect(outcome.ok).toBe(false);
+    expect(outcome.message).toMatch(/exceeds the/i);
+    expect(confirmCalled).toBe(false);
+    expect(store.phases.require(PH).gateStatus).toBe("pending");
+  });
+
+  it("a granted spend_over_estimate approval overrides the refusal", async () => {
+    const store = freshStore("ready");
+    store.approvals.insert(
+      makeApproval({
+        id: "ap-spend" as ApprovalId,
+        workflowId: WF,
+        scope: { kind: "workflow" },
+        taskRevision: null,
+        planRevision: 1,
+        permittedAction: "spend_over_estimate",
+      }),
+    );
+    const outcome = await runCommand({
+      store,
+      workflowId: WF,
+      target: "all",
+      now: () => AT,
+      newId,
+      confirm: () => true,
+      maxSpendUsd: 1,
+      tokensForTask: () => ({ inputTokens: 1_000_000, outputTokens: 1_000_000 }),
+      priceForTask: () => ({ inputPerToken: 0.00001, outputPerToken: 0.00001 }),
+    });
+    expect(outcome.ok).toBe(true);
+    expect(store.phases.require(PH).gateStatus).toBe("running");
+  });
+});
