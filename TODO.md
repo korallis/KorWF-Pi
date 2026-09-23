@@ -88,9 +88,9 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [x] Route identity: opaque `routeId` per (provider, model); availability, health and outcomes keyed per route, cards per model; rename rule in ADR 0011 (#125).
 - [x] Fallback: Jev ranks substitutes for the task profile; "none adequate" → pause. (#63)
 - [ ] Mid-task handoff packet with intact worktree; restart alternative per task-kind policy.
-- [ ] Recovery to primary at next task boundary; no per-task re-probe.
-- [ ] Anti-oscillation dwell; all-capped → phase pause and auto-resume.
-- [ ] Expensive-substitute policy (prefer-wait threshold, budget check).
+- [x] Recovery to primary at next task boundary; no per-task re-probe.
+- [x] Anti-oscillation dwell; all-capped → phase pause and auto-resume.
+- [x] Expensive-substitute policy (prefer-wait threshold, budget check).
 - [x] Static fallback order when Jev unavailable. (#63)
 - [ ] Attempt records requested/used model and reason; `status` and `models` surface switches and caps.
 - [ ] Opt-in main-session routing at safe boundaries only.
