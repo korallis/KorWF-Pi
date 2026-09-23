@@ -412,7 +412,7 @@ interface PassResult {
 }
 
 /**
- * Claim, reserve and launch every task the plan selected, in order, adding
+ * Reserve, claim and launch every task the plan selected, in order, adding
  * each to `inFlight`. Returns how many actually started plus the holds that
  * only became visible at claim time (a lost race, a refused reservation).
  *
@@ -434,6 +434,26 @@ function startPass(
       holds.push({ taskId, reason: "cancelled", detail: "cancellation requested; no new dispatch" });
       continue;
     }
+    const selected = params.store.tasks.get(taskId);
+    if (selected === undefined) {
+      holds.push({ taskId, reason: "claim_lost", detail: `task ${taskId} no longer exists` });
+      continue;
+    }
+
+    // The atomic reservation is taken *before* the status claim, so a refusal
+    // leaves the task exactly where it was: `ready`, and dispatchable on a
+    // later pass once budget frees up. Claiming first would strand it in
+    // `running` with no worker, and `state.ts` has no edge back to `ready`.
+    const reservation = params.reserve(selected);
+    if (reservation === null) {
+      holds.push({
+        taskId,
+        reason: "budget_refused",
+        detail: `budget reservation refused for task ${taskId}; not dispatched`,
+      });
+      continue;
+    }
+
     const claim = claimTask({
       store: params.store,
       taskId,
@@ -444,22 +464,13 @@ function startPass(
       dispatchAllowed: params.dispatchAllowed,
     });
     if (!claim.ok || claim.task === null) {
+      // Lost the race (or a guard refused): give the budget straight back so
+      // a refused claim cannot shrink the remaining budget.
+      reservation.release();
       holds.push({ taskId, reason: "claim_lost", detail: claim.reason ?? "claim refused" });
       continue;
     }
     const task = claim.task;
-
-    // The atomic reservation is taken *after* the claim, so a refusal cannot
-    // leave budget reserved for a task another coordinator is running.
-    const reservation = params.reserve(task);
-    if (reservation === null) {
-      holds.push({
-        taskId,
-        reason: "budget_refused",
-        detail: `budget reservation refused for task ${taskId}; not dispatched`,
-      });
-      continue;
-    }
 
     const settled = startDispatch(params, task, reservation);
     inFlight.set(taskId, { taskId, settled });

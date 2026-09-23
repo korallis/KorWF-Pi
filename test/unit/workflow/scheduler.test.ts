@@ -76,18 +76,135 @@ function okOutcome(task: Task): DispatchOutcome {
   return { taskId: task.id, ok: true };
 }
 
-describe("scheduler", () => {
-  it("is importable", () => {
-    expect(typeof runScheduler).toBe("function");
-    expect(typeof planPass).toBe("function");
-    expect(typeof claimTask).toBe("function");
-    expect(conflictsOnOwnership).toBeTypeOf("function");
-    expect(UNCERTAIN_COUPLING(makeTask(), makeTask())).toBe("unknown");
-    expect(okOutcome(makeTask()).ok).toBe(true);
-    expect(independent()).toBe("independent");
-    expect(insertTask).toBeTypeOf("function");
-    expect(freshStore).toBeTypeOf("function");
-    expect(actor.kind).toBe("engine");
-    expect(now()).toBe(AT);
+/** A deferred promise, so a test controls exactly when a worker finishes. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = (): void => {};
+  const promise = new Promise<void>((r) => {
+    resolve = () => r();
+  });
+  return { promise, resolve };
+}
+
+/** The hooks every run needs, with budget and authorisation permissive. */
+function baseParams(store: Store): {
+  store: Store;
+  workflowId: WorkflowId;
+  phaseIds: readonly PhaseId[];
+  actor: typeof actor;
+  now: () => string;
+  newId: () => string;
+  authorizationCurrent: () => boolean;
+  dispatchAllowed: () => boolean;
+  reserve: () => { release: () => void };
+} {
+  return {
+    store,
+    workflowId: WF,
+    phaseIds: [PH],
+    actor,
+    now,
+    newId,
+    authorizationCurrent: () => true,
+    dispatchAllowed: () => true,
+    reserve: () => ({ release: () => {} }),
+  };
+}
+
+describe("AC2: concurrency never exceeds the cap", () => {
+  it("never runs more workers at once than the configured limit", async () => {
+    const store = freshStore();
+    for (let i = 0; i < 12; i += 1) insertTask(store, `t${i}`);
+
+    let live = 0;
+    let peak = 0;
+    const gates: (() => void)[] = [];
+
+    const promise = runScheduler({
+      ...baseParams(store),
+      limit: 3,
+      coupling: independent,
+      dispatch: async (task: Task) => {
+        live += 1;
+        peak = Math.max(peak, live);
+        const gate = deferred();
+        gates.push(gate.resolve);
+        await gate.promise;
+        live -= 1;
+        return okOutcome(task);
+      },
+    });
+
+    // Release workers one at a time; the loop refills up to the cap each time.
+    for (let released = 0; released < 12; released += 1) {
+      // Let the loop start whatever it can before releasing the next worker.
+      await new Promise((r) => setImmediate(r));
+      const next = gates.shift();
+      if (next === undefined) break;
+      next();
+    }
+    // Drain anything started after the last release.
+    while (gates.length > 0) {
+      await new Promise((r) => setImmediate(r));
+      gates.shift()?.();
+    }
+
+    const result = await promise;
+    expect(peak).toBeLessThanOrEqual(3);
+    expect(result.peakConcurrency).toBeLessThanOrEqual(3);
+    expect(result.dispatched).toHaveLength(12);
+  });
+
+  it("a limit of 1 is a sequential run: two workers are never live together", async () => {
+    const store = freshStore();
+    for (let i = 0; i < 4; i += 1) insertTask(store, `s${i}`);
+
+    let live = 0;
+    let peak = 0;
+    const result = await runScheduler({
+      ...baseParams(store),
+      limit: 1,
+      coupling: independent,
+      dispatch: async (task: Task) => {
+        live += 1;
+        peak = Math.max(peak, live);
+        await new Promise((r) => setTimeout(r, 1));
+        live -= 1;
+        return okOutcome(task);
+      },
+    });
+    expect(peak).toBe(1);
+    expect(result.dispatched).toHaveLength(4);
+  });
+
+  it("planPass holds ready tasks over the cap with reason concurrency_cap", () => {
+    const store = freshStore();
+    insertTask(store, "a");
+    insertTask(store, "b");
+    insertTask(store, "c");
+
+    const plan = planPass({ store, phaseIds: [PH], inFlight: [], limit: 2, coupling: independent });
+    expect(plan.dispatch).toHaveLength(2);
+    expect(plan.held.map((h) => h.reason)).toEqual(["concurrency_cap"]);
+  });
+
+  it("a refused budget reservation holds the task instead of dispatching it", async () => {
+    const store = freshStore();
+    insertTask(store, "a");
+    insertTask(store, "b");
+
+    let granted = 0;
+    const result = await runScheduler({
+      ...baseParams(store),
+      limit: null,
+      coupling: independent,
+      reserve: () => {
+        granted += 1;
+        return granted === 1 ? { release: () => {} } : null;
+      },
+      dispatch: async (task: Task) => okOutcome(task),
+    });
+
+    expect(result.dispatched).toHaveLength(1);
+    expect(result.held.some((h) => h.reason === "budget_refused")).toBe(true);
   });
 });
