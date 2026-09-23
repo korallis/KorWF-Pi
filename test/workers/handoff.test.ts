@@ -1,18 +1,24 @@
 /**
  * Tests for src/workers/handoff.ts (issue #64; PLAN §3.D "Mid-task: hand off
  * with an explicit handoff packet and intact worktree (default), or restart
- * the task, per task-kind policy").
+ * the task, per task-kind policy"; PLAN §7 high-risk classes).
  *
  * AC: "Handoff keeps the worktree's uncommitted changes (test)."
  * AC: "Restart discards them to the last checkpoint and says so in the audit."
+ *
+ * A restart is a `destructive_git` act (PLAN §7): `stop` in every mode,
+ * grantable only by a `user` actor. These tests prove `applyRestart` never
+ * discards without a live, user-granted approval — reused or superseded
+ * proposals refuse exactly like any other rollback (#54).
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openStore, type Store } from "../../src/storage/db.ts";
 import { takeCheckpoint } from "../../src/workflow/checkpoint.ts";
+import { grantApproval } from "../../src/workflow/approvals.ts";
 import { worktreeIdentity } from "../../src/git/checkpoint.ts";
-import { applyHandoff, applyRestart, midTaskPolicyFor } from "../../src/workers/handoff.ts";
+import { applyHandoff, applyRestart, midTaskPolicyFor, proposeRestart } from "../../src/workers/handoff.ts";
 import { buildHandoffPacket } from "../../src/memory/handoff-packet.ts";
 import { OutboundPolicy } from "../../src/security/outbound.ts";
 import { defaultConfig } from "../../src/config/load.ts";
@@ -24,6 +30,7 @@ import type { IsoTimestamp, TaskId, WorkflowId } from "../../src/storage/records
 const AT = "2026-01-01T00:00:00.000Z" as IsoTimestamp;
 const WF = "wf-1" as WorkflowId;
 const TK = "tk-1" as TaskId;
+const SESSION = "session-1";
 
 let counter = 0;
 const newId = () => `id-${(counter += 1)}`;
@@ -62,6 +69,21 @@ function freshWorktree(): { main: TestRepo; worktree: string } {
     }
   });
   return { main, worktree };
+}
+
+/** Take a checkpoint of the task worktree, ready to propose restarting to. */
+function checkpoint(store: Store, fx: { main: TestRepo; worktree: string }, attemptId: string) {
+  return takeCheckpoint({
+    store,
+    workflowId: WF,
+    cwd: fx.worktree,
+    kind: "pre_attempt",
+    attemptId,
+    taskId: TK,
+    now,
+    newId,
+    mainTree: worktreeIdentity(fx.main.path),
+  });
 }
 
 describe("midTaskPolicyFor", () => {
@@ -118,26 +140,27 @@ describe("AC: handoff keeps the worktree's uncommitted changes", () => {
   });
 });
 
-describe("AC: restart discards uncommitted work to the last checkpoint and audits it", () => {
-  it("restores the worktree to the checkpoint and drops files created after it", () => {
+describe("AC: restart discards uncommitted work to the last checkpoint, only with an approval, and audits it", () => {
+  it("(a) with no approval, applyRestart discards nothing — every uncommitted file survives", () => {
     const store = freshStore();
     const fx = freshWorktree();
     const oldAttempt = store.attempts.insert(makeAttempt({ taskId: TK }));
+    const taken = checkpoint(store, fx, oldAttempt.id);
 
-    const taken = takeCheckpoint({
+    // Work done after the checkpoint that an *approved* restart would discard.
+    const latePath = join(fx.worktree, "after-checkpoint.ts");
+    writeFileSync(latePath, "export const late = true;\n");
+
+    const proposed = proposeRestart({
       store,
-      workflowId: WF,
-      cwd: fx.worktree,
-      kind: "pre_attempt",
-      attemptId: oldAttempt.id,
-      taskId: TK,
       now,
       newId,
+      workflowId: WF,
+      oldAttempt,
+      checkpointId: taken.row.checkpointId,
       mainTree: worktreeIdentity(fx.main.path),
     });
-
-    // Work done after the checkpoint that a restart must discard.
-    writeFileSync(join(fx.worktree, "after-checkpoint.ts"), "export const late = true;\n");
+    expect(proposed.refused).toBe(false);
 
     const result = applyRestart({
       store,
@@ -145,38 +168,48 @@ describe("AC: restart discards uncommitted work to the last checkpoint and audit
       newId,
       workflowId: WF,
       oldAttempt,
-      sessionId: "session-1",
+      proposalId: proposed.proposal.proposalId,
+      sessionId: SESSION,
       role: oldAttempt.role,
       workerId: "worker-2",
       substituteModel: "acme/substitute",
-      lastCheckpointCommit: taken.row.commitSha,
-      worktreeCwd: fx.worktree,
       mainTree: worktreeIdentity(fx.main.path),
     });
 
-    expect(result.discard.kind).toBe("discarded");
-    expect(existsSync(join(fx.worktree, "after-checkpoint.ts"))).toBe(false);
-    expect(result.newAttempt.handedOffFromAttemptId).toBeNull();
-
-    const audited = store.actions.forSubject("task" as never, TK);
-    expect(audited.some((a) => a.summary.includes("discarded"))).toBe(true);
-    expect(audited.some((a) => a.summary.includes("midTaskPolicy=restart"))).toBe(true);
+    expect(result.kind).toBe("pending_approval");
+    // Nothing was touched: the file created after the checkpoint is untouched.
+    expect(existsSync(latePath)).toBe(true);
+    expect(readFileSync(latePath, "utf8")).toContain("late = true");
+    // No new attempt was opened either — the restart is proposed, not performed.
+    expect(store.attempts.forTask(TK)).toHaveLength(1);
   });
 
-  it("never restarts into the user's main tree", () => {
+  it("(b) with a granted approval, applyRestart discards to the checkpoint and records the action", () => {
     const store = freshStore();
     const fx = freshWorktree();
     const oldAttempt = store.attempts.insert(makeAttempt({ taskId: TK }));
-    const taken = takeCheckpoint({
+    const taken = checkpoint(store, fx, oldAttempt.id);
+
+    const latePath = join(fx.worktree, "after-checkpoint.ts");
+    writeFileSync(latePath, "export const late = true;\n");
+
+    const proposed = proposeRestart({
       store,
-      workflowId: WF,
-      cwd: fx.worktree,
-      kind: "pre_attempt",
-      attemptId: oldAttempt.id,
-      taskId: TK,
       now,
       newId,
+      workflowId: WF,
+      oldAttempt,
+      checkpointId: taken.row.checkpointId,
+      mainTree: worktreeIdentity(fx.main.path),
     });
+    const grant = grantApproval({
+      store,
+      requestId: proposed.requestId as string,
+      actor: { kind: "user", identity: "lee" },
+      now: AT,
+      newId,
+    });
+    expect(grant.granted).toBe(true);
 
     const result = applyRestart({
       store,
@@ -184,15 +217,172 @@ describe("AC: restart discards uncommitted work to the last checkpoint and audit
       newId,
       workflowId: WF,
       oldAttempt,
-      sessionId: "session-1",
+      proposalId: proposed.proposal.proposalId,
+      sessionId: SESSION,
       role: oldAttempt.role,
       workerId: "worker-2",
       substituteModel: "acme/substitute",
-      lastCheckpointCommit: taken.row.commitSha,
+      mainTree: worktreeIdentity(fx.main.path),
+    });
+
+    expect(result.kind).toBe("restarted");
+    if (result.kind !== "restarted") return;
+    expect(existsSync(latePath)).toBe(false);
+    expect(result.newAttempt.handedOffFromAttemptId).toBeNull();
+    expect(result.newAttempt.usedModel).toBe("acme/substitute");
+
+    const audited = store.actions.forSubject("task", TK);
+    expect(audited.some((a) => a.summary.includes("discarded"))).toBe(true);
+    expect(audited.some((a) => a.summary.includes("midTaskPolicy=restart"))).toBe(true);
+    expect(audited.some((a) => a.approvalId !== null)).toBe(true);
+  });
+
+  it("(c) a reused (already-applied) approval proposal is refused; a second restart cannot replay it", () => {
+    const store = freshStore();
+    const fx = freshWorktree();
+    const oldAttempt = store.attempts.insert(makeAttempt({ taskId: TK }));
+    const taken = checkpoint(store, fx, oldAttempt.id);
+
+    const proposed = proposeRestart({
+      store,
+      now,
+      newId,
+      workflowId: WF,
+      oldAttempt,
+      checkpointId: taken.row.checkpointId,
+      mainTree: worktreeIdentity(fx.main.path),
+    });
+    grantApproval({
+      store,
+      requestId: proposed.requestId as string,
+      actor: { kind: "user", identity: "lee" },
+      now: AT,
+      newId,
+    });
+
+    const first = applyRestart({
+      store,
+      now,
+      newId,
+      workflowId: WF,
+      oldAttempt,
+      proposalId: proposed.proposal.proposalId,
+      sessionId: SESSION,
+      role: oldAttempt.role,
+      workerId: "worker-2",
+      substituteModel: "acme/substitute",
+      mainTree: worktreeIdentity(fx.main.path),
+    });
+    expect(first.kind).toBe("restarted");
+
+    // A second call against the same (now-applied) proposal must not replay.
+    const second = applyRestart({
+      store,
+      now,
+      newId,
+      workflowId: WF,
+      oldAttempt,
+      proposalId: proposed.proposal.proposalId,
+      sessionId: "session-forked",
+      role: oldAttempt.role,
+      workerId: "worker-3",
+      substituteModel: "acme/substitute",
+      mainTree: worktreeIdentity(fx.main.path),
+    });
+    expect(second.kind).toBe("pending_approval");
+    if (second.kind !== "pending_approval") return;
+    expect(second.reason).toBe("proposal_not_open");
+  });
+
+  it("a non-user actor cannot grant the approval a restart needs", () => {
+    const store = freshStore();
+    const fx = freshWorktree();
+    const oldAttempt = store.attempts.insert(makeAttempt({ taskId: TK }));
+    const taken = checkpoint(store, fx, oldAttempt.id);
+
+    const proposed = proposeRestart({
+      store,
+      now,
+      newId,
+      workflowId: WF,
+      oldAttempt,
+      checkpointId: taken.row.checkpointId,
+      mainTree: worktreeIdentity(fx.main.path),
+    });
+    const grant = grantApproval({
+      store,
+      requestId: proposed.requestId as string,
+      actor: { kind: "policy", identity: "auto" },
+      now: AT,
+      newId,
+    });
+    expect(grant.granted).toBe(false);
+
+    const result = applyRestart({
+      store,
+      now,
+      newId,
+      workflowId: WF,
+      oldAttempt,
+      proposalId: proposed.proposal.proposalId,
+      sessionId: SESSION,
+      role: oldAttempt.role,
+      workerId: "worker-2",
+      substituteModel: "acme/substitute",
+      mainTree: worktreeIdentity(fx.main.path),
+    });
+    expect(result.kind).toBe("pending_approval");
+    if (result.kind !== "pending_approval") return;
+    expect(result.reason).toBe("no_approval");
+  });
+
+  it("never restarts into the user's main tree, even with an approval", () => {
+    const store = freshStore();
+    const fx = freshWorktree();
+    const oldAttempt = store.attempts.insert(makeAttempt({ taskId: TK }));
+    // Checkpoint the main tree itself, so `targetIsMainTree` is real, not simulated.
+    const taken = takeCheckpoint({
+      store,
+      workflowId: WF,
+      cwd: fx.main.path,
+      kind: "pre_attempt",
+      attemptId: oldAttempt.id,
+      taskId: TK,
+      now,
+      newId,
+    });
+
+    const proposed = proposeRestart({
+      store,
+      now,
+      newId,
+      workflowId: WF,
+      oldAttempt,
+      checkpointId: taken.row.checkpointId,
       worktreeCwd: fx.main.path,
       mainTree: worktreeIdentity(fx.main.path),
     });
+    // Refused at birth: never even queued for approval (PLAN §3.G). The
+    // proposal row itself already carries `target_is_main_tree`.
+    expect(proposed.refused).toBe(true);
+    expect(proposed.proposal.status).toBe("refused");
+    expect(proposed.proposal.reasonCode).toBe("target_is_main_tree");
 
-    expect(result.discard).toEqual({ kind: "skipped", reason: "target_is_main_tree" });
+    const result = applyRestart({
+      store,
+      now,
+      newId,
+      workflowId: WF,
+      oldAttempt,
+      proposalId: proposed.proposal.proposalId,
+      sessionId: SESSION,
+      role: oldAttempt.role,
+      workerId: "worker-2",
+      substituteModel: "acme/substitute",
+      mainTree: worktreeIdentity(fx.main.path),
+    });
+    // Already refused (not `proposed`/`approved`): applyRestart cannot open
+    // it either, so nothing is discarded via this path.
+    expect(result.kind).toBe("pending_approval");
   });
 });

@@ -13,10 +13,16 @@
  *    linked to the old one via `handedOffFromAttemptId`, carrying an
  *    explicit `HandoffPacket` (`src/memory/handoff-packet.ts`) built from
  *    the old attempt's evidence and progress notes.
- *  - `restart`: the worktree is rolled back to the task's last checkpoint
- *    (going through `src/workflow/checkpoint.ts`'s approved-rollback path —
- *    a restart is a destructive act like any other) and a fresh Attempt is
- *    opened with no packet; the discard is written to the audit log.
+ *  - `restart`: the worktree is rolled back to the task's last checkpoint,
+ *    but ONLY through `src/workflow/checkpoint.ts`'s approved-rollback path
+ *    (`proposeRollback`/`applyRollback`, #54). `destructive_git` is a PLAN
+ *    §7 high-risk class — `stop` in every mode, grantable only by a `user`
+ *    actor (#49) — and a task-kind policy of `restart` is a *reason to ask*,
+ *    never a substitute for the approval itself. `proposeRestart` only ever
+ *    queues the request; `applyRestart` re-reads the approval at call time
+ *    and refuses (discarding nothing) when it is missing, reused, or
+ *    superseded. Only once `applyRollback` has actually restored the tree is
+ *    the fresh Attempt opened, with no packet.
  *
  * Which policy applies is read from `models.fallback.midTaskPolicy` (config,
  * `TaskKind` keyed, `default` always present) — never hardcoded here.
@@ -30,14 +36,13 @@ import { OutboundPolicy, type FilteredPayload } from "../security/outbound.ts";
 import { canonicalJson } from "../storage/repos/base.ts";
 import { recordCompletedAction } from "../workflow/reconcile.ts";
 import { actionIdFor } from "../storage/action-log.ts";
+import type { GitEnvRunner, WorktreeIdentity } from "../git/checkpoint.ts";
 import {
-  restoreCheckpointTree,
-  worktreeIdentity,
-  CheckpointError,
-  type GitEnvRunner,
-  type WorktreeIdentity,
-} from "../git/checkpoint.ts";
-import { isMainTree } from "../workflow/checkpoint.ts";
+  proposeRollback,
+  applyRollback,
+  type RollbackRefusal,
+  type ProposedRollback,
+} from "../workflow/checkpoint.ts";
 
 /** Resolve the policy for one task kind, falling back to `default`. */
 export function midTaskPolicyFor(
@@ -52,11 +57,6 @@ export interface HandoffDeps {
   readonly now: () => IsoTimestamp;
   readonly newId: () => string;
 }
-
-/** Result of applying a mid-task cap response. */
-export type MidTaskOutcome =
-  | { readonly kind: "handed_off"; readonly newAttempt: Attempt; readonly packet: HandoffPacket }
-  | { readonly kind: "restarted"; readonly newAttempt: Attempt; readonly discardedFrom: AttemptId };
 
 /**
  * Run the packet through the one outbound policy (#28) before it can reach
@@ -120,49 +120,96 @@ export function applyHandoff(options: ApplyHandoffOptions): { readonly newAttemp
   return { newAttempt, packet: options.packet, filtered };
 }
 
+/** Inputs for {@link proposeRestart}. */
+export interface ProposeRestartOptions extends HandoffDeps {
+  readonly workflowId: string;
+  readonly oldAttempt: Attempt;
+  readonly checkpointId: string;
+  readonly worktreeCwd?: string;
+  readonly mainTree?: WorktreeIdentity | null;
+  readonly runner?: GitEnvRunner;
+  readonly ttlMs?: number | null;
+}
+
+/**
+ * Propose `restart`: queue the `destructive_git` approval request that
+ * discarding uncommitted work down to `checkpointId` requires. **This never
+ * discards anything.** It is a thin, named wrapper over #54's
+ * `proposeRollback` so that a mid-task restart is visibly the same kind of
+ * act as any other rollback, carrying the same "what would be lost" impact
+ * and going through the same high-risk approval class — a task-kind policy
+ * of `restart` is a reason to *ask*, not an authorisation.
+ */
+export function proposeRestart(options: ProposeRestartOptions): ProposedRollback {
+  return proposeRollback({
+    store: options.store,
+    workflowId: options.workflowId as never,
+    checkpointId: options.checkpointId,
+    taskId: options.oldAttempt.taskId,
+    attemptId: options.oldAttempt.id,
+    now: options.now,
+    newId: options.newId,
+    ...(options.worktreeCwd === undefined ? {} : { cwd: options.worktreeCwd }),
+    ...(options.mainTree === undefined ? {} : { mainTree: options.mainTree }),
+    ...(options.runner === undefined ? {} : { runner: options.runner }),
+    ttlMs: options.ttlMs ?? null,
+  });
+}
+
 /** Inputs for {@link applyRestart}. */
 export interface ApplyRestartOptions extends HandoffDeps {
   readonly workflowId: string;
   readonly oldAttempt: Attempt;
+  readonly proposalId: string;
   readonly sessionId: string;
   readonly role: Attempt["role"];
   readonly workerId: string;
   readonly substituteModel: Attempt["usedModel"];
-  /** Last checkpoint for the task; discard is to here. `null` = nothing to discard to. */
-  readonly lastCheckpointCommit: string | null;
-  /** Worktree to discard uncommitted work in. Never the user's main tree (refused if it is). */
-  readonly worktreeCwd: string;
   readonly mainTree?: WorktreeIdentity | null;
   readonly runner?: GitEnvRunner;
 }
 
-/** What `applyRestart` did to the worktree. */
-export type RestartDiscard =
-  | { readonly kind: "discarded"; readonly changedPaths: readonly string[] }
-  | { readonly kind: "skipped"; readonly reason: "no_checkpoint" | "target_is_main_tree" | "not_a_repository" }; 
+/** Result of {@link applyRestart}. */
+export type ApplyRestartResult =
+  | { readonly kind: "restarted"; readonly newAttempt: Attempt; readonly discardedFrom: AttemptId; readonly changedPaths: readonly string[] }
+  | { readonly kind: "pending_approval"; readonly reason: RollbackRefusal; readonly detail: string };
 
 /**
- * Apply `restart`: uncommitted work in flight is discarded down to the
- * task's last checkpoint and a fresh Attempt is opened with no packet. The
- * discard itself is not this function's job to perform on disk — that is
- * `src/workflow/checkpoint.ts`'s approved-rollback path, since a restart is
- * a `destructive_git` act like any other and needs the same approval and
- * replay guard. This records the *fact* of the discard on the audit log
- * (`recordCompletedAction`) so the choice is visible even before any
- * approval completes, and opens the new attempt clean.
+ * Apply `restart`, only through the approved-rollback path (#54).
+ *
+ * `applyRollback` re-reads the `Approval` rows at call time — not a boolean
+ * this function is handed — and independently re-checks the main-tree guard
+ * and the #42 replay receipt. **No branch of this function discards
+ * anything without `applyRollback` reporting `applied: true` first.** With
+ * no approval (missing, reused, or superseded), nothing is touched and this
+ * returns `pending_approval`: the restart is proposed, not performed. Only
+ * once the tree has actually been restored is a fresh Attempt opened, with
+ * no packet, and `handedOffFromAttemptId: null`.
  */
-export function applyRestart(options: ApplyRestartOptions): { readonly newAttempt: Attempt; readonly discardedFrom: AttemptId; readonly discard: RestartDiscard } {
+export function applyRestart(options: ApplyRestartOptions): ApplyRestartResult {
   const { store, oldAttempt } = options;
+  const outcome = applyRollback({
+    store,
+    workflowId: options.workflowId as never,
+    proposalId: options.proposalId,
+    sessionId: options.sessionId,
+    now: options.now,
+    newId: options.newId,
+    ...(options.mainTree === undefined ? {} : { mainTree: options.mainTree }),
+    ...(options.runner === undefined ? {} : { runner: options.runner }),
+  });
+
+  if (!outcome.applied) {
+    return { kind: "pending_approval", reason: outcome.reason, detail: outcome.detail };
+  }
+
   const at = options.now();
   const attemptId = options.newId() as AttemptId;
-
-  const discard = discardToLastCheckpoint(options);
-
   const actionId = actionIdFor({
     workflowId: options.workflowId,
     kind: "mid_task_restart",
     subjectId: oldAttempt.taskId,
-    discriminator: { fromAttemptId: oldAttempt.id, toAttemptId: attemptId },
+    discriminator: { fromAttemptId: oldAttempt.id, toAttemptId: attemptId, proposalId: options.proposalId },
   });
   store.write(() =>
     recordCompletedAction({
@@ -173,12 +220,13 @@ export function applyRestart(options: ApplyRestartOptions): { readonly newAttemp
       sessionId: options.sessionId,
       summary:
         `restarted task ${oldAttempt.taskId} on cap; discarded uncommitted work from attempt ${oldAttempt.id} ` +
-        `to checkpoint ${options.lastCheckpointCommit ?? "none (no prior checkpoint)"} per midTaskPolicy=restart ` +
-        `(${discard.kind}${discard.kind === "skipped" ? `: ${discard.reason}` : `: ${discard.changedPaths.length} path(s) discarded`})`,
+        `via approved rollback proposal ${options.proposalId} per midTaskPolicy=restart ` +
+        `(${outcome.changedPaths.length} path(s) discarded)`,
       now: options.now,
       subjectKind: "task",
       subjectId: oldAttempt.taskId,
-      gitRevision: options.lastCheckpointCommit,
+      gitRevision: outcome.preservation.row.commitSha,
+      approvalId: outcome.proposal.approvalId,
       externalEffect: false,
     }),
   );
@@ -200,32 +248,5 @@ export function applyRestart(options: ApplyRestartOptions): { readonly newAttemp
     handedOffFromAttemptId: null,
   };
   store.write(() => store.attempts.insert(newAttempt));
-  return { newAttempt, discardedFrom: oldAttempt.id, discard };
-}
-
-/**
- * Actually discard uncommitted work in `options.worktreeCwd` down to
- * `options.lastCheckpointCommit`. Refuses (returns `skipped`, never throws)
- * when there is nothing to discard to, the path is not a repository, or the
- * path resolves to the user's main tree — the same main-tree guard
- * `src/workflow/checkpoint.ts` uses, applied here too because a restart is
- * exactly the kind of destructive act that guard exists for.
- */
-function discardToLastCheckpoint(options: ApplyRestartOptions): RestartDiscard {
-  if (options.lastCheckpointCommit === null) return { kind: "skipped", reason: "no_checkpoint" };
-  const identity = worktreeIdentity(options.worktreeCwd, options.runner);
-  if (identity === null) return { kind: "skipped", reason: "not_a_repository" };
-  if (isMainTree(identity, options.mainTree ?? null)) return { kind: "skipped", reason: "target_is_main_tree" };
-  try {
-    const restored = restoreCheckpointTree({
-      cwd: identity.toplevel,
-      commit: options.lastCheckpointCommit,
-      preservationId: options.newId(),
-      ...(options.runner === undefined ? {} : { runner: options.runner }),
-    });
-    return { kind: "discarded", changedPaths: restored.changedPaths };
-  } catch (error) {
-    if (error instanceof CheckpointError) return { kind: "skipped", reason: "not_a_repository" };
-    throw error;
-  }
+  return { kind: "restarted", newAttempt, discardedFrom: oldAttempt.id, changedPaths: outcome.changedPaths };
 }
