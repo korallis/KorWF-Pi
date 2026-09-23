@@ -29,6 +29,13 @@ import type { Ownership, Revision, Task, TaskId } from "../storage/records.ts";
 import { isReadOnlyRole, type RoleId } from "../workers/roles.ts";
 import { worktreeIdentity, type GitEnvRunner, type WorktreeIdentity } from "../git/index.ts";
 import type { CouplingSignal, CouplingVerdict } from "./scheduler.ts";
+import { ask, type AskContext } from "../decisions/ask.ts";
+import {
+  COUPLING_FALLBACK_VERDICT,
+  tasksCouplingQuestion,
+  type CouplingState,
+  type CouplingTaskView,
+} from "../decisions/questions/coupling.ts";
 
 /** Why two tasks may not run at the same time; `null` when they may. */
 export type SerialReason = "ownership_conflict" | "coupled" | "coupling_uncertain";
@@ -659,4 +666,60 @@ export function checkRoleWorkerTree(input: RoleWorkerTreeCheck): WorkerTreeVerdi
   const worker = runner === undefined ? worktreeIdentity(input.workerCwd) : worktreeIdentity(input.workerCwd, runner);
   const main = runner === undefined ? worktreeIdentity(input.projectRoot) : worktreeIdentity(input.projectRoot, runner);
   return checkWorkerTree({ worker, main, writes: !isReadOnlyRole(input.role) });
+}
+
+// ---------------------------------------------------------------------------
+// Filling the cache from Jev (issue #76; composes with #27's ask layer)
+// ---------------------------------------------------------------------------
+
+/** The view of a task `tasks.coupling@1` is asked about. */
+export function couplingViewOf(task: Task): CouplingTaskView {
+  return {
+    id: task.id,
+    goal: task.goal,
+    acceptanceCriteria: task.acceptanceCriteria.map((criterion) => criterion.text),
+    ownershipPaths: task.ownership.paths,
+    ownershipComponents: task.ownership.components,
+  };
+}
+
+/**
+ * Ask `tasks.coupling@1` about every pair in `candidates` whose declared
+ * ownership is disjoint and that is not already cached, and store the
+ * answers.
+ *
+ * Pairs with a declared ownership overlap are **not asked about at all**:
+ * the deterministic check has already decided them and there is no answer
+ * that could change the outcome, so sending them would be wasted spend and
+ * a misleading trace. Every kind of failure — a throwing transport, a
+ * fallback, an abstention — is stored as `"unknown"`, which serialises.
+ * This function therefore never throws and never makes the plan less
+ * conservative than it was before it ran.
+ */
+export async function fillCouplingCache(
+  ctx: AskContext,
+  candidates: readonly Task[],
+  cache: CouplingCache,
+): Promise<CouplingCache> {
+  for (let i = 0; i < candidates.length; i += 1) {
+    for (let j = i + 1; j < candidates.length; j += 1) {
+      const a = candidates[i] as Task;
+      const b = candidates[j] as Task;
+      if (cache.has(a, b)) continue;
+      if (hasOwnershipOverlap(ownershipConflict(a, b))) continue;
+      cache.set(a, b, await askCoupling(ctx, a, b));
+    }
+  }
+  return cache;
+}
+
+/** One `tasks.coupling@1` call, degraded to `unknown` on any failure. */
+export async function askCoupling(ctx: AskContext, a: Task, b: Task): Promise<CachedCoupling> {
+  const state: CouplingState = { a: couplingViewOf(a), b: couplingViewOf(b) };
+  try {
+    const result = await ask(ctx, tasksCouplingQuestion, state);
+    return { verdict: result.value, source: result.key, decisionId: result.decisionId };
+  } catch {
+    return { verdict: COUPLING_FALLBACK_VERDICT, source: tasksCouplingQuestion.key, decisionId: null };
+  }
 }
