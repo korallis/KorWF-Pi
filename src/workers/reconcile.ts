@@ -14,8 +14,14 @@
  * receipts as the replay guard. The store still does the writing, and
  * `src/workflow/reconcile.ts` still owns session-vs-repo reconciliation.
  */
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Attempt, AttemptOutcome, IsoTimestamp } from "../storage/records.ts";
 import type { WorkerLiveness, WorkerProbe } from "../storage/reconcile.ts";
+import { isProcessAlive } from "../storage/lock.ts";
+
+/** Subdirectory of the storage root holding one marker per live attempt. */
+export const RUNTIME_DIR_NAME = "runtime";
 
 /** How an attempt's worker came to be gone. Maps onto #52's taxonomy. */
 export type InterruptionCause = "worker_died" | "process_killed" | "machine_crashed" | "still_running";
@@ -60,4 +66,93 @@ export interface InterruptedAttemptReport {
   readonly line: string;
 }
 
-export {};
+/**
+ * The crash-survivable half of an attempt: what the store cannot hold.
+ *
+ * The `attempt` row is written inside a transaction and says nothing about
+ * the operating system. The pid, the worktree and whether a cancellation was
+ * asked for are facts about a process, so they are written to a small file
+ * beside the database as they happen — a process that is SIGKILLed gets no
+ * chance to flush anything later.
+ */
+export interface AttemptRuntimeMarker {
+  readonly attemptId: string;
+  readonly taskId: string;
+  readonly workflowId: string;
+  /** Coordinator session that spawned the worker. */
+  readonly sessionId: string;
+  readonly pid: number;
+  readonly startedAt: string;
+  /** Absolute path of the attempt worktree, so reconciliation can find it. */
+  readonly worktreePath: string | null;
+  /** Set when a cancellation was requested before the process vanished. */
+  readonly cancellationRequestedAt: string | null;
+  /** Set when the worker's exit was actually observed by the coordinator. */
+  readonly exitObservedAt: string | null;
+  /** Exit code, when one was observed. */
+  readonly exitCode: number | null;
+}
+
+/** Directory holding runtime markers under the storage root. */
+export function attemptRuntimeDir(storageRoot: string): string {
+  return join(storageRoot, RUNTIME_DIR_NAME);
+}
+
+/** Path of one attempt's runtime marker. */
+export function attemptRuntimePath(storageRoot: string, attemptId: string): string {
+  return join(attemptRuntimeDir(storageRoot), `${attemptId}.json`);
+}
+
+/**
+ * Write (or overwrite) an attempt's runtime marker.
+ *
+ * Written to a temporary name and renamed, so a crash mid-write leaves
+ * either the previous marker or the new one, never a half-parsed file that
+ * reconciliation would have to guess about.
+ */
+export function writeAttemptRuntime(storageRoot: string, marker: AttemptRuntimeMarker): AttemptRuntimeMarker {
+  const dir = attemptRuntimeDir(storageRoot);
+  mkdirSync(dir, { recursive: true });
+  const target = attemptRuntimePath(storageRoot, marker.attemptId);
+  const temp = `${target}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(marker, null, 2)}\n`, "utf8");
+  renameSync(temp, target);
+  return marker;
+}
+
+/** Read one marker, or `null` when it is absent or unreadable. */
+export function readAttemptRuntime(storageRoot: string, attemptId: string): AttemptRuntimeMarker | null {
+  const target = attemptRuntimePath(storageRoot, attemptId);
+  if (!existsSync(target)) return null;
+  try {
+    return JSON.parse(readFileSync(target, "utf8")) as AttemptRuntimeMarker;
+  } catch {
+    // A corrupt marker is "we know nothing about this process", which is the
+    // `machine_crashed` reading — never an excuse to assume a clean exit.
+    return null;
+  }
+}
+
+/** Record that a cancellation was requested, so a later crash is not mislabelled. */
+export function markCancellationRequested(
+  storageRoot: string,
+  attemptId: string,
+  at: string,
+): AttemptRuntimeMarker | null {
+  const marker = readAttemptRuntime(storageRoot, attemptId);
+  if (marker === null) return null;
+  return writeAttemptRuntime(storageRoot, { ...marker, cancellationRequestedAt: at });
+}
+
+/** Record an observed worker exit. An attempt with this set did not crash unseen. */
+export function markExitObserved(
+  storageRoot: string,
+  attemptId: string,
+  at: string,
+  exitCode: number | null,
+): AttemptRuntimeMarker | null {
+  const marker = readAttemptRuntime(storageRoot, attemptId);
+  if (marker === null) return null;
+  return writeAttemptRuntime(storageRoot, { ...marker, exitObservedAt: at, exitCode });
+}
+
