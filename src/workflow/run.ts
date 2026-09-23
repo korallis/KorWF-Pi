@@ -273,3 +273,16 @@ export function stopRun(params: StopRunParams): readonly StopRunResult[] {
     }
   });
 }
+
+/**
+ * The persisted `Run` a phase currently carries, or `null` if it was never
+ * started through `/korwf run` (issue #74 Scope "attempts/phases started by
+ * that run carry it, so status can group by run rather than guessing").
+ * Reads `Phase.runId` — set once by `startRun` and never cleared by
+ * `stopRun` — so a paused phase still names the run a resume continues.
+ */
+export function runForPhase(store: Store, phaseId: PhaseId): ReturnType<Store["runs"]["get"]> {
+  const phase = store.phases.get(phaseId);
+  if (phase === undefined || phase.runId === null) return undefined;
+  return store.runs.get(phase.runId);
+}
