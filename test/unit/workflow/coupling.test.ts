@@ -7,10 +7,19 @@
  * - AC3 "independent + Jev independent → parallel" (the scheduler half of
  *   AC3 lives in `coupling-scheduler.test.ts`).
  */
-import { describe, it, expect } from "vitest";
-import type { Task, TaskId } from "../../../src/storage/records.ts";
+import { describe, it, expect, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import type { PhaseId, Task, TaskId, WorkflowId } from "../../../src/storage/records.ts";
 import {
+  assertWorkerTree,
   canRunConcurrently,
+  checkRoleWorkerTree,
+  checkWorkerTree,
+  couplingSignalFrom,
+  couplingViewOf,
+  fillCouplingCache,
+  WorkerTreeRefused,
   couplingKey,
   CouplingCache,
   describeOverlap,
@@ -23,7 +32,24 @@ import {
   segmentsIntersect,
   selectConcurrentBatch,
 } from "../../../src/workflow/coupling.ts";
-import { makeTask } from "../../helpers/records.ts";
+import { planPass } from "../../../src/workflow/scheduler.ts";
+import { openStore, type Store } from "../../../src/storage/db.ts";
+import { worktreeIdentity } from "../../../src/git/checkpoint.ts";
+import { DisabledJevTransport } from "../../../src/jev/disabled.ts";
+import { MockJevTransport } from "../../../src/jev/mock.ts";
+import type { AskContext } from "../../../src/decisions/ask.ts";
+import { makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
+import { makeTestRepo, type TestRepo } from "../../helpers/git-repo.ts";
+import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
+
+const AT = "2026-01-01T00:00:00.000Z";
+const WF = "wf-1" as WorkflowId;
+const PH = "ph-1" as PhaseId;
+
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  while (cleanups.length > 0) cleanups.pop()?.();
+});
 
 function task(id: string, paths: readonly string[], components: readonly string[] = []): Task {
   return makeTask({ id: id as TaskId, ownership: { paths, components } });
@@ -269,5 +295,95 @@ describe("the cache is keyed by the pair *and* the revisions it was judged at", 
     const signal = cache.signal();
     expect(signal(a, b)).toBe("independent");
     expect(signal({ ...a, revision: 9 }, b)).toBe("unknown");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PLAN §3.E: "a writing worker never works in the user's main tree"
+// ---------------------------------------------------------------------------
+
+/** The user's repository plus a linked worktree standing in for a task tree. */
+function repoWithWorktree(): { main: TestRepo; worktree: string } {
+  const main = makeTestRepo("korwf-coupling-main-");
+  cleanups.push(main.cleanup);
+  const dir: TempDir = makeTempDir("korwf-coupling-wt-");
+  cleanups.push(dir.cleanup);
+  const worktree = join(dir.path, "task");
+  main.git("worktree", "add", "-q", "-b", "korwf/coupling-task", worktree);
+  cleanups.push(() => {
+    try {
+      main.git("worktree", "remove", "--force", worktree);
+    } catch {
+      /* the temp dir is going away anyway */
+    }
+  });
+  return { main, worktree };
+}
+
+describe("a writing worker never works in the user's main tree", () => {
+  it("refuses a writing role in the main tree, naming the worktree remedy", () => {
+    const { main } = repoWithWorktree();
+    const verdict = checkRoleWorkerTree({ role: "coder", workerCwd: main.path, projectRoot: main.path });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe("is_main_tree");
+    expect(verdict.detail).toContain("worktree");
+  });
+
+  it("admits a writing role in a linked worktree of the same repository", () => {
+    const { main, worktree } = repoWithWorktree();
+    const verdict = checkRoleWorkerTree({ role: "coder", workerCwd: worktree, projectRoot: main.path });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.code).toBeNull();
+  });
+
+  it("refuses a linked worktree belonging to a different repository", () => {
+    const { worktree } = repoWithWorktree();
+    const other = makeTestRepo("korwf-coupling-other-");
+    cleanups.push(other.cleanup);
+    const verdict = checkRoleWorkerTree({ role: "coder", workerCwd: worktree, projectRoot: other.path });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe("different_repository");
+  });
+
+  it("refuses a directory that is not a git repository at all", () => {
+    const dir = makeTempDir("korwf-coupling-nonrepo-");
+    cleanups.push(dir.cleanup);
+    const { main } = repoWithWorktree();
+    const verdict = checkRoleWorkerTree({ role: "coder", workerCwd: dir.path, projectRoot: main.path });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.code).toBe("not_a_repository");
+  });
+
+  it("a read-only role (#69's scout/reviewer) may observe the user's main tree", () => {
+    const { main } = repoWithWorktree();
+    for (const role of ["scout", "reviewer"] as const) {
+      expect(checkRoleWorkerTree({ role, workerCwd: main.path, projectRoot: main.path }).ok).toBe(true);
+    }
+  });
+
+  it("every writing role is refused in the main tree, from the role table, not a list here", () => {
+    const { main } = repoWithWorktree();
+    for (const role of ["planner", "coder", "verifier", "integrator"] as const) {
+      expect(checkRoleWorkerTree({ role, workerCwd: main.path, projectRoot: main.path }).code).toBe("is_main_tree");
+    }
+  });
+
+  it("with no main tree to compare against, an unlinked tree is still refused", () => {
+    const { main } = repoWithWorktree();
+    expect(checkWorkerTree({ worker: worktreeIdentity(main.path), main: null, writes: true }).code).toBe(
+      "is_main_tree",
+    );
+  });
+
+  it("assertWorkerTree throws WorkerTreeRefused carrying the code", () => {
+    const { main } = repoWithWorktree();
+    const input = { worker: worktreeIdentity(main.path), main: worktreeIdentity(main.path), writes: true };
+    expect(() => assertWorkerTree(input)).toThrow(WorkerTreeRefused);
+    try {
+      assertWorkerTree(input);
+    } catch (error) {
+      expect((error as WorkerTreeRefused).code).toBe("is_main_tree");
+    }
+    expect(() => assertWorkerTree({ ...input, writes: false })).not.toThrow();
   });
 });
