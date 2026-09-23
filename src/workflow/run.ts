@@ -182,8 +182,66 @@ export function startRun(params: StartRunParams): readonly StartRunResult[] {
 export interface StopRunParams {
   readonly store: Store;
   readonly workflowId: WorkflowId;
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  /** Human-readable reason recorded on the pause blocker; never blank. */
+  readonly reason: string;
+  /** `true` files this as a budget/cap stop (`paused_cap`) rather than a manual one (`paused_approval`). */
+  readonly budgetStop?: boolean;
 }
 
-export function stopRun(_params: StopRunParams): void {
-  throw new Error("todo");
+export interface StopRunResult {
+  readonly phaseId: PhaseId;
+  readonly ok: boolean;
+  readonly phase: Phase | null;
+  readonly reason: string | null;
+}
+
+/**
+ * Deliberate stop, leaving resumable state (issue #74; PLAN §2.6 "a
+ * resumable state on any stop"). Every non-terminal phase of the workflow
+ * moves `phase-pause` (any nonterminal state → `paused`), through
+ * `src/workflow/state.ts` — the same single writer of `Phase.gateStatus`
+ * that #72's crash reconciliation uses for the involuntary case. A
+ * deliberate stop and a crash both land the workflow in the same resumable
+ * shape: `paused_cap`/`paused_approval`, a blocker row naming why, and
+ * running attempts/worktrees left intact for `/korwf resume` or the next
+ * `run` to pick back up — nothing here deletes or rewinds work.
+ *
+ * Tasks are deliberately left alone: `state.ts`'s own `task-block` edge is
+ * how a live task pauses, and the scheduler (#75) is what actually asks a
+ * running worker to stop. This function's job is only the phase-level
+ * record of the stop and its resumability, matching the scope of
+ * `startRun`.
+ */
+export function stopRun(params: StopRunParams): readonly StopRunResult[] {
+  const { store, workflowId, actor, now, newId, reason, budgetStop } = params;
+  const phases = store.phases
+    .forWorkflow(workflowId)
+    .filter((p) => p.gateStatus !== "passed" && p.gateStatus !== "cancelled");
+
+  return phases.map((phase) => {
+    const guards = { phase_stop_present: () => true } as const;
+    try {
+      const result = transitionPhase({
+        store,
+        phaseId: phase.id,
+        to: "paused",
+        trigger: "phase_stop",
+        actor,
+        now,
+        newId,
+        evidenceRefs: [`stop:${phase.id}:${reason}`],
+        blocker: { kind: budgetStop === true ? "budget_hard_stop" : "user_stop", detail: reason },
+        guards,
+      });
+      return { phaseId: phase.id, ok: true, phase: result.subject, reason: null };
+    } catch (error) {
+      if (error instanceof TransitionRejected) {
+        return { phaseId: phase.id, ok: false, phase: null, reason: error.message };
+      }
+      throw error;
+    }
+  });
 }
