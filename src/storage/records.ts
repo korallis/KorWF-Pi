@@ -392,12 +392,20 @@ export type FallbackReason =
   | "static_fallback_order"
   | "user_pin";
 
+/**
+ * `abandoned` is what startup reconciliation writes when it cannot say
+ * anything about *why* an attempt stopped; `interrupted` (issue #72) is the
+ * stronger statement that a crash was observed and classified — the worker
+ * died, the process was killed, or the machine went down — with the attempt's
+ * worktree deliberately left in place.
+ */
 export type AttemptOutcome =
   | "succeeded"
   | "failed"
   | "cancelled"
   | "handed_off"
   | "abandoned"
+  | "interrupted"
   | "paused_cap";
 
 /**

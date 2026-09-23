@@ -32,7 +32,17 @@ import type { AttemptRepository, AuditRepository, LedgerRepository } from "./rep
 /** What a liveness probe concluded about one open attempt's worker. */
 export type WorkerLiveness =
   | { readonly kind: "alive"; readonly detail?: string }
-  | { readonly kind: "gone"; readonly detail?: string };
+  | {
+      readonly kind: "gone";
+      readonly detail?: string;
+      /**
+       * Outcome to write instead of `abandoned` (issue #72). A probe that
+       * actually classified the crash says `interrupted` here; a probe that
+       * only knows the worker is gone leaves it unset and the attempt is
+       * recorded as `abandoned`, which claims nothing it cannot support.
+       */
+      readonly outcome?: AttemptOutcome;
+    };
 
 /**
  * Stage 5 supplies the real probe (ADR 0004 worker pid/snapshot). The
@@ -60,6 +70,8 @@ export interface ReconciledAttempt {
   readonly taskId: string;
   readonly workerId: string;
   readonly disposition: "reattached" | "abandoned";
+  /** Outcome written on the row; `null` when the attempt was re-attached. */
+  readonly outcome: AttemptOutcome | null;
   readonly detail: string | null;
 }
 
@@ -185,14 +197,16 @@ export function reconcileAbandonedAttempts(
         taskId: attempt.taskId,
         workerId: attempt.workerId,
         disposition: "reattached",
+        outcome: null,
         detail: liveness.detail ?? null,
       });
       continue;
     }
     // Frozen from here on: the attempt repository rejects further patches
     // once `outcome` is non-null (docs/records.md §4).
+    const outcome = liveness.outcome ?? ABANDONED_OUTCOME;
     deps.attempts.update(attempt.id, {
-      outcome: ABANDONED_OUTCOME,
+      outcome,
       timestamps: { ...attempt.timestamps, endedAt: at },
     });
     results.push({
@@ -200,6 +214,7 @@ export function reconcileAbandonedAttempts(
       taskId: attempt.taskId,
       workerId: attempt.workerId,
       disposition: "abandoned",
+      outcome,
       detail: liveness.detail ?? null,
     });
   }
