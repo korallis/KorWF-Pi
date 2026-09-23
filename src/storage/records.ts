@@ -341,6 +341,8 @@ export interface Phase extends MutableRecord<PhaseId> {
   readonly gateStatus: PhaseGateStatus;
   /** `null` until the phase gate passes. */
   readonly report: PhaseReport | null;
+  /** `/korwf run` invocation that started this phase (#74); `null` before `run` ever has. */
+  readonly runId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +486,8 @@ export interface Attempt extends MutableRecord<AttemptId> {
   readonly artifacts: readonly ArtifactRef[];
   /** Attempt this one continued from after a fallback/handoff. */
   readonly handedOffFromAttemptId: AttemptId | null;
+  /** `/korwf run` invocation this attempt was dispatched under (#74); `null` when started outside a run. */
+  readonly runId: string | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -103,7 +103,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 
 ## 6. Parallel orchestration, integration, unattended operation (Stage 6)
 
-- [ ] `run <phase-id | all>`; cost estimate before start.
+- [x] `run <phase-id | all>`; cost estimate before start. (#74)
 - [ ] Dependency-aware scheduling; ready-task selection; duplicate-dispatch prevention.
 - [ ] Worktrees for writing workers; ownership overlap checks; semantic-coupling signal; serial default when uncertain.
 - [ ] Coordinator lockfile; stale-owner recovery.

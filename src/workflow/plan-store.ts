@@ -178,6 +178,7 @@ function buildPhase(args: {
     },
     gateStatus: "pending",
     report: null,
+    runId: null,
   };
 }
 

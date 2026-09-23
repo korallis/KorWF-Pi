@@ -33,8 +33,8 @@ export const workflowSpec: TableSpec<Workflow> = {
 export const phaseSpec: TableSpec<Phase> = {
   table: "phase",
   appendOnly: false,
-  columns: ["workflowId", "order", "gateStatus"],
-  extract: (r) => ({ workflowId: r.workflowId, order: r.order, gateStatus: r.gateStatus }),
+  columns: ["workflowId", "order", "gateStatus", "runId"],
+  extract: (r) => ({ workflowId: r.workflowId, order: r.order, gateStatus: r.gateStatus, runId: r.runId }),
   workflowIdOf: (r) => r.workflowId,
 };
 
@@ -55,7 +55,7 @@ export const taskSpec: TableSpec<Task> = {
 export const attemptSpec: TableSpec<Attempt> = {
   table: "attempt",
   appendOnly: false,
-  columns: ["taskId", "taskRevision", "workerId", "role", "outcome", "handedOffFromAttemptId"],
+  columns: ["taskId", "taskRevision", "workerId", "role", "outcome", "handedOffFromAttemptId", "runId"],
   extract: (r) => ({
     taskId: r.taskId,
     taskRevision: r.taskRevision,
@@ -63,6 +63,7 @@ export const attemptSpec: TableSpec<Attempt> = {
     role: r.role,
     outcome: r.outcome,
     handedOffFromAttemptId: r.handedOffFromAttemptId,
+    runId: r.runId,
   }),
   workflowIdOf: () => null,
 };
