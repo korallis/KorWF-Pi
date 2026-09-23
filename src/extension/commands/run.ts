@@ -14,11 +14,25 @@
  * Pure: takes the environment, returns a decision. The extension entry point
  * decides what to do with it, and the test asserts on the decision.
  */
-import { canSpawnWorker, readWorkerDepth, DEFAULT_MAX_DEPTH, DEPTH_ENV_VAR } from "../../workers/env.ts";
+import {
+  canSpawnWorker,
+  readWorkerDepth,
+  DEFAULT_MAX_DEPTH,
+  DEPTH_ENV_VAR,
+} from "../../workers/env.ts";
 import type { Store } from "../../storage/db.ts";
 import type { PhaseId, WorkflowId } from "../../storage/records.ts";
-import { estimateRun, startRun, type RunEstimate, type EstimateRunParams } from "../../workflow/run.ts";
+import {
+  estimateRun,
+  startRun,
+  type RunEstimate,
+  type EstimateRunParams,
+} from "../../workflow/run.ts";
 import { isApprovalValid } from "../../storage/records.ts";
+import {
+  CoordinatorActiveError,
+  type CoordinatorLease,
+} from "../../workflow/coordinator.ts";
 
 type EstimateRunTokens = NonNullable<EstimateRunParams["tokensForTask"]>;
 type EstimateRunPrice = NonNullable<EstimateRunParams["priceForTask"]>;
@@ -44,7 +58,11 @@ export function runAvailability(
   const depth = readWorkerDepth(env);
   const check = canSpawnWorker(env, maxDepth);
   if (check.allowed) {
-    return { available: true, depth, message: "spawning is permitted at this depth" };
+    return {
+      available: true,
+      depth,
+      message: "spawning is permitted at this depth",
+    };
   }
   return {
     available: false,
@@ -64,7 +82,10 @@ export function runRefusalMessage(availability: RunAvailability): string {
 // `/korwf run <phase-id | all>` (issue #74; PLAN §2.1, §2.6)
 // ---------------------------------------------------------------------------
 
-export type RunCommandStore = Pick<Store, "workflows" | "phases" | "tasks" | "approvals">;
+export type RunCommandStore = Pick<
+  Store,
+  "workflows" | "phases" | "tasks" | "approvals"
+>;
 
 export interface ParsedRunArgs {
   readonly ok: boolean;
@@ -76,7 +97,11 @@ export interface ParsedRunArgs {
 export function parseRunArgs(argv: readonly string[]): ParsedRunArgs {
   const target = argv[0];
   if (target === undefined || target.trim().length === 0) {
-    return { ok: false, target: null, message: "Usage: /korwf run <phase-id | all>" };
+    return {
+      ok: false,
+      target: null,
+      message: "Usage: /korwf run <phase-id | all>",
+    };
   }
   return { ok: true, target: target.trim(), message: null };
 }
@@ -86,15 +111,21 @@ export function resolveRunTargets(
   store: RunCommandStore,
   workflowId: WorkflowId,
   target: "all" | string,
-): { readonly ok: true; readonly phaseIds: readonly PhaseId[] } | { readonly ok: false; readonly message: string } {
+):
+  | { readonly ok: true; readonly phaseIds: readonly PhaseId[] }
+  | { readonly ok: false; readonly message: string } {
   const phases = store.phases.forWorkflow(workflowId);
   if (target === "all") {
-    const ids = phases.filter((p) => p.gateStatus !== "passed" && p.gateStatus !== "cancelled").map((p) => p.id);
-    if (ids.length === 0) return { ok: false, message: "No pending phases to run." };
+    const ids = phases
+      .filter((p) => p.gateStatus !== "passed" && p.gateStatus !== "cancelled")
+      .map((p) => p.id);
+    if (ids.length === 0)
+      return { ok: false, message: "No pending phases to run." };
     return { ok: true, phaseIds: ids };
   }
   const found = phases.find((p) => p.id === target);
-  if (found === undefined) return { ok: false, message: `No phase "${target}" in this workflow.` };
+  if (found === undefined)
+    return { ok: false, message: `No phase "${target}" in this workflow.` };
   return { ok: true, phaseIds: [found.id] };
 }
 
@@ -106,14 +137,22 @@ export function resolveRunTargets(
  * `persistPlan`/`revisePlan`, #37 — the only path that flips it) both count:
  * either is evidence a human actually reviewed this exact revision.
  */
-export function planApproved(store: RunCommandStore, workflowId: WorkflowId, now: string): boolean {
+export function planApproved(
+  store: RunCommandStore,
+  workflowId: WorkflowId,
+  now: string,
+): boolean {
   const workflow = store.workflows.require(workflowId);
   if (workflow.status !== "planning") return true;
   const approvals = store.approvals.findBy("workflowId", workflowId);
   return approvals.some(
     (a) =>
       (a.scope.kind === "plan" || a.scope.kind === "workflow") &&
-      isApprovalValid(a, { task: null, planRevision: workflow.planRevision, now: now as never }),
+      isApprovalValid(a, {
+        task: null,
+        planRevision: workflow.planRevision,
+        now: now as never,
+      }),
   );
 }
 
@@ -145,7 +184,10 @@ export function formatRunEstimate(estimate: RunEstimate): string {
  * toward the cap check — they are not $0, but they are also not a known
  * overage; `#81` enforces the hard stop once real spend is measured.
  */
-export function estimateExceedsCap(estimate: RunEstimate, maxSpendUsd: number | null): boolean {
+export function estimateExceedsCap(
+  estimate: RunEstimate,
+  maxSpendUsd: number | null,
+): boolean {
   if (maxSpendUsd === null) return false;
   return estimate.knownUsd + estimate.estimatedUsd > maxSpendUsd;
 }
@@ -157,13 +199,21 @@ export function estimateExceedsCap(estimate: RunEstimate, maxSpendUsd: number | 
  * class — this only ever widens *pre-run* consent, never the ledger's
  * runtime enforcement in #30/#81).
  */
-export function spendOverEstimateApproved(store: RunCommandStore, workflowId: WorkflowId, now: string): boolean {
+export function spendOverEstimateApproved(
+  store: RunCommandStore,
+  workflowId: WorkflowId,
+  now: string,
+): boolean {
   const workflow = store.workflows.require(workflowId);
   const approvals = store.approvals.findBy("workflowId", workflowId);
   return approvals.some(
     (a) =>
       a.permittedAction === "spend_over_estimate" &&
-      isApprovalValid(a, { task: null, planRevision: workflow.planRevision, now: now as never }),
+      isApprovalValid(a, {
+        task: null,
+        planRevision: workflow.planRevision,
+        now: now as never,
+      }),
   );
 }
 
@@ -178,6 +228,16 @@ export interface RunCommandDeps {
   readonly maxSpendUsd?: number | null;
   readonly tokensForTask?: EstimateRunTokens;
   readonly priceForTask?: EstimateRunPrice;
+  /**
+   * Take the coordinator lock (issue #77). Injected rather than called
+   * directly so this command stays free of filesystem paths and so tests can
+   * drive the refusal without a second process.
+   *
+   * When omitted, no coordinator lock is taken: callers that do not schedule
+   * (and tests of the estimate path) are unaffected. The extension's real
+   * `/korwf run` wiring supplies it.
+   */
+  readonly acquireCoordinator?: () => CoordinatorLease;
 }
 
 export interface RunCommandResult {
@@ -185,6 +245,13 @@ export interface RunCommandResult {
   readonly message: string;
   /** `null` when nothing started (refused or declined) — never a run id for a run that never began. */
   readonly runId: string | null;
+  /**
+   * The coordinator lease this invocation holds, when it started a run and a
+   * lock was requested (#77). The caller owns it for the life of the run and
+   * must `release()` it when the run stops. `null` whenever nothing started —
+   * a refused or declined run never keeps the lock.
+   */
+  readonly coordinator?: CoordinatorLease | null;
 }
 
 /**
@@ -199,7 +266,9 @@ export interface RunCommandResult {
  *    computed after spending is worthless).
  * 5. Start each phase and report per-phase outcomes.
  */
-export async function runCommand(deps: RunCommandDeps): Promise<RunCommandResult> {
+export async function runCommand(
+  deps: RunCommandDeps,
+): Promise<RunCommandResult> {
   const { store, workflowId, target, now, newId, confirm } = deps;
   const nowIso = now();
 
@@ -209,40 +278,75 @@ export async function runCommand(deps: RunCommandDeps): Promise<RunCommandResult
   if (!planApproved(store, workflowId, nowIso)) {
     return {
       ok: false,
-      message: "Refused: the plan is not approved at its current revision. Run /korwf plan and approve it first.",
+      message:
+        "Refused: the plan is not approved at its current revision. Run /korwf plan and approve it first.",
       runId: null,
     };
   }
+
+  // Only one coordinator may schedule per project (#77, PLAN §5). Taken
+  // before the estimate so a second `/korwf run` is told about the first one
+  // immediately, rather than after a confirmation dialog it cannot honour.
+  // Released again on every path that does not start a run.
+  let coordinator: CoordinatorLease | null = null;
+  if (deps.acquireCoordinator !== undefined) {
+    try {
+      coordinator = deps.acquireCoordinator();
+    } catch (error) {
+      if (error instanceof CoordinatorActiveError) {
+        return {
+          ok: false,
+          message: `Refused: ${error.message}`,
+          runId: null,
+          coordinator: null,
+        };
+      }
+      throw error;
+    }
+  }
+  const stopWithoutRunning = (message: string): RunCommandResult => {
+    coordinator?.release();
+    return { ok: false, message, runId: null, coordinator: null };
+  };
 
   const estimate = estimateRun({
     store,
     workflowId,
     phaseIds: targets.phaseIds,
-    ...(deps.tokensForTask === undefined ? {} : { tokensForTask: deps.tokensForTask }),
-    ...(deps.priceForTask === undefined ? {} : { priceForTask: deps.priceForTask }),
+    ...(deps.tokensForTask === undefined
+      ? {}
+      : { tokensForTask: deps.tokensForTask }),
+    ...(deps.priceForTask === undefined
+      ? {}
+      : { priceForTask: deps.priceForTask }),
   });
 
   const maxSpendUsd = deps.maxSpendUsd ?? null;
-  if (estimateExceedsCap(estimate, maxSpendUsd) && !spendOverEstimateApproved(store, workflowId, nowIso)) {
-    return {
-      ok: false,
-      message:
-        `Refused: the estimate ($${(estimate.knownUsd + estimate.estimatedUsd).toFixed(2)}) exceeds the ` +
+  if (
+    estimateExceedsCap(estimate, maxSpendUsd) &&
+    !spendOverEstimateApproved(store, workflowId, nowIso)
+  ) {
+    return stopWithoutRunning(
+      `Refused: the estimate ($${(estimate.knownUsd + estimate.estimatedUsd).toFixed(2)}) exceeds the ` +
         `budget cap ($${(maxSpendUsd as number).toFixed(2)}). Grant the "spend_over_estimate" approval to override ` +
         `(a hard cap during the run still stops it — PLAN §2.6).\n\n${formatRunEstimate(estimate)}`,
-      runId: null,
-    };
+    );
   }
 
   const estimateText = formatRunEstimate(estimate);
   let answer: unknown;
   try {
-    answer = await confirm("KorWF-Pi: confirm run", `${estimateText}\n\nProceed?`);
+    answer = await confirm(
+      "KorWF-Pi: confirm run",
+      `${estimateText}\n\nProceed?`,
+    );
   } catch {
     answer = false;
   }
   if (answer !== true) {
-    return { ok: false, message: `Declined. Nothing was started.\n\n${estimateText}`, runId: null };
+    return stopWithoutRunning(
+      `Declined. Nothing was started.\n\n${estimateText}`,
+    );
   }
 
   const outcome = startRun({
@@ -261,7 +365,27 @@ export async function runCommand(deps: RunCommandDeps): Promise<RunCommandResult
   const lines = [`Run id: ${outcome.runId}`, "", estimateText, ""];
   if (started.length > 0) lines.push(`Started: ${started.join(", ")}.`);
   if (refused.length > 0) {
-    lines.push(...refused.map((r) => `Not started: ${r.phaseId} (${r.reason ?? "unknown reason"})`));
+    lines.push(
+      ...refused.map(
+        (r) => `Not started: ${r.phaseId} (${r.reason ?? "unknown reason"})`,
+      ),
+    );
   }
-  return { ok: started.length > 0, message: lines.join("\n"), runId: outcome.runId };
+  if (started.length === 0) {
+    // Nothing is scheduling, so nothing should hold the right to schedule.
+    coordinator?.release();
+    return {
+      ok: false,
+      message: lines.join("\n"),
+      runId: outcome.runId,
+      coordinator: null,
+    };
+  }
+  coordinator?.startHeartbeat();
+  return {
+    ok: true,
+    message: lines.join("\n"),
+    runId: outcome.runId,
+    coordinator,
+  };
 }
