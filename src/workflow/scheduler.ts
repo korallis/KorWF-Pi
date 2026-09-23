@@ -329,3 +329,76 @@ export function claimTask(params: ClaimParams): ClaimResult {
     throw error;
   }
 }
+
+// ---------------------------------------------------------------------------
+// The loop
+// ---------------------------------------------------------------------------
+
+/** One dispatched task, as reported by the caller's worker layer. */
+export interface DispatchOutcome {
+  readonly taskId: TaskId;
+  /** `true` when the worker ran to a settled end; `false` on any failure. */
+  readonly ok: boolean;
+  readonly detail?: string;
+}
+
+/** What one `runScheduler` call did. */
+export interface SchedulerResult {
+  readonly dispatched: readonly TaskId[];
+  readonly outcomes: readonly DispatchOutcome[];
+  /** Tasks held back on the final pass, with the reason each was held. */
+  readonly held: readonly HeldTask[];
+  /** Highest number of workers in flight at any instant during the run. */
+  readonly peakConcurrency: number;
+  /** `true` when the loop stopped because cancellation was requested. */
+  readonly cancelled: boolean;
+  /** Tasks the drain moved to `cancelled`. */
+  readonly cancelledTasks: readonly TaskId[];
+}
+
+/** A budget reservation the scheduler holds for the life of one dispatch. */
+export interface DispatchReservation {
+  /** Called exactly once when the dispatch settles, however it settles. */
+  readonly release: () => void;
+}
+
+export interface RunSchedulerParams extends ClaimHooks {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  readonly phaseIds: readonly PhaseId[];
+  /**
+   * Concurrency ceiling from config (`budgets.workflow.maxConcurrency`).
+   * `null` means config sets no ceiling — the ledger's own reservation is
+   * still the authority, via `reserve` below.
+   */
+  readonly limit: number | null;
+  /**
+   * Atomic budget reservation (#30 `Ledger.reserve`). Return `null` to refuse
+   * the dispatch: the task is held with `budget_refused` and the loop does
+   * not spawn a worker for it. This, not the in-process counter, is what
+   * makes two schedulers safe against the same remaining budget — the
+   * counter cannot see another process.
+   */
+  readonly reserve: (task: Task) => DispatchReservation | null;
+  /**
+   * Launch the worker (#68/#71 over Pi RPC, ADR 0004). Pi's `prompt` is
+   * asynchronous, so this returns as soon as the worker is accepted and the
+   * promise settles when the attempt does. The loop keeps N of these in
+   * flight at once and never awaits one before starting the next.
+   */
+  readonly dispatch: (task: Task) => Promise<DispatchOutcome>;
+  readonly coupling?: CouplingSignal;
+  /** Cooperative cancellation. Polled between passes and before each claim. */
+  readonly signal?: { readonly aborted: boolean };
+  /** Asks a running worker to stop. Awaited during the drain. */
+  readonly cancelWorker?: (taskId: TaskId) => Promise<void> | void;
+}
+
+/** The claim-time hooks `runScheduler` forwards to `claimTask`. */
+export interface ClaimHooks {
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  readonly authorizationCurrent: (task: Task) => boolean;
+  readonly dispatchAllowed: (task: Task) => boolean;
+}
