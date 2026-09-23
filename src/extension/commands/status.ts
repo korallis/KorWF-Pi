@@ -14,7 +14,7 @@
  */
 import type { TaskBoardRow } from "../../workflow/boards.ts";
 import type { LedgerStatus, ScopeStatus } from "../../telemetry/ledger.ts";
-import { renderRouteLines, type RouteListingInput } from "./models.ts";
+import { statusMessage, type RouteListingInput } from "./models.ts";
 
 /** Input to `statusReportMessage`: route listing plus the task/ledger views status adds. */
 export interface StatusReportInput extends RouteListingInput {
@@ -66,8 +66,7 @@ export function ledgerStatusLines(status: LedgerStatus | null | undefined): stri
  * status stays short.
  */
 export function statusReportMessage(input: StatusReportInput): string {
-  const routeSection = renderRouteLines(input).join("\n");
-  const sections = [routeSection];
+  const sections = [statusMessage(input)];
 
   const switches = input.taskRows === undefined ? [] : attemptSwitchLines(input.taskRows);
   if (switches.length > 0) sections.push(["model switches:", ...switches].join("\n"));
