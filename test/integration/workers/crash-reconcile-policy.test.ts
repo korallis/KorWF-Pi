@@ -13,7 +13,9 @@ import { defaultConfig } from "../../../src/config/load.ts";
 import { createAttemptWorktree } from "../../../src/workers/worktree.ts";
 import {
   classifyInterruption,
+  describeCrashReconciliation,
   failInterruptedTask,
+  openStoreAndReconcileCrashes,
   markCancellationRequested,
   reconcileCrashedAttempts,
   writeAttemptRuntime,
@@ -173,6 +175,29 @@ describe("#72: outcome — task failed with recovery options", () => {
     // `unknown` never gets acted on as a diagnosis: it gathers evidence.
     expect(disposition?.recovery.decision.failureCategory).toBe("unknown");
     expect(disposition?.recovery.decision.response).toBe("gather_evidence");
+  });
+});
+
+describe("#72 / ADR 0006: reconciliation happens before any command is accepted", () => {
+  it("openStoreAndReconcileCrashes returns a store whose crashed attempts are already closed", () => {
+    const fixture = makeFixture();
+    const repoPath = fixture.repo.path;
+    const storageRoot = fixture.storageRoot;
+    // Release the lock the fixture holds so the startup path can take it.
+    fixture.store.close();
+
+    const { store, crash } = openStoreAndReconcileCrashes({
+      storageRoot,
+      projectRoot: repoPath,
+      isAlive: dead,
+    });
+    try {
+      expect(crash.interrupted).toHaveLength(1);
+      expect(store.attempts.require(ATTEMPT).outcome).toBe("interrupted");
+      expect(describeCrashReconciliation(crash)).toContain("did not survive");
+    } finally {
+      store.close();
+    }
   });
 });
 

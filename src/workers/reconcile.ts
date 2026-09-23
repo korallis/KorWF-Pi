@@ -16,7 +16,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Store } from "../storage/db.ts";
+import { openStore, type Store } from "../storage/db.ts";
 import type { Attempt, AttemptOutcome, IsoTimestamp, TaskId, WorkflowId } from "../storage/records.ts";
 import type { ReconciliationReport } from "../storage/reconcile.ts";
 import type { GitRunner as GitStatusRunner } from "../git/status.ts";
@@ -531,6 +531,78 @@ export function failInterruptedTask(options: FailInterruptedTaskOptions): Interr
   });
 
   return { taskId: options.taskId, status: result.subject.status, recovery };
+}
+
+// ---------------------------------------------------------------------------
+// The ADR 0006 startup order
+// ---------------------------------------------------------------------------
+
+export interface OpenAndReconcileOptions {
+  readonly storageRoot: string;
+  readonly projectRoot: string;
+  readonly packageVersion?: string;
+  readonly lockTimeoutMs?: number;
+  readonly now?: () => IsoTimestamp;
+  readonly isAlive?: (pid: number) => boolean;
+  readonly gitRunner?: GitStatusRunner;
+}
+
+/** A store that is safe to accept commands against, and what startup found. */
+export interface OpenedAndReconciled {
+  readonly store: Store;
+  readonly crash: CrashReconciliationReport;
+}
+
+/**
+ * Open the store and reconcile crashes **before returning it** (ADR 0006:
+ * after the lock is taken, before any command is accepted).
+ *
+ * `openStore` is told `reconcile: false` and reconciliation is run here
+ * instead — not to skip it, but because the crash probe needs the storage
+ * root and the project root, which `openStore` does not take. It is still
+ * `store.reconcile`, i.e. #23's one reconciliation path, that closes the rows.
+ * No command can be accepted in between: this function does not return until
+ * it has run.
+ */
+export function openStoreAndReconcileCrashes(options: OpenAndReconcileOptions): OpenedAndReconciled {
+  const opened = openStore({
+    storageRoot: options.storageRoot,
+    reconcile: false,
+    ...(options.packageVersion === undefined ? {} : { packageVersion: options.packageVersion }),
+    ...(options.lockTimeoutMs === undefined ? {} : { lockTimeoutMs: options.lockTimeoutMs }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+  });
+  try {
+    const crash = reconcileCrashedAttempts({
+      store: opened.store,
+      storageRoot: options.storageRoot,
+      projectRoot: options.projectRoot,
+      // The lock we now hold is ours; a previous holder's lock, if any, was
+      // already taken over by `openStore`, so it did not survive the crash.
+      lockPresent: opened.report.lock !== null && opened.report.lock.kind === "created",
+      ...(options.isAlive === undefined ? {} : { isAlive: options.isAlive }),
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.gitRunner === undefined ? {} : { gitRunner: options.gitRunner }),
+    });
+    return { store: opened.store, crash };
+  } catch (error) {
+    opened.store.close();
+    throw error;
+  }
+}
+
+/** One line per interrupted attempt, for the status widget / `/korwf why`. */
+export function describeCrashReconciliation(report: CrashReconciliationReport): string {
+  if (report.interrupted.length === 0) return "";
+  const lines = report.interrupted.map((row) => `  • ${row.line}`);
+  const preserved =
+    report.preservedDirtyWorktrees.length === 0
+      ? ""
+      : `\n  ${report.preservedDirtyWorktrees.length} worktree(s) hold uncommitted work and were left untouched.`;
+  return (
+    `${report.interrupted.length} attempt(s) did not survive the previous session:\n` +
+    `${lines.join("\n")}${preserved}`
+  );
 }
 
 /** Record an observed worker exit. An attempt with this set did not crash unseen. */
