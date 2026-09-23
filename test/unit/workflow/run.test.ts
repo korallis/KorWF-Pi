@@ -86,3 +86,84 @@ describe("AC3: estimateRun distinguishes known/estimated/unknown cost", () => {
     expect(estimate.tasks).toBe(0);
   });
 });
+
+describe("startRun: the transition shown BEFORE work begins", () => {
+  it("starts a phase with a ready task", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ id: "t1" as TaskId, workflowId: WF, phaseId: PH, status: "ready" }));
+
+    const results = startRun({
+      store,
+      workflowId: WF,
+      phaseIds: [PH],
+      actor,
+      now,
+      newId,
+      authorizationCurrent: () => true,
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.ok).toBe(true);
+    expect(store.phases.require(PH).gateStatus).toBe("running");
+  });
+
+  it("refuses a phase with nothing schedulable, with a reason", () => {
+    const store = freshStore();
+    // No tasks at all: phase_start_valid is false.
+    const results = startRun({
+      store,
+      workflowId: WF,
+      phaseIds: [PH],
+      actor,
+      now,
+      newId,
+      authorizationCurrent: () => true,
+    });
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.reason).toBeTruthy();
+    expect(store.phases.require(PH).gateStatus).toBe("pending");
+  });
+});
+
+describe("stopRun: a deliberate stop leaves resumable state", () => {
+  it("pauses every non-terminal phase with a blocker reason, not a delete", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ id: "t1" as TaskId, workflowId: WF, phaseId: PH, status: "ready" }));
+    startRun({ store, workflowId: WF, phaseIds: [PH], actor, now, newId, authorizationCurrent: () => true });
+    expect(store.phases.require(PH).gateStatus).toBe("running");
+
+    const results = stopRun({ store, workflowId: WF, actor, now, newId, reason: "user requested stop" });
+
+    expect(results[0]?.ok).toBe(true);
+    const phase = store.phases.require(PH);
+    expect(phase.gateStatus).toBe("paused_approval");
+    // Resumable: the task itself is untouched, still `ready` and re-dispatchable.
+    expect(store.tasks.require("t1" as TaskId).status).toBe("ready");
+  });
+
+  it("files a budget stop as paused_cap, distinct from a manual one", () => {
+    const store = freshStore();
+    store.tasks.insert(makeTask({ id: "t1" as TaskId, workflowId: WF, phaseId: PH, status: "ready" }));
+    startRun({ store, workflowId: WF, phaseIds: [PH], actor, now, newId, authorizationCurrent: () => true });
+
+    const results = stopRun({
+      store,
+      workflowId: WF,
+      actor,
+      now,
+      newId,
+      reason: "workflow budget cap reached",
+      budgetStop: true,
+    });
+
+    expect(results[0]?.ok).toBe(true);
+    expect(store.phases.require(PH).gateStatus).toBe("paused_cap");
+  });
+
+  it("is idempotent-safe: stopping an already-pending phase does not throw or lose state", () => {
+    const store = freshStore();
+    const results = stopRun({ store, workflowId: WF, actor, now, newId, reason: "stop before anything started" });
+    expect(results[0]?.ok).toBe(true);
+    expect(store.phases.require(PH).gateStatus).toBe("paused_approval");
+  });
+});
