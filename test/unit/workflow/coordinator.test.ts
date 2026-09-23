@@ -11,11 +11,13 @@ import { existsSync, readFileSync } from "node:fs";
 import {
   acquireCoordinatorLock,
   CoordinatorActiveError,
-  COORDINATOR_LOCK_ACTOR,
   inspectCoordinator,
 } from "../../../src/workflow/coordinator.ts";
 import { classifyHolder } from "../../../src/storage/lock.ts";
-import { resolveCoordinatorLockPath, resolveLockfilePath } from "../../../src/storage/paths.ts";
+import {
+  resolveCoordinatorLockPath,
+  resolveLockfilePath,
+} from "../../../src/storage/paths.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 
 const dirs: TempDir[] = [];
@@ -88,7 +90,9 @@ describe("AC1: two concurrent run invocations — exactly one proceeds", () => {
     }
     expect(caught).toBeInstanceOf(CoordinatorActiveError);
     expect(caught?.code).toBe("KORWF_COORDINATOR_ACTIVE");
-    expect(caught?.message).toContain("Coordinator active in session session-A since");
+    expect(caught?.message).toContain(
+      "Coordinator active in session session-A since",
+    );
     expect(caught?.message).toContain(lease.contents.startedAt);
     expect(caught?.holder.pid).toBe(4101);
     lease.release();
@@ -159,7 +163,9 @@ describe("AC1: two concurrent run invocations — exactly one proceeds", () => {
       caught = error as CoordinatorActiveError;
     }
     expect(caught).toBeInstanceOf(CoordinatorActiveError);
-    expect(caught?.message).toContain("the process is still running, so it keeps the lock");
+    expect(caught?.message).toContain(
+      "the process is still running, so it keeps the lock",
+    );
     expect(first.isOwned()).toBe(true);
     first.release();
   });
@@ -167,10 +173,18 @@ describe("AC1: two concurrent run invocations — exactly one proceeds", () => {
   it("releases the lock so a later run can take it cleanly", () => {
     const root = tempRoot();
     const path = resolveCoordinatorLockPath(root);
-    const first = acquireCoordinatorLock({ storageRoot: root, pid: 6001, sessionId: "A" });
+    const first = acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 6001,
+      sessionId: "A",
+    });
     first.release();
     expect(existsSync(path)).toBe(false);
-    const second = acquireCoordinatorLock({ storageRoot: root, pid: 6002, sessionId: "B" });
+    const second = acquireCoordinatorLock({
+      storageRoot: root,
+      pid: 6002,
+      sessionId: "B",
+    });
     expect(second.acquisition).toBe("created");
     expect(second.previousOwner).toBeNull();
     second.release();
@@ -269,7 +283,10 @@ describe("AC2: killed coordinator — the next run takes over (fake clock)", () 
     expect(lease.heartbeat()).toBe(true);
     expect(lease.lastHeartbeatAt()).toBe(clock.now());
 
-    const holder = inspectCoordinator({ storageRoot: root, isProcessAlive: () => true })?.holder;
+    const holder = inspectCoordinator({
+      storageRoot: root,
+      isProcessAlive: () => true,
+    })?.holder;
     expect(holder).toBeDefined();
     const assessment = classifyHolder(holder!, {
       isProcessAlive: () => true,
@@ -318,7 +335,9 @@ describe("AC2: killed coordinator — the next run takes over (fake clock)", () 
   it("uses a lockfile distinct from the #23 store lock", () => {
     const root = tempRoot();
     const lease = acquireCoordinatorLock({ storageRoot: root, pid: 8401 });
-    expect(resolveCoordinatorLockPath(root)).not.toBe(resolveLockfilePath(root));
+    expect(resolveCoordinatorLockPath(root)).not.toBe(
+      resolveLockfilePath(root),
+    );
     expect(existsSync(resolveCoordinatorLockPath(root))).toBe(true);
     expect(existsSync(resolveLockfilePath(root))).toBe(false);
     lease.release();
