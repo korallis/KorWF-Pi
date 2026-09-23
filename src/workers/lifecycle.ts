@@ -38,6 +38,7 @@ import { realProcessOps, waitUntil, type ProcessOps } from "./process-tree.ts";
 import { ProgressTimeline, usageFromRpc, usagePayloadOf, type ProgressSnapshot } from "./progress.ts";
 import { evaluateLimits, msUntilElapsedLimit, type LimitBreach } from "./limits.ts";
 import type { CancelResult, RpcMessage, WorkerHandle } from "./spawn.ts";
+import { markCancellationRequested, markExitObserved, writeAttemptRuntime } from "./reconcile.ts";
 
 /** How a supervised run ended, from the supervisor's point of view. */
 export type WorkerRunOutcome =
@@ -100,6 +101,24 @@ export interface WorkerRunOptions {
   readonly processOps?: ProcessOps;
   /** Bound on the in-memory progress timeline. */
   readonly maxProgressEvents?: number;
+  /**
+   * Crash-reconciliation marker (#72). When supplied, the supervisor writes
+   * the worker's pid and worktree to disk at `start()` and records the
+   * cancellation and the observed exit as they happen, so a SIGKILLed
+   * coordinator can be told apart from a worker that merely died.
+   */
+  readonly crashMarker?: CrashMarkerOptions;
+}
+
+/** Identity a `WorkerRun` needs to write its crash marker (#72). */
+export interface CrashMarkerOptions {
+  readonly storageRoot: string;
+  readonly attemptId: string;
+  readonly taskId: string;
+  readonly workflowId: string;
+  readonly sessionId: string;
+  /** Absolute path of the attempt worktree, so it can be preserved. */
+  readonly worktreePath: string | null;
 }
 
 /** The slice of `ArtifactStore` (#23) this module uses. */
@@ -254,6 +273,7 @@ export class WorkerRun {
     });
     this.#startedAt = this.#monotonic();
     this.#state = "running";
+    this.#writeCrashMarker();
     this.timeline.record("started", `worker ${this.handle.contract.workerId} started on route ${this.route.ref}`);
     this.#unsubscribe = this.handle.subscribe((message: RpcMessage): void => {
       this.observe(message);
@@ -424,6 +444,10 @@ export class WorkerRun {
     this.#state = "stopping";
     this.#clearTimer();
     this.#cancelReason = reason;
+    // Written before the signals go out: a coordinator that dies mid-cancel
+    // must still be able to tell that this kill was ours (#72).
+    const marker = this.#options.crashMarker;
+    if (marker !== undefined) markCancellationRequested(marker.storageRoot, marker.attemptId, this.#now());
     this.timeline.record("cancelled", reason);
     const result = await this.handle.cancel(reason);
     this.#cancellation = result;
@@ -466,6 +490,10 @@ export class WorkerRun {
     this.#unsubscribe = null;
     this.#endedAt ??= this.#monotonic();
     this.#state = "finished";
+    const marker = this.#options.crashMarker;
+    if (marker !== undefined) {
+      markExitObserved(marker.storageRoot, marker.attemptId, this.#now(), this.handle.exit?.code ?? null);
+    }
 
     const usage = this.observedUsage;
     const elapsedMs = this.elapsedMs;
@@ -492,6 +520,24 @@ export class WorkerRun {
     };
     this.#result = result;
     return result;
+  }
+
+  /** Persist the pid/worktree facts the store cannot hold (#72). */
+  #writeCrashMarker(): void {
+    const marker = this.#options.crashMarker;
+    if (marker === undefined) return;
+    writeAttemptRuntime(marker.storageRoot, {
+      attemptId: marker.attemptId,
+      taskId: marker.taskId,
+      workflowId: marker.workflowId,
+      sessionId: marker.sessionId,
+      pid: this.handle.pid,
+      startedAt: this.#now(),
+      worktreePath: marker.worktreePath,
+      cancellationRequestedAt: null,
+      exitObservedAt: null,
+      exitCode: null,
+    });
   }
 
   #classifyOutcome(): WorkerRunOutcome {
