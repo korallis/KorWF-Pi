@@ -22,6 +22,9 @@
  *   and stall/scope-drift detection over the attempt stream (#52).
  * - `recovery.ts` — bounded recovery policies chosen from that taxonomy, and side-effect
  *   reconciliation (over #42's receipts) before any retry (#53).
+ * - `scheduler.ts` — the dependency-aware dispatch loop: ready-task selection over
+ *   `graph.ts`, a transactional claim that makes a duplicate dispatch lose, the
+ *   concurrency cap, ownership/coupling serialisation, and a cancel drain (#75).
  * - `checkpoint.ts` — working-tree checkpoints, the dirty-tree guard, and rollback as an
  *   approval-gated PROPOSAL that never discards uncommitted user work (#54).
  *
@@ -55,6 +58,7 @@ export * from "./plan-store.ts";
 export * from "./reconcile.ts";
 export * from "./recovery.ts";
 export * from "./planner.ts";
+export * from "./scheduler.ts";
 export * from "./scope-change.ts";
 export * from "./state.ts";
 export * from "./transitions.ts";
