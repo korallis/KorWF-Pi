@@ -555,3 +555,168 @@ function openConflict(options: IntegrateNextOptions & {
     resolution: { kind: "blocked", reason: notification.summary, notification },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Draining the queue
+// ---------------------------------------------------------------------------
+
+/** What one drain did. */
+export interface DrainResult {
+  readonly outcomes: readonly IntegrationOutcome[];
+  /** Item ids integrated, in the order they were merged. */
+  readonly integrated: readonly string[];
+  /** `true` when the drain stopped early because a conflict blocked the phase. */
+  readonly stopped: boolean;
+  /** Highest number of integrations in flight at once. Always 0 or 1 (AC1). */
+  readonly peakConcurrentIntegrations: number;
+}
+
+export interface RunIntegrationQueueOptions extends IntegrateNextOptions {
+  /** Safety bound on iterations; the queue is finite but the loop says so. */
+  readonly maxItems?: number;
+  /** Cooperative cancellation, polled between items. */
+  readonly signal?: { readonly aborted: boolean };
+}
+
+/**
+ * Drain the phase's queue, one item at a time (AC1).
+ *
+ * The sequencing is structural rather than advisory: the loop calls
+ * `integrateNext`, which claims a single item inside a write transaction and
+ * returns only after that item has settled. Two tasks finishing at the same
+ * instant therefore produce two queue rows and two *sequential* merges. The
+ * `peakConcurrentIntegrations` counter is instrumentation for the test, not
+ * the mechanism — the mechanism is the lease plus the claim.
+ *
+ * The drain stops on the first conflict that blocks the phase: continuing
+ * would merge later items onto a base a human is about to change.
+ */
+export function runIntegrationQueue(options: RunIntegrationQueueOptions): DrainResult {
+  const outcomes: IntegrationOutcome[] = [];
+  const integrated: string[] = [];
+  const max = options.maxItems ?? 1000;
+  let inFlight = 0;
+  let peak = 0;
+  let stopped = false;
+
+  for (let i = 0; i < max; i += 1) {
+    if (options.signal?.aborted === true) {
+      stopped = true;
+      break;
+    }
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    let outcome: IntegrationOutcome;
+    try {
+      outcome = integrateNext(options);
+    } finally {
+      inFlight -= 1;
+    }
+    if (outcome.kind === "empty") break;
+    outcomes.push(outcome);
+    if (outcome.kind === "integrated") integrated.push(outcome.item.itemId);
+    if (outcome.kind === "conflict" && outcome.resolution.kind === "blocked") {
+      stopped = true;
+      break;
+    }
+  }
+  return { outcomes, integrated, stopped, peakConcurrentIntegrations: peak };
+}
+
+// ---------------------------------------------------------------------------
+// Completing a conflict resolution
+// ---------------------------------------------------------------------------
+
+/** Why a resolution was refused. */
+export type ResolutionRefusal = "unknown_conflict" | "not_open" | "not_reverified" | "paths_outside_conflict";
+
+export type ResolveConflictResult =
+  | { readonly ok: true; readonly conflict: IntegrationConflictRow; readonly requeued: IntegrationItemRow }
+  | { readonly ok: false; readonly refusal: ResolutionRefusal; readonly detail: string };
+
+export interface ResolveConflictOptions {
+  readonly store: Store;
+  readonly conflictId: string;
+  /** Branch the resolution work landed on; re-queued for integration. */
+  readonly branch: string;
+  /** Base the resolution was produced against — normally the integration head. */
+  readonly baseRevision: GitSha;
+  /** Revision the resolution's checks ran at (#45). */
+  readonly verifiedRevision: GitSha;
+  /**
+   * Did the resolution task pass its own verification? Supplied by the
+   * caller from #46's gate receipt, because `src/verification/task-gate.ts`
+   * is the only thing that may declare a task `done` and this module must
+   * not form a second opinion about it.
+   */
+  readonly reverified: boolean;
+  /** Paths the resolution actually touched, for the restriction check. */
+  readonly changedPaths?: readonly string[];
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+}
+
+/**
+ * Accept a conflict resolution and re-queue the item.
+ *
+ * Two refusals matter and neither is waivable here:
+ *
+ *  - `not_reverified` — a resolution that did not pass verification never
+ *    re-queues. The issue's requirement is "conflict resolution as a task
+ *    ... with re-verification", and the caller's `reverified` flag comes
+ *    from a #46 gate receipt, not from the resolver's claim.
+ *  - `paths_outside_conflict` — the resolution task is restricted to the
+ *    conflicted paths, so a resolution that edited anything else is refused
+ *    rather than quietly accepted as a wider change.
+ *
+ * A re-queue is a NEW item at the resolution's own revisions; the conflicted
+ * item stays `conflicted` in the history.
+ */
+export function resolveConflict(options: ResolveConflictOptions): ResolveConflictResult {
+  const { store } = options;
+  const conflict = store.integrations.conflict(options.conflictId);
+  if (conflict === undefined) {
+    return { ok: false, refusal: "unknown_conflict", detail: `no conflict ${options.conflictId}` };
+  }
+  if (conflict.status !== "open") {
+    return { ok: false, refusal: "not_open", detail: `conflict ${options.conflictId} is ${conflict.status}` };
+  }
+  if (!options.reverified) {
+    return {
+      ok: false,
+      refusal: "not_reverified",
+      detail: `resolution of ${options.conflictId} has not passed verification; it may not be integrated on trust`,
+    };
+  }
+  const outside = (options.changedPaths ?? []).filter((path) => !conflict.paths.includes(path));
+  if (outside.length > 0) {
+    return {
+      ok: false,
+      refusal: "paths_outside_conflict",
+      detail: `resolution touched ${outside.join(", ")}, outside the conflicted paths it was scoped to`,
+    };
+  }
+  const item = store.integrations.get(conflict.itemId);
+  if (item === undefined) {
+    return { ok: false, refusal: "unknown_conflict", detail: `conflict ${options.conflictId} has no item` };
+  }
+  return store.write(() => {
+    const settled =
+      store.integrations.settleConflict(options.conflictId, "resolved", options.now(), "resolution verified") ??
+      conflict;
+    const requeued = store.integrations.enqueue({
+      itemId: options.newId(),
+      enqueuedAt: options.now(),
+      workflowId: item.workflowId,
+      phaseId: item.phaseId,
+      taskId: item.taskId,
+      taskRevision: item.taskRevision,
+      branch: options.branch,
+      baseRevision: options.baseRevision,
+      verifiedRevision: options.verifiedRevision,
+      status: "queued",
+      detail: `re-queued after resolving conflict ${options.conflictId}`,
+    });
+    return { ok: true as const, conflict: settled, requeued };
+  });
+}
