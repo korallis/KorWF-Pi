@@ -224,6 +224,35 @@ changes enforcement code.
 
 ### 2.7 Clean up — immediately, not "later"
 
+**Run `sweep.sh` after every merge.** Not when you notice the mess:
+
+```bash
+.pi/skills/korwf-worker-delegation/scripts/sweep.sh            # act
+.pi/skills/korwf-worker-delegation/scripts/sweep.sh --dry-run  # look first
+```
+
+It stops agents whose issue is CLOSED, removes their worktrees, closes only their own
+Spaces, deletes merged branches local *and* remote, and closes Spaces pointing at paths
+that no longer exist. It refuses to delete a branch holding commits that are not in
+`origin/main`, and it only ever touches this repo.
+
+**Squash-merged branches look unmerged.** `git branch -d` refuses them because the
+pre-squash commits are not ancestors of `main`. Confirm the work landed (`git log
+origin/main --grep="#N"`, and check the files exist) and only then `-D`. Do not force-
+delete on the assumption that a closed issue means merged work.
+
+**If `git fetch` fails with `Permission denied (publickey)`**, the ssh-agent died — a
+crash or a logout. There are no SSH keys on this machine; `gh` holds the credential. Fix
+it once:
+
+```bash
+gh auth setup-git
+git remote set-url origin https://github.com/korallis/KorWF-Pi.git
+```
+
+Every push, fetch and `--merge` depends on this, so check it the moment anything git-
+remote fails rather than re-running the command.
+
 ```bash
 $S/stop-pi.sh issue-<n> --close workspace
 git worktree remove ../korwf-worktrees/issue-<n>
