@@ -77,6 +77,41 @@ describe("AC: task board shows dependencies, blockers, evidence, and model", () 
     expect(row?.evidenceCount).toBe(1);
   });
 
+  it("reports the most recent attempt's requested/used model and fallback reason (issue #66)", () => {
+    const store = freshStore();
+    store.workflows.insert(makeWorkflow({ id: WF }));
+    store.phases.insert(makePhase({ id: PH, workflowId: WF }));
+    store.tasks.insert(makeTask({ id: "tk-1" as TaskId, workflowId: WF, phaseId: PH, status: "running" }));
+    store.attempts.insert(
+      makeAttempt({
+        id: "at-1" as never,
+        taskId: "tk-1" as TaskId,
+        requestedModel: "vendor/big",
+        usedModel: "vendor/small",
+        fallbackReason: "rate_limited",
+      }),
+    );
+
+    const rows = buildTaskBoard(store, WF);
+    const row = rows.find((r) => r.task.id === "tk-1");
+    expect(row?.lastModelSwitch).toEqual({
+      requestedModel: "vendor/big",
+      usedModel: "vendor/small",
+      fallbackReason: "rate_limited",
+    });
+  });
+
+  it("reports lastModelSwitch as null for a task that never ran", () => {
+    const store = freshStore();
+    store.workflows.insert(makeWorkflow({ id: WF }));
+    store.phases.insert(makePhase({ id: PH, workflowId: WF }));
+    store.tasks.insert(makeTask({ id: "tk-1" as TaskId, workflowId: WF, phaseId: PH, status: "proposed" }));
+
+    const rows = buildTaskBoard(store, WF);
+    const row = rows.find((r) => r.task.id === "tk-1");
+    expect(row?.lastModelSwitch).toBeNull();
+  });
+
   it("filters by phase, status and blockedOnly", () => {
     const store = freshStore();
     store.workflows.insert(makeWorkflow({ id: WF }));
