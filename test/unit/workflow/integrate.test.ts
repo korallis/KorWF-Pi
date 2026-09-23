@@ -34,6 +34,7 @@ import {
   type ConflictNotification,
   type IntegrationLease,
 } from "../../../src/workflow/integrate.ts";
+import { activeBlockers } from "../../../src/workflow/blockers.ts";
 import { makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 
@@ -237,6 +238,20 @@ describe("AC1: two tasks completing simultaneously integrate sequentially", () =
     expect(store.write(() => store.integrations.claimNext(PH, AT as never))).toBeUndefined();
   });
 
+  it("a dead integrator's lease is taken over, so a crash does not wedge the phase", () => {
+    const store = freshStore();
+    acquireIntegrationLease({ storageRoot: store.storageRoot, pid: 424242, sessionId: "crashed" });
+    const next = acquireIntegrationLease({
+      storageRoot: store.storageRoot,
+      pid: process.pid,
+      sessionId: "successor",
+      isProcessAlive: (pid) => pid === process.pid,
+    });
+    cleanups.push(() => next.release());
+    expect(next.isOwned()).toBe(true);
+    expect(next.holder.pid).toBe(process.pid);
+  });
+
   it("integrating without the lease is refused", () => {
     const store = freshStore();
     const repo = makeRepo();
@@ -255,5 +270,164 @@ describe("AC1: two tasks completing simultaneously integrate sequentially", () =
         newId,
       }),
     ).toThrow(NotIntegrationOwnerError);
+  });
+});
+
+describe("AC2: conflicting edits produce a resolution task; unresolved blocks the phase", () => {
+  /** Two branches editing the same line of the same file: a real git conflict. */
+  function conflictingRepo(): { repo: Repo; base: GitSha; shaA: string; shaB: string } {
+    const repo = makeRepo("korwf-integrate-conflict-");
+    writeFileSync(join(repo.path, "shared.txt"), "original\n");
+    repo.git("add", "shared.txt");
+    repo.git("commit", "-q", "-m", "shared");
+    const base = repo.head() as GitSha;
+    onIntegrationBranch(repo);
+    repo.git("branch", "work-a", base);
+    repo.git("branch", "work-b", base);
+    const shaA = repo.commitOn("work-a", "shared.txt", "version A\n", "a edits shared");
+    const shaB = repo.commitOn("work-b", "shared.txt", "version B\n", "b edits shared");
+    return { repo, base, shaA, shaB };
+  }
+
+  function queueBoth(store: Store, base: GitSha, shaA: string, shaB: string): void {
+    const a = insertTask(store, "tk-a");
+    const b = insertTask(store, "tk-b");
+    enqueueIntegration({
+      store, task: a, branch: "work-a", baseRevision: base,
+      verifiedRevision: shaA as GitSha, now: now as never, newId,
+    });
+    enqueueIntegration({
+      store, task: b, branch: "work-b", baseRevision: base,
+      verifiedRevision: shaB as GitSha, now: now as never, newId,
+    });
+  }
+
+  it("a conflicting second item produces a resolution task scoped to the conflicted paths", () => {
+    const store = freshStore();
+    const { repo, base, shaA, shaB } = conflictingRepo();
+    queueBoth(store, base, shaA, shaB);
+    const lease = leaseFor(store);
+
+    const created: { paths: readonly string[] }[] = [];
+    const result = runIntegrationQueue({
+      store,
+      workflowId: WF,
+      phaseId: PH,
+      integrationWorktree: repo.path,
+      lease,
+      actor,
+      now: now as never,
+      newId,
+      resolutionTask: ({ paths }) => {
+        created.push({ paths });
+        return "tk-resolve" as TaskId;
+      },
+    });
+
+    expect(result.outcomes.map((o) => o.kind)).toEqual(["integrated", "conflict"]);
+    const conflict = result.outcomes[1];
+    expect(conflict?.kind === "conflict" && conflict.resolution.kind).toBe("task");
+    // The resolver is restricted to exactly the conflicted paths.
+    expect(created).toEqual([{ paths: ["shared.txt"] }]);
+    if (conflict?.kind === "conflict" && conflict.resolution.kind === "task") {
+      expect(conflict.resolution.requiresReverification).toBe(true);
+      expect(conflict.conflict.resolutionTaskId).toBe("tk-resolve");
+      expect(conflict.conflict.paths).toEqual(["shared.txt"]);
+    }
+    // The conflict is data, not a wedged worktree: the merge was aborted.
+    expect(repo.git("status", "--porcelain")).toBe("");
+  });
+
+  it("an unresolved conflict blocks the phase and emits a notification naming the paths", () => {
+    const store = freshStore();
+    const { repo, base, shaA, shaB } = conflictingRepo();
+    queueBoth(store, base, shaA, shaB);
+    const lease = leaseFor(store);
+
+    const notifications: ConflictNotification[] = [];
+    const result = runIntegrationQueue({
+      store,
+      workflowId: WF,
+      phaseId: PH,
+      integrationWorktree: repo.path,
+      lease,
+      actor,
+      now: now as never,
+      newId,
+      // No resolver available: the deterministic fallback, and what happens
+      // with no implementer role configured and no Jev key.
+      resolutionTask: () => null,
+      notify: (n) => notifications.push(n),
+    });
+
+    expect(result.stopped).toBe(true);
+    const blockers = activeBlockers(store, "phase", PH);
+    expect(blockers.map((b) => b.kind)).toContain(INTEGRATION_CONFLICT_BLOCKER);
+    expect(store.phases.require(PH).gateStatus).toBe("paused_approval");
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]?.paths).toEqual(["shared.txt"]);
+    expect(notifications[0]?.event).toBe("integration_conflict");
+    expect(notifications[0]?.branch).toBe(integrationBranch(WF, PH));
+    // Nothing was merged for the conflicted item.
+    const items = store.integrations.forPhase(PH);
+    expect(items.find((i) => i.taskId === "tk-b")?.status).toBe("conflicted");
+  });
+
+  it("a resolution that did not pass verification may not re-queue", () => {
+    const store = freshStore();
+    const { repo, base, shaA, shaB } = conflictingRepo();
+    queueBoth(store, base, shaA, shaB);
+    const lease = leaseFor(store);
+    const result = runIntegrationQueue({
+      store, workflowId: WF, phaseId: PH, integrationWorktree: repo.path, lease,
+      actor, now: now as never, newId, resolutionTask: () => "tk-resolve" as TaskId,
+    });
+    const outcome = result.outcomes[1];
+    const conflictId = outcome?.kind === "conflict" ? outcome.conflict.conflictId : "";
+
+    const refused = resolveConflict({
+      store,
+      conflictId,
+      branch: "work-b",
+      baseRevision: repo.head() as GitSha,
+      verifiedRevision: shaB as GitSha,
+      reverified: false,
+      now: now as never,
+      newId,
+    });
+    expect(refused.ok).toBe(false);
+    expect(refused.ok === false && refused.refusal).toBe("not_reverified");
+    expect(store.integrations.pending(PH)).toHaveLength(0);
+  });
+
+  it("a resolution touching paths outside the conflict is refused; a verified one re-queues", () => {
+    const store = freshStore();
+    const { repo, base, shaA, shaB } = conflictingRepo();
+    queueBoth(store, base, shaA, shaB);
+    const lease = leaseFor(store);
+    const result = runIntegrationQueue({
+      store, workflowId: WF, phaseId: PH, integrationWorktree: repo.path, lease,
+      actor, now: now as never, newId, resolutionTask: () => "tk-resolve" as TaskId,
+    });
+    const outcome = result.outcomes[1];
+    const conflictId = outcome?.kind === "conflict" ? outcome.conflict.conflictId : "";
+    const common = {
+      store,
+      conflictId,
+      branch: "work-b",
+      baseRevision: repo.head() as GitSha,
+      verifiedRevision: shaB as GitSha,
+      reverified: true,
+      now: now as never,
+      newId,
+    };
+
+    const strayed = resolveConflict({ ...common, changedPaths: ["shared.txt", "src/elsewhere.ts"] });
+    expect(strayed.ok === false && strayed.refusal).toBe("paths_outside_conflict");
+
+    const accepted = resolveConflict({ ...common, changedPaths: ["shared.txt"] });
+    expect(accepted.ok).toBe(true);
+    expect(store.integrations.conflict(conflictId)?.status).toBe("resolved");
+    expect(store.integrations.pending(PH).map((i) => i.taskId)).toEqual(["tk-b"]);
   });
 });
