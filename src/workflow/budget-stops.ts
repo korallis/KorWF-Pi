@@ -47,6 +47,7 @@ import {
   type Reservation,
 } from "../telemetry/ledger.ts";
 import type { DispatchReservation } from "./scheduler.ts";
+import { stopRun, type StopRunResult } from "./run.ts";
 
 /** The blocker kind a budget hard stop raises. Matched by `state.ts`'s `CAP_BLOCKER_KINDS`. */
 export const BUDGET_STOP_BLOCKER = "budget_hard_stop";
@@ -232,4 +233,85 @@ export function budgetReservationHook(
       },
     };
   };
+}
+
+// ---------------------------------------------------------------------------
+// The stop itself
+// ---------------------------------------------------------------------------
+
+export interface ApplyBudgetStopParams {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  readonly governor: BudgetGovernor;
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  /**
+   * Phases the run was targeting. A `phase`-scope breach pauses only the
+   * phase that breached; a `workflow`- or `task`-scope breach pauses every
+   * targeted phase, because the exhausted budget encloses all of them.
+   */
+  readonly phaseIds: readonly PhaseId[];
+}
+
+/** What the hard stop did. `stopped: false` means nothing had breached. */
+export interface BudgetStopResult {
+  readonly stopped: boolean;
+  readonly breach: BudgetBreach | null;
+  readonly reason: string;
+  readonly phases: readonly StopRunResult[];
+}
+
+/**
+ * Pause the affected phases because a cumulative cap was reached, leaving
+ * RESUMABLE state.
+ *
+ * The pause goes through #74's `stopRun`, which uses `state.ts`'s
+ * `phase-pause` edge — the single writer of `Phase.gateStatus`, the same one
+ * a deliberate `/korwf run` stop and #72's crash reconciliation use. The
+ * result is therefore the identical shape: `paused_cap` (because
+ * `budget_hard_stop` is in `state.ts`'s `CAP_BLOCKER_KINDS`), an unresolved
+ * blocker naming the cap, `Phase.runId` still set, and every task, attempt
+ * and worktree left exactly as it was.
+ *
+ * A pause is not a failure. PLAN calls an all-capped pause "not a failure",
+ * and a budget stop is the same kind of event: no phase is marked `failed`,
+ * no task is failed or cancelled, and nothing in the ledger is rewound — the
+ * ledger is append-only and the spend already recorded stays recorded.
+ */
+export function applyBudgetStop(params: ApplyBudgetStopParams): BudgetStopResult {
+  const breach = params.governor.stopBreach;
+  if (breach === null) {
+    return { stopped: false, breach: null, reason: "", phases: [] };
+  }
+  const reason = params.governor.stopReason();
+  // A phase cap has breached one phase's own budget; a workflow or task cap
+  // is enclosing, so every targeted phase is out of budget too.
+  // A breach that does not name a task cannot be narrowed, so it pauses
+  // everything targeted — the conservative direction.
+  const breachedPhase = breach.scope === "phase" ? phaseOfBreach(params.store, breach) : null;
+  const affected =
+    breachedPhase === null ? params.phaseIds : params.phaseIds.filter((id) => id === breachedPhase);
+  const phases = stopRun({
+    store: params.store,
+    workflowId: params.workflowId,
+    actor: params.actor,
+    now: params.now,
+    newId: params.newId,
+    reason,
+    budgetStop: true,
+    blockerKind: BUDGET_STOP_BLOCKER,
+    phaseIds: affected,
+  });
+  return { stopped: true, breach, reason, phases };
+}
+
+/**
+ * The phase a `phase`-scope breach happened in, derived from the refused
+ * task's own `phaseId`. `null` when the breach did not name a task (so the
+ * caller falls back to every targeted phase rather than guessing).
+ */
+function phaseOfBreach(store: Store, breach: BudgetBreach): PhaseId | null {
+  if (breach.taskId === null) return null;
+  return store.tasks.get(breach.taskId as Task["id"])?.phaseId ?? null;
 }
