@@ -27,6 +27,7 @@ import { GateReceiptStore } from "./gate-receipts.ts";
 import { RecoveryLogStore } from "./recovery-log.ts";
 import { CheckpointStore, RollbackProposalStore } from "./checkpoints.ts";
 import { ApprovalRequestStore } from "./approval-requests.ts";
+import { RunLogStore } from "./run-log.ts";
 import { reconcileAbandonedAttempts, type ReconcileOptions, type ReconciliationReport } from "./reconcile.ts";
 import type { AuditEntry, AuditEntryId, IsoTimestamp, RecordTable, WorkflowId } from "./records.ts";
 import { RECORDS_SCHEMA_VERSION } from "./records.ts";
@@ -127,6 +128,8 @@ export class Store {
   readonly checkpoints: CheckpointStore;
   /** Rollback proposals (#54). Never an authorisation; see checkpoints.ts. */
   readonly rollbackProposals: RollbackProposalStore;
+  /** `/korwf run` invocation identity (#74), see run-log.ts. */
+  readonly runs: RunLogStore;
 
   readonly #db: Database;
   readonly #lock: LockHandle | null;
@@ -182,6 +185,7 @@ export class Store {
     this.approvalRequests = new ApprovalRequestStore(this.#db);
     this.checkpoints = new CheckpointStore(this.#db);
     this.rollbackProposals = new RollbackProposalStore(this.#db);
+    this.runs = new RunLogStore(this.#db);
   }
 
   #context(audit: AuditSink | null): RepoContext {

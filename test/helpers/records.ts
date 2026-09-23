@@ -101,6 +101,7 @@ export function makePhase(overrides: Partial<Phase> = {}): Phase {
     integrationPoint: { branch: "korwf/phase-0", baseRevision: SHA },
     gateStatus: "pending",
     report: null,
+    runId: null,
     ...overrides,
   };
 }
@@ -167,6 +168,7 @@ export function makeAttempt(overrides: Partial<Attempt> = {}): Attempt {
     outcome: null,
     artifacts: [],
     handedOffFromAttemptId: null,
+    runId: null,
     ...overrides,
   };
 }
