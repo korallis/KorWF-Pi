@@ -180,6 +180,16 @@ export interface BudgetHookParams {
   readonly now: () => IsoTimestamp;
   /** Attribution carried onto the ledger rows (route/run id, #71/#125). */
   readonly label?: (task: Task) => string;
+  /**
+   * The usage the dispatch actually consumed, if the caller knows it by the
+   * time the dispatch settles (#71 reports it from the worker's own usage
+   * events). Settled onto the *same* reservation, so recorded spend
+   * accumulates against the caps instead of evaporating when the estimate is
+   * released. Absent, or `null` for a task, means "unknown by now" and the
+   * estimate is released — an honest release, not a rollback: the worker
+   * layer still settles its own reservations for what it spent.
+   */
+  readonly actualFor?: (task: Task) => Usage | null;
 }
 
 /**
@@ -196,7 +206,9 @@ export interface BudgetHookParams {
  *     (the scheduler's "held, not dispatched" signal). It is never rethrown:
  *     a cap being reached is a stop, not a crash;
  *  4. a granted reservation is wrapped so the scheduler's single
- *     `release()` call releases it in the ledger exactly once.
+ *     `release()` call closes it in the ledger exactly once — as a
+ *     *settlement* when `actualFor` knows what the dispatch spent, otherwise
+ *     as a release of the unspent estimate.
  *
  * Release, not settle: the scheduler releases when a *dispatch* settles, and
  * the worker's actual usage is settled by the worker layer (#71) against its
@@ -230,7 +242,14 @@ export function budgetReservationHook(
       release: () => {
         if (released) return;
         released = true;
-        ledger.release(reservation, `dispatch settled for task ${task.id}`);
+        const actual = params.actualFor?.(task) ?? null;
+        if (actual === null) {
+          ledger.release(reservation, `dispatch settled for task ${task.id}`);
+          return;
+        }
+        // Append-only: the actual usage is written onto the reservation the
+        // dispatch held. Nothing already recorded is rewritten or removed.
+        ledger.settle(reservation, actual, { reason: `dispatch settled for task ${task.id}` });
       },
     };
   };
