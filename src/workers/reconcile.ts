@@ -19,6 +19,7 @@ import { join } from "node:path";
 import type { Attempt, AttemptOutcome, IsoTimestamp } from "../storage/records.ts";
 import type { WorkerLiveness, WorkerProbe } from "../storage/reconcile.ts";
 import { isProcessAlive } from "../storage/lock.ts";
+import { readLiveRepoState, type GitRunner } from "../git/index.ts";
 
 /** Subdirectory of the storage root holding one marker per live attempt. */
 export const RUNTIME_DIR_NAME = "runtime";
@@ -142,6 +143,31 @@ export function markCancellationRequested(
   const marker = readAttemptRuntime(storageRoot, attemptId);
   if (marker === null) return null;
   return writeAttemptRuntime(storageRoot, { ...marker, cancellationRequestedAt: at });
+}
+
+/** Evidence for one attempt, read from its marker and the operating system. */
+export interface EvidenceOptions {
+  readonly storageRoot: string;
+  /** Liveness probe; injected in tests. Defaults to `process.kill(pid, 0)`. */
+  readonly isAlive?: (pid: number) => boolean;
+  /** Does the coordinator lockfile still exist? */
+  readonly lockPresent?: boolean;
+}
+
+/** Gather the observable facts about one open attempt. */
+export function evidenceFor(attemptId: string, options: EvidenceOptions): AttemptLivenessEvidence {
+  const marker = readAttemptRuntime(options.storageRoot, attemptId);
+  const alive = options.isAlive ?? isProcessAlive;
+  const pid = marker?.pid ?? null;
+  return {
+    pid,
+    // A missing marker means no pid to probe, which reads as "not alive" —
+    // never as "still running", because that would leave the row open forever.
+    pidAlive: pid === null ? false : alive(pid),
+    lockPresent: options.lockPresent ?? false,
+    cancellationRequested: marker?.cancellationRequestedAt != null,
+    exitRecorded: marker?.exitObservedAt != null,
+  };
 }
 
 // ---------------------------------------------------------------------------
