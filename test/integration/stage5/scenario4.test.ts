@@ -20,7 +20,6 @@ import { chooseFallback, type FallbackAttemptView } from "../../../src/models/fa
 import { applyHandoff } from "../../../src/workers/handoff.ts";
 import { buildHandoffPacket } from "../../../src/memory/handoff-packet.ts";
 import { defaultOutboundPolicy } from "../../../src/security/outbound.ts";
-import { recordFallbackSwitch } from "../../../src/models/cap-pause.ts";
 import { buildTaskBoard } from "../../../src/workflow/boards.ts";
 import { statusReportMessage } from "../../../src/extension/commands/status.ts";
 import type { RegistryModelLike } from "../../../src/models/route.ts";
