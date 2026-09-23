@@ -98,6 +98,35 @@ export class BudgetExceededError extends StoreError {
 /** Shorthand alias used by callers that catch the hard stop. */
 export { BudgetExceededError as BudgetExceeded };
 
+/**
+ * Caps whose consumption only ever grows within a workflow (issue #81).
+ *
+ * `maxSpendUsd`, `maxTokens`, `maxRequests` and `maxElapsedMs` are summed
+ * over settled and abandoned rows plus open reservations, and the ledger is
+ * append-only — nothing subtracts from them. Once one of these refuses a
+ * reservation it will refuse every later one too, until the *cap* changes.
+ * That is what makes a breach a hard stop rather than a wait.
+ *
+ * `maxConcurrency` is the exception and is deliberately absent: it counts
+ * reservations that are still open, so it falls again the moment a worker
+ * settles. A concurrency refusal is a hold, not a stop.
+ */
+export const CUMULATIVE_CAPS = [
+  "maxSpendUsd",
+  "maxTokens",
+  "maxRequests",
+  "maxElapsedMs",
+] as const satisfies readonly (keyof Budget)[];
+
+/**
+ * `true` when a breach of `cap` cannot clear by waiting — see
+ * `CUMULATIVE_CAPS`. Callers use this to tell "try again after a worker
+ * finishes" apart from "stop the run and ask the user".
+ */
+export function isCumulativeCap(cap: keyof Budget): boolean {
+  return (CUMULATIVE_CAPS as readonly string[]).includes(cap);
+}
+
 /** Price metadata as Pi's model registry (or a proxy) reports it. */
 export interface PriceMetadata {
   /** USD per input token. `null`/`undefined` means the provider gave no figure. */
