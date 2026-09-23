@@ -183,6 +183,8 @@ export interface RunCommandDeps {
 export interface RunCommandResult {
   readonly ok: boolean;
   readonly message: string;
+  /** `null` when nothing started (refused or declined) — never a run id for a run that never began. */
+  readonly runId: string | null;
 }
 
 /**
@@ -202,12 +204,13 @@ export async function runCommand(deps: RunCommandDeps): Promise<RunCommandResult
   const nowIso = now();
 
   const targets = resolveRunTargets(store, workflowId, target);
-  if (!targets.ok) return { ok: false, message: targets.message };
+  if (!targets.ok) return { ok: false, message: targets.message, runId: null };
 
   if (!planApproved(store, workflowId, nowIso)) {
     return {
       ok: false,
       message: "Refused: the plan is not approved at its current revision. Run /korwf plan and approve it first.",
+      runId: null,
     };
   }
 
@@ -227,6 +230,7 @@ export async function runCommand(deps: RunCommandDeps): Promise<RunCommandResult
         `Refused: the estimate ($${(estimate.knownUsd + estimate.estimatedUsd).toFixed(2)}) exceeds the ` +
         `budget cap ($${(maxSpendUsd as number).toFixed(2)}). Grant the "spend_over_estimate" approval to override ` +
         `(a hard cap during the run still stops it — PLAN §2.6).\n\n${formatRunEstimate(estimate)}`,
+      runId: null,
     };
   }
 
@@ -238,10 +242,10 @@ export async function runCommand(deps: RunCommandDeps): Promise<RunCommandResult
     answer = false;
   }
   if (answer !== true) {
-    return { ok: false, message: `Declined. Nothing was started.\n\n${estimateText}` };
+    return { ok: false, message: `Declined. Nothing was started.\n\n${estimateText}`, runId: null };
   }
 
-  const results = startRun({
+  const outcome = startRun({
     store,
     workflowId,
     phaseIds: targets.phaseIds,
@@ -250,12 +254,14 @@ export async function runCommand(deps: RunCommandDeps): Promise<RunCommandResult
     newId,
     authorizationCurrent: () => true,
   });
-  const started = results.filter((r) => r.ok).map((r) => r.phaseId);
-  const refused = results.filter((r) => !r.ok);
-  const lines = [estimateText, ""];
+  const started = outcome.results.filter((r) => r.ok).map((r) => r.phaseId);
+  const refused = outcome.results.filter((r) => !r.ok);
+  // Printed so the user can refer to this run in /korwf status, /korwf pause
+  // and /korwf cancel (issue #74 Scope "print the run id").
+  const lines = [`Run id: ${outcome.runId}`, "", estimateText, ""];
   if (started.length > 0) lines.push(`Started: ${started.join(", ")}.`);
   if (refused.length > 0) {
     lines.push(...refused.map((r) => `Not started: ${r.phaseId} (${r.reason ?? "unknown reason"})`));
   }
-  return { ok: started.length > 0, message: lines.join("\n") };
+  return { ok: started.length > 0, message: lines.join("\n"), runId: outcome.runId };
 }
