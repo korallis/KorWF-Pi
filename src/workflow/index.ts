@@ -30,6 +30,10 @@
  *   the user's main tree (#76).
  * - `checkpoint.ts` — working-tree checkpoints, the dirty-tree guard, and rollback as an
  *   approval-gated PROPOSAL that never discards uncommitted user work (#54).
+ * - `budget-stops.ts` — the scheduler's reaction to a #30 ledger cap refusal: a latch so no
+ *   task starts after a cumulative cap is reached, a pause through #74's `stopRun` into the
+ *   same resumable shape #72 produces, resume after the user raises the cap, and remaining
+ *   budget per scope for status (#81). It enforces no caps of its own.
  *
  * **Re-export style: `export *`, deliberately.** This barrel previously listed every symbol
  * explicitly, which made it a guaranteed merge conflict: four consecutive PRs (#37, #38,
@@ -52,6 +56,7 @@ export * from "./graph.ts";
 export * from "./blockers.ts";
 export * from "./coordinator.ts";
 export * from "./boards.ts";
+export * from "./budget-stops.ts";
 export * from "./greenfield.ts";
 export * from "./invalidation.ts";
 export * from "./intake.ts";

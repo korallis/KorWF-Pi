@@ -110,7 +110,7 @@ Design, records, gates, and acceptance criteria live in [PLAN.md](PLAN.md); sect
 - [ ] Single-owner integration queue; base-revision validation; merge-conflict workflow.
 - [ ] Integrated verification; phase gate (PLAN §2.5); phase report.
 - [ ] Unattended approval policy: auto / queue-and-continue / stop; notifications.
-- [ ] Per-phase and per-workflow budget hard stops; resumable state on any stop.
+- [x] Per-phase and per-workflow budget hard stops; resumable state on any stop.
 - [ ] Recoverable worktrees/artifacts after failure; cleanup policy.
 - [ ] Tests: simultaneous completion, conflicting edits, scheduler crash, partial cancellation, unattended run to phase completion (scenario 1).
 
