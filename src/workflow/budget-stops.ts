@@ -38,7 +38,6 @@ import type {
 } from "../storage/records.ts";
 import type { Store } from "../storage/db.ts";
 import type { TransitionActor } from "../storage/transition-log.ts";
-import type { BudgetsConfig } from "../config/types.ts";
 import {
   BudgetExceededError,
   isCumulativeCap,
@@ -48,6 +47,8 @@ import {
 } from "../telemetry/ledger.ts";
 import type { DispatchReservation } from "./scheduler.ts";
 import { stopRun, type StopRunResult } from "./run.ts";
+import { resolveBlockersOfKind } from "./blockers.ts";
+import { transitionPhase, TransitionRejected } from "./state.ts";
 
 /** The blocker kind a budget hard stop raises. Matched by `state.ts`'s `CAP_BLOCKER_KINDS`. */
 export const BUDGET_STOP_BLOCKER = "budget_hard_stop";
@@ -314,6 +315,172 @@ export function applyBudgetStop(params: ApplyBudgetStopParams): BudgetStopResult
 function phaseOfBreach(store: Store, breach: BudgetBreach): PhaseId | null {
   if (breach.taskId === null) return null;
   return store.tasks.get(breach.taskId as Task["id"])?.phaseId ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Resume after the user raises the cap (a config change, not a new run)
+// ---------------------------------------------------------------------------
+
+export interface ResumeAfterCapRaisedParams {
+  readonly store: Store;
+  readonly workflowId: WorkflowId;
+  /** A ledger built over the **new** config caps. Read fresh; never mutated here. */
+  readonly ledger: Ledger;
+  readonly governor: BudgetGovernor;
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  readonly phaseIds: readonly PhaseId[];
+  /** Approval re-check for `authorization_current`; defaults to satisfied. */
+  readonly authorizationCurrent?: (phaseId: PhaseId) => boolean;
+}
+
+export interface ResumePhaseResult {
+  readonly phaseId: PhaseId;
+  readonly ok: boolean;
+  readonly phase: Phase | null;
+  readonly reason: string | null;
+}
+
+export interface ResumeAfterCapRaisedResult {
+  readonly resumed: boolean;
+  /** Why the resume was refused; `null` when it went ahead. */
+  readonly refusal: string | null;
+  readonly phases: readonly ResumePhaseResult[];
+  /** Headroom under the caps that were read for this decision. */
+  readonly remaining: readonly RemainingBudget[];
+}
+
+/**
+ * Resume a budget-stopped run because the user raised the cap.
+ *
+ * This is a **config change, not a new run**: the workflow, its phases, its
+ * tasks and its recorded spend are all still there, and the phases keep the
+ * `Phase.runId` `startRun` gave them. What changes is the cap the ledger
+ * reads, so the caller passes a `Ledger` constructed over the reloaded
+ * config.
+ *
+ * Two refusals, both deliberate:
+ *  - if the new caps still leave no headroom in the scope that breached, the
+ *    resume is refused and the phases stay paused. Resuming into an
+ *    immediate re-stop would look like progress and produce none;
+ *  - `state.ts` still owns the transition. This function resolves only the
+ *    `budget_hard_stop` blocker and then asks for `phase-resume`; any other
+ *    unresolved reason (an approval, a user pause, a model cap) keeps the
+ *    phase paused, because raising a budget is not permission for anything
+ *    else.
+ *
+ * `phase-resume` lands the phase in `pending`, not `running` — that is the
+ * edge's own rule ("require phase-start again"), so the caller re-enters
+ * through `/korwf run`, which shows the estimate again under the new cap.
+ */
+export function resumeAfterCapRaised(
+  params: ResumeAfterCapRaisedParams,
+): ResumeAfterCapRaisedResult {
+  const { store, governor, actor, now, newId, phaseIds } = params;
+  const breach = governor.stopBreach;
+  const scope: ChargeScope = {
+    workflowId: params.workflowId,
+    phaseId: phaseIds[0] ?? null,
+    taskId: (breach?.taskId ?? null) as Task["id"] | null,
+  };
+  const remaining = remainingBudget(params.ledger, scope);
+
+  if (breach !== null) {
+    const still = remaining.find((r) => r.scope === breach.scope);
+    const cap = still?.caps.find((c) => c.cap === breach.cap);
+    if (cap !== undefined && cap.exhausted) {
+      return {
+        resumed: false,
+        refusal:
+          `${breach.scope} budget cap ${breach.cap} is still exhausted ` +
+          `(limit ${String(cap.limit)}, used ${cap.used}); raise it further to resume`,
+        phases: [],
+        remaining,
+      };
+    }
+  }
+
+  governor.clearForRaisedCap();
+  const authorizationCurrent = params.authorizationCurrent ?? ((): boolean => true);
+  const phases = phaseIds.map((phaseId) =>
+    resumeOnePhase({ store, phaseId, actor, now, newId, authorizationCurrent }),
+  );
+  return { resumed: phases.some((p) => p.ok), refusal: null, phases, remaining };
+}
+
+/**
+ * Resolve this phase's budget blocker and ask for `phase-resume`. A phase
+ * that is not paused is skipped rather than forced, and a rejected
+ * transition is returned as a reason — `state.ts` refusing is the correct
+ * answer, not an error to swallow.
+ */
+function resumeOnePhase(args: {
+  readonly store: Store;
+  readonly phaseId: PhaseId;
+  readonly actor: TransitionActor;
+  readonly now: () => IsoTimestamp;
+  readonly newId: () => string;
+  readonly authorizationCurrent: (phaseId: PhaseId) => boolean;
+}): ResumePhaseResult {
+  const { store, phaseId, actor, now, newId } = args;
+  const phase = store.phases.get(phaseId);
+  if (phase === undefined) {
+    return { phaseId, ok: false, phase: null, reason: `unknown phase ${phaseId}` };
+  }
+  if (phase.gateStatus !== "paused_cap" && phase.gateStatus !== "paused_approval") {
+    return {
+      phaseId,
+      ok: false,
+      phase: null,
+      reason: `phase ${phaseId} is ${phase.gateStatus}, not paused: nothing to resume`,
+    };
+  }
+  resolveBlockersOfKind({
+    store,
+    actor,
+    now,
+    newId,
+    subjectKind: "phase",
+    subjectId: phaseId,
+    kind: BUDGET_STOP_BLOCKER,
+    detail: "user raised the budget cap in config",
+  });
+  // Any *other* unresolved reason still holds the phase. Raising a budget
+  // is not permission for an approval, a manual pause or a model cap.
+  const remainingBlockers = store.blockers
+    .unresolvedForSubject("phase", phaseId)
+    .map((b) => b.kind);
+  if (remainingBlockers.length > 0) {
+    return {
+      phaseId,
+      ok: false,
+      phase: null,
+      reason: `phase ${phaseId} still has unresolved blocker(s): ${remainingBlockers.join(", ")}`,
+    };
+  }
+  try {
+    const result = transitionPhase({
+      store,
+      phaseId,
+      to: "pending",
+      trigger: "user_resume",
+      actor,
+      now,
+      newId,
+      evidenceRefs: [`budget-cap-raised:${phaseId}`, "resume:user_resume"],
+      guards: {
+        manual_resume_valid: () => true,
+        authorization_current: () => args.authorizationCurrent(phaseId),
+      },
+    });
+    return { phaseId, ok: true, phase: result.subject, reason: null };
+  } catch (error) {
+    if (error instanceof TransitionRejected) {
+      return { phaseId, ok: false, phase: null, reason: error.message };
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
