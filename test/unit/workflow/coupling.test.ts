@@ -8,7 +8,6 @@
  *   AC3 lives in `coupling-scheduler.test.ts`).
  */
 import { describe, it, expect, afterEach } from "vitest";
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import type { PhaseId, Task, TaskId, WorkflowId } from "../../../src/storage/records.ts";
 import {
@@ -493,5 +492,70 @@ describe("fillCouplingCache: Jev adds a signal and can only subtract concurrency
       "ownershipComponents",
       "ownershipPaths",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC3, at the scheduler: "independent + Jev independent → parallel"
+// ---------------------------------------------------------------------------
+
+function freshStore(): Store {
+  const dir: TempDir = makeTempDir("korwf-coupling-store-");
+  let n = 0;
+  const { store } = openStore({ storageRoot: dir.path, now: () => AT, newId: () => `id-${(n += 1)}` });
+  cleanups.push(() => {
+    store.close();
+    dir.cleanup();
+  });
+  store.workflows.insert(makeWorkflow({ id: WF, planRevision: 1, status: "running" }));
+  store.phases.insert(makePhase({ id: PH, workflowId: WF, gateStatus: "running" }));
+  return store;
+}
+
+function insert(store: Store, t: Task): Task {
+  const row: Task = { ...t, workflowId: WF, phaseId: PH, status: "ready" };
+  store.tasks.insert(row);
+  return row;
+}
+
+describe("AC3 (scheduler): the cache is what turns an independent pair parallel", () => {
+  it("a cold cache holds the second task; a filled one dispatches both", () => {
+    const store = freshStore();
+    const a = insert(store, task("s1", ["src/one.ts"], ["one"]));
+    const b = insert(store, task("s2", ["src/two.ts"], ["two"]));
+
+    const cold = new CouplingCache();
+    const before = planPass({ store, phaseIds: [PH], inFlight: [], limit: null, couplingCache: cold });
+    expect(before.dispatch).toEqual(["s1"]);
+    expect(before.held.map((h) => h.reason)).toEqual(["coupling_uncertain"]);
+
+    cold.set(a, b, { verdict: "independent", source: "tasks.coupling@1", decisionId: "dc-5" });
+    const after = planPass({ store, phaseIds: [PH], inFlight: [], limit: null, couplingCache: cold });
+    expect(after.dispatch).toEqual(["s1", "s2"]);
+    expect(after.held).toEqual([]);
+  });
+
+  it("the scheduler refuses an overlapping pair even with an `independent` cache entry", () => {
+    const store = freshStore();
+    const a = insert(store, task("s3", ["src/api/**"], []));
+    const b = insert(store, task("s4", ["src/api/orders.ts"], []));
+
+    const cache = new CouplingCache();
+    cache.set(a, b, { verdict: "independent", source: "tasks.coupling@1", decisionId: "dc-6" });
+    const plan = planPass({ store, phaseIds: [PH], inFlight: [], limit: null, couplingCache: cache });
+    expect(plan.dispatch).toEqual(["s3"]);
+    expect(plan.held).toEqual([expect.objectContaining({ taskId: "s4", reason: "ownership_conflict" })]);
+  });
+
+  it("couplingSignalFrom prefers the cache and falls through to the raw signal on a miss", () => {
+    const a = task("s5", ["src/one.ts"]);
+    const b = task("s6", ["src/two.ts"]);
+    const cache = new CouplingCache();
+    cache.set(a, b, { verdict: "coupled", source: "tasks.coupling@1", decisionId: null });
+    const signal = couplingSignalFrom({ cache, signal: () => "independent" });
+    expect(signal(a, b)).toBe("coupled");
+    expect(signal({ ...a, revision: 7 }, b)).toBe("independent");
+    const empty = couplingSignalFrom();
+    expect(empty(a, b)).toBe("unknown");
   });
 });
