@@ -194,3 +194,80 @@ describe("AC2: uncertain coupling is serial — the default is the safe one", ()
     expect(verdict.reason).toBe("coupling_uncertain");
   });
 });
+
+describe("AC3: disjoint ownership plus an `independent` verdict runs in parallel", () => {
+  const a = task("p1", ["src/one.ts"], ["one"]);
+  const b = task("p2", ["src/two.ts"], ["two"]);
+
+  it("a cached `independent` verdict permits concurrency", () => {
+    const cache = new CouplingCache();
+    cache.set(a, b, { verdict: "independent", source: "tasks.coupling@1", decisionId: "dc-3" });
+    const verdict = canRunConcurrently(a, b, { cache });
+    expect(verdict.ok).toBe(true);
+    expect(verdict.reason).toBeNull();
+    expect(verdict.coupling).toBe("independent");
+  });
+
+  it("selectConcurrentBatch admits a whole independent set and holds the rest", () => {
+    const c = task("p3", ["src/one.ts"], ["one"]);
+    const batch = selectConcurrentBatch([a, b, c], { signal: () => "independent" });
+    expect(batch.parallel).toEqual(["p1", "p2"]);
+    expect(batch.serial).toEqual([
+      expect.objectContaining({ taskId: "p3", reason: "ownership_conflict" }),
+    ]);
+  });
+
+  it("admission is transitive: three tasks run together only if all three pairs are clear", () => {
+    const x = task("q1", ["src/x.ts"]);
+    const y = task("q2", ["src/y.ts"]);
+    const z = task("q3", ["src/z.ts"]);
+    const coupledWithX = (l: Task, r: Task): "independent" | "coupled" =>
+      [l.id, r.id].includes("q1" as TaskId) && [l.id, r.id].includes("q3" as TaskId)
+        ? "coupled"
+        : "independent";
+    const batch = selectConcurrentBatch([x, y, z], { signal: coupledWithX });
+    expect(batch.parallel).toEqual(["q1", "q2"]);
+    expect(batch.serial.map((s) => s.reason)).toEqual(["coupled"]);
+  });
+
+  it("with no signal at all the batch is a single task — serial by default", () => {
+    expect(selectConcurrentBatch([a, b]).parallel).toEqual(["p1"]);
+  });
+});
+
+describe("the cache is keyed by the pair *and* the revisions it was judged at", () => {
+  const a = task("k1", ["src/one.ts"]);
+  const b = task("k2", ["src/two.ts"]);
+
+  it("the key is order-independent for the same pair", () => {
+    expect(couplingKey(a, b)).toBe(couplingKey(b, a));
+  });
+
+  it("an edited task misses the cache, and a miss serialises", () => {
+    const cache = new CouplingCache();
+    cache.set(a, b, { verdict: "independent", source: "tasks.coupling@1", decisionId: "dc-4" });
+    expect(canRunConcurrently(a, b, { cache }).ok).toBe(true);
+
+    const edited: Task = { ...a, revision: a.revision + 1, goal: "a materially different goal" };
+    expect(cache.has(edited, b)).toBe(false);
+    expect(canRunConcurrently(edited, b, { cache }).reason).toBe("coupling_uncertain");
+  });
+
+  it("invalidateTask drops every entry mentioning the task, at any revision", () => {
+    const cache = new CouplingCache();
+    const entry = { verdict: "independent" as const, source: "tasks.coupling@1", decisionId: null };
+    cache.set(a, b, entry);
+    cache.set({ ...a, revision: 2 }, b, entry);
+    expect(cache.size).toBe(2);
+    expect(cache.invalidateTask("k1" as TaskId)).toBe(2);
+    expect(cache.size).toBe(0);
+  });
+
+  it("cache.signal() exposes the cached verdict to the scheduler, unknown on a miss", () => {
+    const cache = new CouplingCache();
+    cache.set(a, b, { verdict: "independent", source: "tasks.coupling@1", decisionId: null });
+    const signal = cache.signal();
+    expect(signal(a, b)).toBe("independent");
+    expect(signal({ ...a, revision: 9 }, b)).toBe("unknown");
+  });
+});
