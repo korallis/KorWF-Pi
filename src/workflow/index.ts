@@ -46,6 +46,7 @@ export * from "./failure-classify.ts";
 export * from "./stall.ts";
 export * from "./graph.ts";
 export * from "./blockers.ts";
+export * from "./coordinator.ts";
 export * from "./boards.ts";
 export * from "./greenfield.ts";
 export * from "./invalidation.ts";
