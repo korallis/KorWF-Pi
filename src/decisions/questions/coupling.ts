@@ -38,3 +38,41 @@ export interface CouplingState {
   readonly a: CouplingTaskView;
   readonly b: CouplingTaskView;
 }
+
+/**
+ * Minimal relevant state (PLAN §6): the two tasks' goals, criteria and
+ * declared ownership — nothing else. No file contents, no diffs, no repo
+ * paths beyond the patterns the planner already wrote down, so this question
+ * cannot become a channel for sending the user's source outbound. The
+ * outbound policy (#28) filters it again regardless.
+ *
+ * The pair is ordered canonically by task id so that asking about (a, b) and
+ * (b, a) produces the same state hash and therefore the same cache key.
+ */
+export function couplingState(input: CouplingState): JevState {
+  const [first, second] = input.a.id <= input.b.id ? [input.a, input.b] : [input.b, input.a];
+  return { taskA: viewState(first), taskB: viewState(second) };
+}
+
+function viewState(view: CouplingTaskView): Readonly<Record<string, unknown>> {
+  return {
+    id: view.id,
+    goal: view.goal,
+    acceptanceCriteria: view.acceptanceCriteria,
+    ownership: { paths: view.ownershipPaths, components: view.ownershipComponents },
+  };
+}
+
+/**
+ * The deterministic fallback, used whenever Jev does not produce a usable
+ * answer: no key, disabled, abstained, low confidence, validation failure,
+ * deadline, transport error.
+ *
+ * It is a constant, and that is the design. Any structural heuristic here
+ * ("same component word in both goals" and so on) would be a semantic guess
+ * dressed as a rule, and a wrong guess in the `independent` direction is an
+ * uncontrolled concurrent write. `unknown` is the only answer this function
+ * can give that is safe in every case, and `canRunConcurrently` turns it
+ * into serial execution.
+ */
+export const COUPLING_FALLBACK_VERDICT: CouplingVerdict = "unknown";
