@@ -217,6 +217,16 @@ export interface StopRunParams {
   readonly reason: string;
   /** `true` files this as a budget/cap stop (`paused_cap`) rather than a manual one (`paused_approval`). */
   readonly budgetStop?: boolean;
+  /**
+   * Restrict the stop to these phases (issue #81). Omitted keeps #74's
+   * original behaviour — every non-terminal phase of the workflow — which is
+   * what a workflow-scope cap and a user stop both want. A *phase*-scope cap
+   * has breached only its own phase, so stopping the others would pause work
+   * that still has budget.
+   */
+  readonly phaseIds?: readonly PhaseId[];
+  /** Blocker kind recorded on the pause; defaults to `budget_hard_stop`/`user_stop`. */
+  readonly blockerKind?: string;
 }
 
 export interface StopRunResult {
@@ -245,9 +255,11 @@ export interface StopRunResult {
  */
 export function stopRun(params: StopRunParams): readonly StopRunResult[] {
   const { store, workflowId, actor, now, newId, reason, budgetStop } = params;
+  const only = params.phaseIds === undefined ? null : new Set(params.phaseIds);
   const phases = store.phases
     .forWorkflow(workflowId)
-    .filter((p) => p.gateStatus !== "passed" && p.gateStatus !== "cancelled");
+    .filter((p) => p.gateStatus !== "passed" && p.gateStatus !== "cancelled")
+    .filter((p) => only === null || only.has(p.id));
 
   return phases.map((phase) => {
     const guards = { phase_stop_present: () => true } as const;
@@ -261,7 +273,10 @@ export function stopRun(params: StopRunParams): readonly StopRunResult[] {
         now,
         newId,
         evidenceRefs: [`stop:${phase.id}:${reason}`],
-        blocker: { kind: budgetStop === true ? "budget_hard_stop" : "user_stop", detail: reason },
+        blocker: {
+          kind: params.blockerKind ?? (budgetStop === true ? "budget_hard_stop" : "user_stop"),
+          detail: reason,
+        },
         guards,
       });
       return { phaseId: phase.id, ok: true, phase: result.subject, reason: null };
