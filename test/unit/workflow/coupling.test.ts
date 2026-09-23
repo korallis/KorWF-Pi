@@ -387,3 +387,111 @@ describe("a writing worker never works in the user's main tree", () => {
     expect(() => assertWorkerTree({ ...input, writes: false })).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Filling the cache: Jev only ever ADDS a signal
+// ---------------------------------------------------------------------------
+
+/**
+ * A transport that answers `tasks.coupling@1` with a fixed choice. The
+ * distribution covers every option the question actually offered and sums to
+ * one, because `src/jev/validate.ts` rejects anything else — a test that sent
+ * a short distribution would be exercising the invalid-response path while
+ * appearing to exercise the answer path.
+ */
+function respondingTransport(choice: string, confidence = 0.95): MockJevTransport {
+  return new MockJevTransport({
+    responder: (request) => ({
+      kind: "ok",
+      response: {
+        model: "jev-test",
+        answers: Object.fromEntries(
+          Object.entries(request.questions).map(([key, question]) => {
+            const options = question.type === "choice" ? Object.keys(question.criteria) : [choice];
+            const rest = (1 - confidence) / Math.max(1, options.length - 1);
+            const probabilities = Object.fromEntries(
+              options.map((option) => [option, option === choice ? confidence : rest]),
+            );
+            return [key, { type: "choice", choice, confidence, probabilities }];
+          }),
+        ),
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+      requestId: "req-1",
+      attempts: 1,
+      elapsedMs: 1,
+    }),
+  });
+}
+
+describe("fillCouplingCache: Jev adds a signal and can only subtract concurrency", () => {
+  const a = task("j1", ["src/one.ts"], ["one"]);
+  const b = task("j2", ["src/two.ts"], ["two"]);
+  const overlapping = task("j3", ["src/one.ts"], ["one"]);
+
+  it("an `independent` answer is cached and makes the disjoint pair parallel", async () => {
+    const ctx: AskContext = { transport: respondingTransport("independent"), model: "jev-test" };
+    const cache = await fillCouplingCache(ctx, [a, b], new CouplingCache());
+    expect(cache.get(a, b)?.verdict).toBe("independent");
+    expect(canRunConcurrently(a, b, { cache }).ok).toBe(true);
+  });
+
+  it("a `coupled` answer serialises a pair code would have allowed", async () => {
+    const ctx: AskContext = { transport: respondingTransport("coupled"), model: "jev-test" };
+    const cache = await fillCouplingCache(ctx, [a, b], new CouplingCache());
+    expect(canRunConcurrently(a, b, { cache }).reason).toBe("coupled");
+  });
+
+  it("with no Jev key every pair degrades to unknown — serial, never an error", async () => {
+    const ctx: AskContext = { transport: new DisabledJevTransport(), model: "jev-test" };
+    const cache = await fillCouplingCache(ctx, [a, b], new CouplingCache());
+    expect(cache.get(a, b)?.verdict).toBe("unknown");
+    expect(canRunConcurrently(a, b, { cache }).reason).toBe("coupling_uncertain");
+  });
+
+  it("a low-confidence `independent` is abstained into unknown, not trusted", async () => {
+    const ctx: AskContext = { transport: respondingTransport("independent", 0.4), model: "jev-test" };
+    const cache = await fillCouplingCache(ctx, [a, b], new CouplingCache());
+    expect(cache.get(a, b)?.verdict).toBe("unknown");
+  });
+
+  it("a throwing transport is caught and stored as unknown", async () => {
+    const throwing = new MockJevTransport({
+      responder: () => {
+        throw new Error("network down");
+      },
+    });
+    const ctx: AskContext = { transport: throwing, model: "jev-test" };
+    const cache = await fillCouplingCache(ctx, [a, b], new CouplingCache());
+    expect(cache.get(a, b)?.verdict).toBe("unknown");
+  });
+
+  it("pairs with a declared ownership overlap are never sent to Jev at all", async () => {
+    const transport = respondingTransport("independent");
+    const ctx: AskContext = { transport, model: "jev-test" };
+    const cache = await fillCouplingCache(ctx, [a, overlapping], new CouplingCache());
+    expect(transport.calls).toHaveLength(0);
+    expect(cache.size).toBe(0);
+    expect(canRunConcurrently(a, overlapping, { cache }).reason).toBe("ownership_conflict");
+  });
+
+  it("an already-cached pair is not asked about again", async () => {
+    const transport = respondingTransport("independent");
+    const cache = new CouplingCache();
+    cache.set(a, b, { verdict: "coupled", source: "tasks.coupling@1", decisionId: null });
+    await fillCouplingCache({ transport, model: "jev-test" }, [a, b], cache);
+    expect(transport.calls).toHaveLength(0);
+    expect(cache.get(a, b)?.verdict).toBe("coupled");
+  });
+
+  it("the state sent outbound is the minimal task view: no file contents", () => {
+    const view = couplingViewOf(a);
+    expect(Object.keys(view).sort()).toEqual([
+      "acceptanceCriteria",
+      "goal",
+      "id",
+      "ownershipComponents",
+      "ownershipPaths",
+    ]);
+  });
+});
