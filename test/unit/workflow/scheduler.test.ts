@@ -18,6 +18,7 @@ import {
   UNCERTAIN_COUPLING,
   type DispatchOutcome,
 } from "../../../src/workflow/scheduler.ts";
+import { transitionTask } from "../../../src/workflow/state.ts";
 import { makePhase, makeTask, makeWorkflow } from "../../helpers/records.ts";
 import { makeTempDir, type TempDir } from "../../helpers/temp-dir.ts";
 
@@ -69,6 +70,79 @@ function insertTask(
   return task;
 }
 
+/**
+ * Drive a `running` task all the way to `done` the way the engine would:
+ * through `state.ts` only, with a passing gate receipt, because nothing else
+ * may write `Task.status` and only a `done` dependency satisfies readiness.
+ */
+function markDone(store: Store, taskId: TaskId): void {
+  const evidenceRefs = ["ev:checks", "ev:coverage", "ev:review"];
+  const gitRevision = "a".repeat(40);
+  transitionTask({
+    store,
+    taskId,
+    to: "verifying",
+    trigger: "completion_requested",
+    actor,
+    now,
+    newId,
+    evidenceRefs,
+    guards: { attempt_settled: () => true },
+  });
+  transitionTask({
+    store,
+    taskId,
+    to: "review",
+    trigger: "checks_and_gap_assessed",
+    actor,
+    now,
+    newId,
+    evidenceRefs,
+    gitRevision,
+    guards: {
+      checks_registered: () => true,
+      all_checks_pass_exact_revision: () => true,
+      no_jev_gap_or_disabled: () => true,
+    },
+  });
+  const receiptId = `rcpt-${(counter += 1)}`;
+  const task = store.tasks.require(taskId);
+  store.gateReceipts.record({
+    receiptId,
+    createdAt: AT,
+    workflowId: task.workflowId,
+    gate: "task",
+    subjectId: task.id,
+    subjectRevision: task.revision,
+    revision: gitRevision,
+    disposition: "pass",
+    reasonCode: null,
+    detail: null,
+    inputHash: "c".repeat(64),
+    evaluatedAt: AT,
+    consumedAt: null,
+    conditions: [],
+  });
+  transitionTask({
+    store,
+    taskId,
+    to: "done",
+    trigger: "task_gate_passed",
+    actor,
+    now,
+    newId,
+    evidenceRefs,
+    gitRevision,
+    gateReceiptId: receiptId,
+    guards: {
+      checks_registered: () => true,
+      all_checks_pass_exact_revision: () => true,
+      no_jev_gap_or_disabled: () => true,
+      policy_review_satisfied: () => true,
+    },
+  });
+}
+
 /** Every pair independent: isolates the property under test from the serial default. */
 const independent = (): "independent" => "independent";
 
@@ -109,6 +183,128 @@ function baseParams(store: Store): {
     reserve: () => ({ release: () => {} }),
   };
 }
+
+/** Deterministic PRNG: a failing seed is reproducible, unlike Math.random. */
+function rng(seed: number): () => number {
+  let state = seed >>> 0 || 1;
+  return () => {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state / 0x100000000;
+  };
+}
+
+/**
+ * A random DAG: task `i` may only depend on tasks with a lower index, so the
+ * graph is acyclic by construction and the index order is one valid
+ * topological order (not necessarily the one the scheduler picks).
+ */
+function randomDag(store: Store, size: number, next: () => number): readonly TaskId[] {
+  const ids: TaskId[] = [];
+  for (let i = 0; i < size; i += 1) {
+    const dependencies = ids.filter(() => next() < 0.3);
+    const id = `d${i}`;
+    insertTask(store, id, { dependencies, status: i === 0 ? "ready" : "ready" });
+    ids.push(id as TaskId);
+  }
+  return ids;
+}
+
+describe("AC1: random DAGs run in a valid topological order, each task once", () => {
+  for (const seed of [1, 7, 42, 1337, 90210]) {
+    it(`seed ${seed}: no task starts before its dependencies finished, and none runs twice`, async () => {
+      const store = freshStore();
+      const next = rng(seed);
+      const ids = randomDag(store, 12, next);
+      const deps = new Map(ids.map((id) => [id, store.tasks.require(id).dependencies]));
+
+      const finished = new Set<TaskId>();
+      const startedAt = new Map<TaskId, number>();
+      const violations: string[] = [];
+      let tick = 0;
+
+      const result = await runScheduler({
+        ...baseParams(store),
+        limit: 4,
+        coupling: independent,
+        dispatch: async (task: Task) => {
+          if (startedAt.has(task.id)) violations.push(`${task.id} dispatched twice`);
+          startedAt.set(task.id, (tick += 1));
+          for (const dep of deps.get(task.id) ?? []) {
+            if (!finished.has(dep)) violations.push(`${task.id} started before ${dep} finished`);
+          }
+          // Random latency, so completion order differs from dispatch order.
+          await new Promise((r) => setTimeout(r, Math.floor(next() * 3)));
+          finished.add(task.id);
+          // Only a `done` task satisfies a dependency, and only `state.ts`
+          // may write that, so the test drives it the way the engine would.
+          markDone(store, task.id);
+          return okOutcome(task);
+        },
+      });
+
+      expect(violations).toEqual([]);
+      expect([...result.dispatched].sort()).toEqual([...ids].sort());
+      expect(new Set(result.dispatched).size).toBe(result.dispatched.length);
+    });
+  }
+
+  it("a task whose dependency never completes is never dispatched", async () => {
+    const store = freshStore();
+    insertTask(store, "root");
+    insertTask(store, "leaf", { dependencies: ["root"] });
+
+    const result = await runScheduler({
+      ...baseParams(store),
+      limit: 4,
+      coupling: independent,
+      // The worker "fails": the task never reaches `done`.
+      dispatch: async (task: Task) => ({ taskId: task.id, ok: false }),
+    });
+
+    expect(result.dispatched).toEqual(["root"]);
+  });
+
+  it("two claims of the same ready task: exactly one wins (duplicate-dispatch prevention)", () => {
+    const store = freshStore();
+    const task = insertTask(store, "once");
+
+    const hooks = {
+      store,
+      taskId: task.id,
+      actor,
+      now,
+      newId,
+      authorizationCurrent: () => true,
+      dispatchAllowed: () => true,
+    };
+    const first = claimTask(hooks);
+    const second = claimTask(hooks);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(false);
+    expect(store.tasks.require(task.id).status).toBe("running");
+  });
+
+  it("a ready task with no executable check is never offered for dispatch", () => {
+    const store = freshStore();
+    store.tasks.insert(
+      makeTask({
+        id: "nocheck" as TaskId,
+        workflowId: WF,
+        phaseId: PH,
+        status: "ready",
+        checks: [],
+        ownership: { paths: ["src/nocheck.ts"], components: ["nocheck"] },
+      }),
+    );
+    const plan = planPass({ store, phaseIds: [PH], inFlight: [], limit: null, coupling: independent });
+    expect(plan.dispatch).toEqual([]);
+  });
+});
 
 describe("AC2: concurrency never exceeds the cap", () => {
   it("never runs more workers at once than the configured limit", async () => {
