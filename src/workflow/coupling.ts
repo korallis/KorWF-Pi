@@ -393,3 +393,151 @@ export function describeOverlap(overlap: OwnershipIntersection): string {
   ];
   return parts.join(", ");
 }
+
+// ---------------------------------------------------------------------------
+// canRunConcurrently: code first, Jev second, unknown → serial
+// ---------------------------------------------------------------------------
+
+/** Optional inputs to {@link canRunConcurrently}. */
+export interface ConcurrencyOptions {
+  /** Cached `tasks.coupling@1` verdicts. Omitted → every pair is uncertain. */
+  readonly cache?: CouplingCache;
+  /**
+   * A raw signal, for callers that hold verdicts somewhere other than a
+   * `CouplingCache`. Consulted only when the cache has no entry, and only
+   * after the ownership check has already passed — it cannot be used to
+   * clear an overlap.
+   */
+  readonly signal?: CouplingSignal;
+}
+
+/**
+ * May these two tasks run at the same time?
+ *
+ * The order of the two checks is the whole design, so it is spelled out:
+ *
+ * 1. `ownershipConflict` runs **first and unconditionally**. If the tasks'
+ *    declared globs or components intersect, the function returns `ok:
+ *    false` from inside that branch. No signal is read on that path — not
+ *    consulted and discarded, simply never reached — so no Jev verdict,
+ *    cache entry or caller option can make an overlapping pair parallel.
+ * 2. Only for disjoint ownership does the semantic signal get a say, and
+ *    there it can only *subtract* concurrency: `"independent"` permits what
+ *    ownership already permitted, while `"coupled"` and `"unknown"`
+ *    serialise. A missing cache, a missing signal, a disabled Jev and a
+ *    refused request all produce `"unknown"`, so the no-key configuration
+ *    is the conservative one (PLAN §3.E "default to serial when coupling is
+ *    uncertain").
+ *
+ * A task is never concurrent with itself; that pair returns `ok: false`.
+ */
+export function canRunConcurrently(a: Task, b: Task, options: ConcurrencyOptions = {}): ConcurrencyVerdict {
+  if (a.id === b.id) {
+    return {
+      ok: false,
+      reason: "ownership_conflict",
+      detail: `task ${a.id} cannot run concurrently with itself`,
+      overlap: EMPTY_INTERSECTION,
+      coupling: "unknown",
+    };
+  }
+  const overlap = ownershipConflict(a, b);
+  if (hasOwnershipOverlap(overlap)) {
+    return {
+      ok: false,
+      reason: "ownership_conflict",
+      detail: `tasks ${a.id} and ${b.id} both declare ownership of ${describeOverlap(overlap)}`,
+      overlap,
+      coupling: "unknown",
+    };
+  }
+  const coupling = couplingVerdictFor(a, b, options);
+  if (coupling === "coupled") {
+    return {
+      ok: false,
+      reason: "coupled",
+      detail: `tasks ${a.id} and ${b.id} are semantically coupled; running them serially`,
+      overlap,
+      coupling,
+    };
+  }
+  if (coupling === "unknown") {
+    return {
+      ok: false,
+      reason: "coupling_uncertain",
+      detail:
+        `coupling between tasks ${a.id} and ${b.id} is uncertain; ` +
+        `defaulting to serial (PLAN §3.E)`,
+      overlap,
+      coupling,
+    };
+  }
+  return {
+    ok: true,
+    reason: null,
+    detail: `tasks ${a.id} and ${b.id} declare disjoint ownership and were judged independent`,
+    overlap,
+    coupling,
+  };
+}
+
+/**
+ * The semantic verdict for a disjoint pair: cache first, then the raw
+ * signal, then `"unknown"`. A signal that throws is treated as `"unknown"`
+ * rather than propagating — a scheduling pass must not fail because an
+ * advisory signal did, and the failure direction is serial.
+ */
+function couplingVerdictFor(a: Task, b: Task, options: ConcurrencyOptions): CouplingVerdict {
+  const cached = options.cache?.get(a, b);
+  if (cached !== undefined) return cached.verdict;
+  if (options.signal === undefined) return "unknown";
+  try {
+    return options.signal(a, b);
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
+ * A `CouplingSignal` for #75's `planPass` that reads a cache and an optional
+ * raw signal. Note what this returns to the scheduler: the *semantic*
+ * verdict only. The scheduler applies its own ownership check first and is
+ * not asked to trust this one — both layers refuse an overlap independently,
+ * which is why neither can be the single point of failure.
+ */
+export function couplingSignalFrom(options: ConcurrencyOptions = {}): CouplingSignal {
+  return (a, b) => couplingVerdictFor(a, b, options);
+}
+
+/** Partition a candidate set into one parallel batch and the tasks held for later. */
+export interface ConcurrentBatch {
+  readonly parallel: readonly TaskId[];
+  readonly serial: readonly { readonly taskId: TaskId; readonly reason: SerialReason; readonly detail: string }[];
+}
+
+/**
+ * Greedily select the largest prefix-stable set of tasks that may all run
+ * together, in the order given. Every admitted task is checked against every
+ * already-admitted one, so admission is transitive by construction: three
+ * tasks run together only if all three pairs are clear.
+ */
+export function selectConcurrentBatch(
+  candidates: readonly Task[],
+  options: ConcurrencyOptions = {},
+): ConcurrentBatch {
+  const parallel: TaskId[] = [];
+  const admitted: Task[] = [];
+  const serial: { taskId: TaskId; reason: SerialReason; detail: string }[] = [];
+  for (const task of candidates) {
+    const blocked = admitted
+      .map((other) => canRunConcurrently(task, other, options))
+      .find((verdict) => !verdict.ok);
+    if (blocked !== undefined && blocked.reason !== null) {
+      serial.push({ taskId: task.id, reason: blocked.reason, detail: blocked.detail });
+      continue;
+    }
+    parallel.push(task.id);
+    admitted.push(task);
+  }
+  return { parallel, serial };
+}
