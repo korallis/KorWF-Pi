@@ -16,18 +16,19 @@ set -uo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 S="$ROOT/.pi/skills/korwf-worker-delegation/scripts"
 
-names=(); timeout_min=60; nudge=""
+names=(); timeout_min=60; nudge=""; stall_polls=20
 while [ $# -gt 0 ]; do
   case "$1" in
     --timeout-min) timeout_min=$2; shift 2 ;;
     --nudge-file)  nudge=$2; shift 2 ;;
+    --stall-min)   stall_polls=$2; shift 2 ;;
     *)             names+=("$1"); shift ;;
   esac
 done
 [ ${#names[@]} -eq 0 ] && { echo "usage: await-agents.sh <name>... [--timeout-min N] [--nudge-file PATH]"; exit 2; }
 
 deadline=$(( $(date +%s) + timeout_min * 60 ))
-declare -A settled=() nudged=() lastcommits=()
+declare -A settled=() nudged=() lastcommits=() stalls=()
 
 worktree_of() {
   git -C "$ROOT" worktree list --porcelain 2>/dev/null \
@@ -72,6 +73,21 @@ while :; do
       settled[$n]=yes
       echo "$(date +%H:%M:%S) $n BLOCKED — needs a decision (herdr agent read $n --source visible)"
       continue
+    fi
+
+    # A `working` agent that has not committed for a long stretch is usually thrashing,
+    # not thinking: #74 read 67M tokens across two stretches and wrote nothing until it
+    # was given a single concrete step. Nudge once on that signal too, not only on an
+    # idle-with-nothing settle.
+    if [ "${lastcommits[$n]:-}" = "$c" ]; then
+      stalls[$n]=$(( ${stalls[$n]:-0} + 1 ))
+    else
+      stalls[$n]=0
+    fi
+    if [ -n "$nudge" ] && [ "${nudged[$n]:-}" != yes ] && [ "${stalls[$n]:-0}" -ge "$stall_polls" ]; then
+      echo "$(date +%H:%M:%S) $n working but no new commit in ${stall_polls}m — nudging once"
+      "$S/dispatch-worker.sh" "$n" "$nudge" >/dev/null 2>&1
+      nudged[$n]=yes; stalls[$n]=0
     fi
 
     lastcommits[$n]=$c
