@@ -67,8 +67,13 @@ Rules the implementation (#23) must follow:
 7. **Reconciliation on startup** (PLAN §5 "abandoned attempts reconciled"): after taking
    the lock, before accepting commands, every `attempt` with `outcome IS NULL` is checked
    against the persisted worker pid/snapshot (ADR 0004): alive ⇒ re-attach; dead ⇒
-   `outcome = crashed`, worktree left intact, task transitions per
-   `docs/state-machine.md`.
+   closed, worktree left intact, task transitions per `docs/state-machine.md`.
+   Implemented as one path only: `reconcileAbandonedAttempts` (`src/storage/reconcile.ts`)
+   does the writing, and `src/workers/reconcile.ts` (#72) supplies the probe that reads
+   the per-attempt runtime marker under `<store>/runtime/` and classifies the ending as
+   `process_killed` → `cancelled`, `worker_died` / `machine_crashed` → `interrupted`, or
+   unattributable → `abandoned`. `openStoreAndReconcileCrashes` is the startup entry
+   point and returns only after that has run.
 8. **Artifacts** live beside the database (`<store>/artifacts/<attemptId>/…`) and are
    referenced by relative path in `evidence.artifact`; retention is
    `storage.artifactRetentionDays`; deletion never removes a row (rows record the

@@ -473,7 +473,12 @@ fork/resume the coordinator:
    `Phase.integrationPoint.baseRevision`, and each open `Attempt.worktree.baseRevision`.
 2. Marks approvals whose revisions no longer match as `session_reconciled`.
 3. Marks attempts with no live worker as `abandoned` (frozen; PLAN §5 "abandoned attempts
-   reconciled on startup").
+   reconciled on startup"). When the crash probe in `src/workers/reconcile.ts` (#72) can
+   attribute the ending, the outcome is stronger and more honest: `cancelled` when a
+   cancellation was recorded before the process vanished, `interrupted` when the worker
+   died or the machine went down with it. `abandoned` remains the outcome when nothing
+   about the ending can be established. The attempt's worktree is never removed by
+   reconciliation: uncommitted work in it is the user's work (PLAN §10).
 4. Never replays a `Decision` whose `stateHash` still matches — the recorded action stands.
 5. Closes every budget reservation with no terminal row as `abandonment` (§10.1).
 
